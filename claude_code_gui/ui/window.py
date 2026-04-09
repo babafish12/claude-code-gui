@@ -28,11 +28,13 @@ from claude_code_gui.app.constants import (
     CONTEXT_MAX_TOKENS,
     MODEL_OPTIONS,
     PERMISSION_OPTIONS,
+    REASONING_LEVEL_OPTIONS,
     SESSION_STATUS_ACTIVE,
     SESSION_STATUS_ARCHIVED,
     SESSION_STATUS_ENDED,
     SESSION_STATUS_ERROR,
     SESSION_STATUSES,
+    SIDEBAR_COLLAPSED_WIDTH,
     SIDEBAR_OPEN_WIDTH,
     STATUS_ERROR,
     STATUS_INFO,
@@ -86,9 +88,11 @@ class ClaudeCodeWindow(Gtk.Window):
         self._chat_shell: Gtk.EventBox | None = None
 
         self._sidebar_container: Gtk.Box | None = None
+        self._sidebar_toggle_button: Gtk.Button | None = None
         self._sidebar_current_width = float(SIDEBAR_OPEN_WIDTH)
         self._sidebar_expanded = True
         self._sidebar_animation_id: int | None = None
+        self._sidebar_expanded_only_widgets: list[Gtk.Widget] = []
 
         self._window_fade_animation_id: int | None = None
         self._window_fade_started = False
@@ -100,8 +104,13 @@ class ClaudeCodeWindow(Gtk.Window):
         self._chat_pulse_animation_id: int | None = None
 
         self._project_status_label: Gtk.Label | None = None
-        self._recent_folder_combo: Gtk.ComboBoxText | None = None
-        self._recent_folder_values: list[str] = []
+        self._project_path_entry: Gtk.Entry | None = None
+        self._project_path_popover: Gtk.Popover | None = None
+        self._project_path_suggestion_scroll: Gtk.ScrolledWindow | None = None
+        self._project_path_suggestion_list: Gtk.ListBox | None = None
+        self._project_path_suggestions: list[str] = []
+        self._project_path_selected_index = -1
+        self._suppress_project_entry_change = False
         self._session_list_box: Gtk.Box | None = None
         self._session_empty_label: Gtk.Label | None = None
 
@@ -109,16 +118,20 @@ class ClaudeCodeWindow(Gtk.Window):
         self._connection_label: Gtk.Label | None = None
         self._context_usage_label: Gtk.Label | None = None
         self._context_progress: Gtk.ProgressBar | None = None
+        self._session_limit_label: Gtk.Label | None = None
+        self._weekly_limit_label: Gtk.Label | None = None
         self._status_message_label: Gtk.Label | None = None
         self._session_timer_label: Gtk.Label | None = None
         self._last_status_message = ""
         self._context_char_count = 0
+        self._session_cost_usd = 0.0
+        self._session_tokens = 0
 
-        self._suppress_recent_combo_change = False
         self._request_temp_files: dict[str, list[str]] = {}
 
         self._selected_model_index = 1
         self._selected_permission_index = 0
+        self._selected_reasoning_index = 1
 
         self._project_folder = normalize_folder(os.getcwd())
         self._recent_folders = load_recent_folders(self._project_folder)
@@ -126,6 +139,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._binary_path = find_claude_binary()
         self._supports_model_flag = False
         self._supports_permission_flag = False
+        self._supports_reasoning_flag = False
         self._supports_output_format_flag = False
         self._supports_stream_json = False
         self._supports_json = False
@@ -142,6 +156,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._active_request_token: str | None = None
         self._has_messages = False
         self._last_request_failed = False
+        self._active_assistant_message = ""
 
         self._session_started_us = GLib.get_monotonic_time()
         self._session_timer_id: int | None = None
@@ -166,15 +181,14 @@ class ClaudeCodeWindow(Gtk.Window):
             self._start_status_fade_in()
             return
 
-        self._detect_cli_flag_support(self._binary_path)
-        self._refresh_connection_state()
-
+        self._set_connection_state(CONNECTION_CONNECTED)
         if self._active_session_id is None:
             self._set_status_message("No active session. Click + New Chat to start.", STATUS_INFO)
         else:
             self._set_status_message("Session ready. Type a message below.", STATUS_MUTED)
 
         self._start_status_fade_in()
+        self._detect_cli_flag_support_async(self._binary_path)
 
     @staticmethod
     def _set_dark_theme_preference() -> None:
@@ -212,7 +226,6 @@ class ClaudeCodeWindow(Gtk.Window):
         status_bar = self._build_status_bar()
         root.pack_end(status_bar, False, False, 0)
 
-        self._refresh_recent_folder_combo()
         self._update_project_folder_labels()
         self._update_status_model_and_permission()
         self._update_context_indicator()
@@ -228,6 +241,18 @@ class ClaudeCodeWindow(Gtk.Window):
         sidebar.set_size_request(SIDEBAR_OPEN_WIDTH, -1)
         self._sidebar_container = sidebar
 
+        sidebar_top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+
+        toggle_button = Gtk.Button(label="")
+        toggle_button.set_relief(Gtk.ReliefStyle.NONE)
+        toggle_button.set_halign(Gtk.Align.START)
+        toggle_button.get_style_context().add_class("sidebar-toggle-gtk")
+        toggle_button.get_style_context().add_class("sidebar-header-toggle")
+        toggle_button._drag_blocker = True
+        toggle_button.connect("clicked", self._on_sidebar_toggle_clicked)
+        sidebar_top.pack_start(toggle_button, False, False, 0)
+        self._sidebar_toggle_button = toggle_button
+
         new_session_button = Gtk.Button(label="+ New Chat")
         new_session_button.set_relief(Gtk.ReliefStyle.NONE)
         new_session_button.set_hexpand(True)
@@ -235,7 +260,8 @@ class ClaudeCodeWindow(Gtk.Window):
         new_session_button.get_style_context().add_class("new-session-button")
         new_session_button._drag_blocker = True
         new_session_button.connect("clicked", self._on_new_session_clicked)
-        sidebar.pack_start(new_session_button, False, False, 0)
+        sidebar_top.pack_start(new_session_button, True, True, 0)
+        sidebar.pack_start(sidebar_top, False, False, 0)
 
         sessions_title = Gtk.Label(label="Sessions")
         sessions_title.set_xalign(0.0)
@@ -260,6 +286,10 @@ class ClaudeCodeWindow(Gtk.Window):
         empty.get_style_context().add_class("session-empty")
         session_list.pack_start(empty, False, False, 0)
         self._session_empty_label = empty
+
+        self._sidebar_expanded_only_widgets = [new_session_button, sessions_title, session_scroll]
+        self._update_sidebar_toggle_button()
+        self._set_sidebar_content_visibility(self._sidebar_expanded)
 
         return sidebar
 
@@ -290,29 +320,21 @@ class ClaudeCodeWindow(Gtk.Window):
         for widget, _ in self._chat_reveal_widgets:
             widget.set_opacity(0.0)
 
-        sidebar_toggle = Gtk.Button(label="☰")
-        sidebar_toggle.set_relief(Gtk.ReliefStyle.NONE)
-        sidebar_toggle.get_style_context().add_class("sidebar-toggle-gtk")
-        sidebar_toggle.get_style_context().add_class("chat-overlay-toggle")
-        sidebar_toggle.set_halign(Gtk.Align.START)
-        sidebar_toggle.set_valign(Gtk.Align.START)
-        sidebar_toggle.set_margin_start(8)
-        sidebar_toggle.set_margin_top(8)
-        sidebar_toggle._drag_blocker = True
-        sidebar_toggle.connect("clicked", self._on_sidebar_toggle_clicked)
-        overlay.add_overlay(sidebar_toggle)
-
         manager = WebKit2.UserContentManager()
         manager.register_script_message_handler("sendMessage")
         manager.register_script_message_handler("changeModel")
         manager.register_script_message_handler("changePermission")
+        manager.register_script_message_handler("changeReasoning")
         manager.register_script_message_handler("changeFolder")
         manager.register_script_message_handler("attachFile")
         manager.connect("script-message-received::sendMessage", self._on_js_send_message)
         manager.connect("script-message-received::changeModel", self._on_js_change_model)
         manager.connect("script-message-received::changePermission", self._on_js_change_permission)
+        manager.connect("script-message-received::changeReasoning", self._on_js_change_reasoning)
         manager.connect("script-message-received::changeFolder", self._on_js_change_folder)
         manager.connect("script-message-received::attachFile", self._on_js_attach_file)
+        manager.register_script_message_handler("stopProcess")
+        manager.connect("script-message-received::stopProcess", self._on_js_stop_process)
         self._webview_user_content_manager = manager
 
         webview = WebKit2.WebView.new_with_user_content_manager(manager)
@@ -332,7 +354,60 @@ class ClaudeCodeWindow(Gtk.Window):
         shell.add(webview)
         self._webview = webview
 
+        project_path_bar = self._build_project_path_bar()
+        wrap.pack_start(project_path_bar, False, False, 8)
+
         return panel
+
+    def _build_project_path_bar(self) -> Gtk.Box:
+        path_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        path_bar.set_hexpand(True)
+        path_bar.get_style_context().add_class("project-path-bar")
+
+        project_entry = Gtk.Entry()
+        project_entry.set_hexpand(True)
+        project_entry.set_text(self._project_folder)
+        project_entry.set_placeholder_text(str(Path.home()))
+        project_entry.get_style_context().add_class("project-path-entry")
+        project_entry.connect("changed", self._on_project_path_entry_changed)
+        project_entry.connect("activate", self._on_project_path_entry_activate)
+        project_entry.connect("key-press-event", self._on_project_path_entry_key_press)
+        project_entry.connect("focus-in-event", self._on_project_path_entry_focus_in)
+        path_bar.pack_start(project_entry, True, True, 0)
+        self._project_path_entry = project_entry
+
+        browse_button = Gtk.Button()
+        browse_button.set_relief(Gtk.ReliefStyle.NONE)
+        browse_button.set_tooltip_text("Browse folders")
+        browse_button.get_style_context().add_class("project-path-browse-button")
+        browse_icon = Gtk.Image.new_from_icon_name("folder-open-symbolic", Gtk.IconSize.BUTTON)
+        browse_button.add(browse_icon)
+        browse_button.connect("clicked", self._on_choose_folder_clicked)
+        path_bar.pack_start(browse_button, False, False, 0)
+
+        suggestion_popover = Gtk.Popover.new(project_entry)
+        suggestion_popover.set_position(Gtk.PositionType.BOTTOM)
+        suggestion_popover.set_modal(False)
+        suggestion_popover.get_style_context().add_class("path-suggestion-popover")
+
+        suggestion_scroll = Gtk.ScrolledWindow()
+        suggestion_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        suggestion_scroll.set_shadow_type(Gtk.ShadowType.NONE)
+        suggestion_scroll.set_size_request(560, 220)
+        suggestion_popover.add(suggestion_scroll)
+
+        suggestion_list = Gtk.ListBox()
+        suggestion_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        suggestion_list.set_activate_on_single_click(True)
+        suggestion_list.get_style_context().add_class("path-suggestion-list")
+        suggestion_list.connect("row-selected", self._on_project_path_suggestion_selected)
+        suggestion_list.connect("row-activated", self._on_project_path_suggestion_activated)
+        suggestion_scroll.add(suggestion_list)
+
+        self._project_path_popover = suggestion_popover
+        self._project_path_suggestion_scroll = suggestion_scroll
+        self._project_path_suggestion_list = suggestion_list
+        return path_bar
 
     def _build_status_bar(self) -> Gtk.Box:
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -365,6 +440,22 @@ class ClaudeCodeWindow(Gtk.Window):
         context_box.pack_start(context_progress, False, False, 0)
         self._context_progress = context_progress
 
+        sep1 = Gtk.Label(label="·")
+        sep1.get_style_context().add_class("status-label")
+        bar.pack_start(sep1, False, False, 0)
+
+        session_limit_label = Gtk.Label(label="$0.00")
+        session_limit_label.get_style_context().add_class("usage-limit-label")
+        session_limit_label.set_tooltip_text("Session cost (API usage)")
+        bar.pack_start(session_limit_label, False, False, 0)
+        self._session_limit_label = session_limit_label
+
+        weekly_limit_label = Gtk.Label(label="0 tokens")
+        weekly_limit_label.get_style_context().add_class("usage-limit-label")
+        weekly_limit_label.set_tooltip_text("Total tokens used this session")
+        bar.pack_start(weekly_limit_label, False, False, 0)
+        self._weekly_limit_label = weekly_limit_label
+
         status_message = Gtk.Label(label="")
         status_message.set_xalign(0.0)
         status_message.set_hexpand(True)
@@ -387,6 +478,9 @@ class ClaudeCodeWindow(Gtk.Window):
             connection_label,
             context_label,
             context_progress,
+            sep1,
+            session_limit_label,
+            weekly_limit_label,
             status_message,
             timer,
         ]
@@ -440,6 +534,12 @@ class ClaudeCodeWindow(Gtk.Window):
                 return index
         return 0
 
+    def _reasoning_index_from_value(self, value: str) -> int:
+        for i, (_, v) in enumerate(REASONING_LEVEL_OPTIONS):
+            if v == value:
+                return i
+        return 1
+
     def _save_sessions_safe(self, context: str) -> bool:
         try:
             save_sessions(self._sessions)
@@ -458,6 +558,43 @@ class ClaudeCodeWindow(Gtk.Window):
         self._set_typing(False)
         self._has_messages = False
         self._last_request_failed = False
+        self._active_assistant_message = ""
+
+    def _reset_conversation_state_keep_id(self, reason: str) -> None:
+        self._session_started_us = GLib.get_monotonic_time()
+        self._interrupt_running_process(reason)
+        self._clear_messages()
+        self._show_welcome()
+        self._set_typing(False)
+        self._has_messages = False
+        self._last_request_failed = False
+        self._active_assistant_message = ""
+
+    def _replay_history(self, history: list[dict[str, str]]) -> None:
+        for msg in history:
+            role = msg.get("role")
+            content = msg.get("content")
+            if not role or not content:
+                continue
+            if role == "user":
+                self._has_messages = True
+                self._call_js("addUserMessage", content)
+            elif role == "assistant":
+                self._has_messages = True
+                self._call_js("startAssistantMessage")
+                self._call_js("appendAssistantChunk", content)
+                self._call_js("finishAssistantMessage")
+            elif role == "system":
+                self._call_js("addSystemMessage", content)
+
+    def _add_to_history(self, role: str, content: str) -> None:
+        if not content:
+            return
+        active = self._get_active_session()
+        if active is not None:
+            active.history.append({"role": role, "content": content})
+            if len(active.history) > 200:
+                active.history = active.history[-200:]
 
     def _promote_replacement_session(self) -> SessionRecord | None:
         candidates = [s for s in self._sessions if s.status != SESSION_STATUS_ARCHIVED]
@@ -518,14 +655,18 @@ class ClaudeCodeWindow(Gtk.Window):
         self._project_folder = session.project_path
         self._selected_model_index = self._model_index_from_value(session.model)
         self._selected_permission_index = self._permission_index_from_value(session.permission_mode)
+        self._selected_reasoning_index = self._reasoning_index_from_value(session.reasoning_level)
+        self._set_project_path_entry_text(self._project_folder)
 
         if add_to_recent and os.path.isdir(self._project_folder):
             self._add_recent_folder(self._project_folder)
 
-        self._refresh_recent_folder_combo()
         self._update_project_folder_labels()
         self._update_status_model_and_permission()
         self._update_context_indicator()
+
+        _, reasoning_value = REASONING_LEVEL_OPTIONS[self._selected_reasoning_index]
+        self._call_js("updateReasoningLevel", reasoning_value)
 
     def _build_session_title(self, folder: str, timestamp: str) -> str:
         try:
@@ -584,6 +725,19 @@ class ClaudeCodeWindow(Gtk.Window):
             return "Diese Woche"
         return "Älter"
 
+    @staticmethod
+    def _get_session_preview(session: SessionRecord) -> str:
+        if not session.history:
+            return ""
+        for msg in reversed(session.history):
+            if msg.get("role") == "user":
+                content = str(msg.get("content") or "").strip()
+                content = content.replace("\n", " ")
+                if len(content) > 50:
+                    return content[:47] + "..."
+                return content
+        return ""
+
     def _make_session_row(self, session: SessionRecord, allow_open: bool) -> Gtk.Box:
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         row.get_style_context().add_class("session-row")
@@ -598,11 +752,24 @@ class ClaudeCodeWindow(Gtk.Window):
         open_button.set_halign(Gtk.Align.FILL)
         open_button.set_sensitive(allow_open)
         open_button.connect("clicked", lambda _button, sid=session.id: self._switch_to_session(sid))
+
+        label_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         title = Gtk.Label(label=session.title or "New chat")
         title.set_xalign(0.0)
         title.get_style_context().add_class("session-title")
+        label_box.pack_start(title, False, False, 0)
 
-        open_button.add(title)
+        preview_text = self._get_session_preview(session)
+        if preview_text:
+            preview = Gtk.Label(label=preview_text)
+            preview.set_xalign(0.0)
+            preview.set_ellipsize(Pango.EllipsizeMode.END)
+            preview.set_max_width_chars(32)
+            preview.set_single_line_mode(True)
+            preview.get_style_context().add_class("session-preview")
+            label_box.pack_start(preview, False, False, 0)
+
+        open_button.add(label_box)
         row.pack_start(open_button, True, True, 0)
 
         menu_button = Gtk.MenuButton(label="⋯")
@@ -685,29 +852,6 @@ class ClaudeCodeWindow(Gtk.Window):
         self._refresh_session_list()
         return False
 
-    def _show_folder_dialog(self, title: str) -> str | None:
-        dialog = Gtk.FileChooserDialog(
-            title=title,
-            parent=self,
-            action=Gtk.FileChooserAction.SELECT_FOLDER,
-        )
-        dialog.set_create_folders(True)
-        dialog.set_show_hidden(True)
-        dialog.add_buttons(
-            "Cancel",
-            Gtk.ResponseType.CANCEL,
-            "Select Folder",
-            Gtk.ResponseType.OK,
-        )
-        dialog.set_modal(True)
-        if os.path.isdir(self._project_folder):
-            dialog.set_current_folder(self._project_folder)
-
-        response = dialog.run()
-        selected = dialog.get_filename() if response == Gtk.ResponseType.OK else None
-        dialog.destroy()
-        return selected
-
     def _switch_to_session(self, session_id: str) -> None:
         session = self._find_session(session_id)
         if session is None:
@@ -731,7 +875,11 @@ class ClaudeCodeWindow(Gtk.Window):
         self._refresh_session_list()
         self._save_sessions_safe("Could not save sessions")
 
-        self._reset_conversation_state("Session switched")
+        self._conversation_id = session.conversation_id
+        self._reset_conversation_state_keep_id("Session switched")
+
+        if session.history:
+            self._replay_history(session.history)
 
         if self._binary_path is None:
             self._set_connection_state(CONNECTION_DISCONNECTED)
@@ -740,7 +888,11 @@ class ClaudeCodeWindow(Gtk.Window):
             return
 
         self._refresh_connection_state()
-        self._set_status_message("Session switched. Conversation reset.", STATUS_INFO)
+        msg_count = len(session.history) if session.history else 0
+        if msg_count > 0:
+            self._set_status_message(f"Session restored with {msg_count} messages.", STATUS_INFO)
+        else:
+            self._set_status_message("Session switched.", STATUS_INFO)
 
     def _archive_session(self, session_id: str) -> None:
         session = self._find_session(session_id)
@@ -766,7 +918,6 @@ class ClaudeCodeWindow(Gtk.Window):
             self._reset_conversation_state("Session archived", reset_timer=False)
             self._set_status_message("Session archived", STATUS_MUTED)
             self._refresh_connection_state()
-            self._refresh_recent_folder_combo()
             return
 
         self._set_status_message("Session archived", STATUS_MUTED)
@@ -826,55 +977,231 @@ class ClaudeCodeWindow(Gtk.Window):
 
         self._refresh_connection_state()
         self._set_status_message("New session ready", STATUS_INFO)
+        GLib.timeout_add(100, lambda: self._call_js("focusInput") or False)
 
-    def _refresh_recent_folder_combo(self) -> None:
-        if self._recent_folder_combo is None:
+    def _set_project_path_entry_text(self, path_value: str) -> None:
+        if self._project_path_entry is None:
             return
 
-        folders: list[str] = []
-        for raw_folder in self._recent_folders:
-            candidate = str(raw_folder).strip()
-            if not candidate:
-                continue
-            try:
-                normalized = normalize_folder(candidate)
-            except OSError:
-                continue
-            if not os.path.isdir(normalized):
-                continue
-            if normalized in folders:
-                continue
-            folders.append(normalized)
+        text_value = path_value.strip() or str(Path.home())
+        if self._project_path_entry.get_text() == text_value:
+            return
 
-        if os.path.isdir(self._project_folder) and self._project_folder not in folders:
-            folders.insert(0, self._project_folder)
+        self._suppress_project_entry_change = True
+        self._project_path_entry.set_text(text_value)
+        self._project_path_entry.set_position(-1)
+        self._suppress_project_entry_change = False
 
-        self._recent_folders = folders[:RECENT_FOLDERS_LIMIT]
+    def _collect_project_path_suggestions(self, raw_value: str) -> list[str]:
+        value = raw_value.strip()
+        if not value:
+            value = self._project_folder or str(Path.home())
 
-        self._suppress_recent_combo_change = True
-        self._recent_folder_combo.remove_all()
-        self._recent_folder_values = list(self._recent_folders)
+        expanded = os.path.expanduser(value)
+        if not os.path.isabs(expanded):
+            expanded = os.path.abspath(expanded)
 
-        for folder in self._recent_folder_values:
-            formatted = format_path(folder)
-            self._recent_folder_combo.append_text(shorten_path(formatted, 52))
-
-        if self._recent_folder_values:
-            active_index = 0
-            if self._project_folder in self._recent_folder_values:
-                active_index = self._recent_folder_values.index(self._project_folder)
-
-            self._recent_folder_combo.set_active(active_index)
-            self._recent_folder_combo.set_tooltip_text(
-                format_path(self._recent_folder_values[active_index])
-            )
-            self._recent_folder_combo.set_sensitive(True)
+        if value.endswith(os.sep):
+            parent = expanded
+            prefix = ""
         else:
-            self._recent_folder_combo.set_active(-1)
-            self._recent_folder_combo.set_tooltip_text("No recent folders")
-            self._recent_folder_combo.set_sensitive(False)
+            parent = os.path.dirname(expanded) or os.sep
+            prefix = os.path.basename(expanded)
 
-        self._suppress_recent_combo_change = False
+        if not os.path.isdir(parent):
+            return []
+
+        matches: list[str] = []
+        prefix_lower = prefix.casefold()
+
+        try:
+            with os.scandir(parent) as iterator:
+                for entry in iterator:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                    if prefix and not entry.name.casefold().startswith(prefix_lower):
+                        continue
+                    try:
+                        matches.append(normalize_folder(entry.path))
+                    except OSError:
+                        continue
+        except OSError:
+            return []
+
+        matches.sort(key=lambda item: item.casefold())
+        return matches[:12]
+
+    def _populate_project_path_suggestions(self, suggestions: list[str]) -> None:
+        if self._project_path_suggestion_list is None:
+            return
+
+        for child in self._project_path_suggestion_list.get_children():
+            self._project_path_suggestion_list.remove(child)
+
+        for suggestion in suggestions:
+            row = Gtk.ListBoxRow()
+            row._completion_path = suggestion
+            label = Gtk.Label(label=format_path(suggestion))
+            label.set_xalign(0.0)
+            label.set_single_line_mode(True)
+            label.set_ellipsize(Pango.EllipsizeMode.NONE)
+            label.set_line_wrap(False)
+            label.get_style_context().add_class("path-suggestion-item")
+            row.set_tooltip_text(format_path(suggestion))
+            row.add(label)
+            self._project_path_suggestion_list.add(row)
+
+        self._project_path_suggestion_list.show_all()
+        if suggestions:
+            self._project_path_selected_index = 0
+            first_row = self._project_path_suggestion_list.get_row_at_index(0)
+            if first_row is not None:
+                self._project_path_suggestion_list.select_row(first_row)
+        else:
+            self._project_path_selected_index = -1
+
+    def _refresh_project_path_suggestions(self, show_popover: bool) -> None:
+        if (
+            self._project_path_entry is None
+            or self._project_path_suggestion_list is None
+            or self._project_path_popover is None
+        ):
+            return
+
+        suggestions = self._collect_project_path_suggestions(self._project_path_entry.get_text())
+        self._project_path_suggestions = suggestions
+        self._populate_project_path_suggestions(suggestions)
+
+        if not suggestions:
+            self._hide_project_path_suggestions()
+            return
+
+        if show_popover and self._project_path_entry.is_focus():
+            self._project_path_popover.show_all()
+            self._project_path_popover.popup()
+
+    def _hide_project_path_suggestions(self) -> None:
+        if self._project_path_popover is None:
+            return
+        self._project_path_popover.popdown()
+
+    def _get_selected_project_path_suggestion(self) -> str | None:
+        if not self._project_path_suggestions:
+            return None
+
+        if self._project_path_suggestion_list is not None:
+            selected_row = self._project_path_suggestion_list.get_selected_row()
+            if selected_row is not None:
+                index = selected_row.get_index()
+                if 0 <= index < len(self._project_path_suggestions):
+                    return self._project_path_suggestions[index]
+
+        if 0 <= self._project_path_selected_index < len(self._project_path_suggestions):
+            return self._project_path_suggestions[self._project_path_selected_index]
+        return self._project_path_suggestions[0]
+
+    def _move_project_path_selection(self, delta: int) -> None:
+        if not self._project_path_suggestions or self._project_path_suggestion_list is None:
+            return
+
+        current = self._project_path_selected_index
+        if current < 0:
+            current = 0
+
+        target = max(0, min(len(self._project_path_suggestions) - 1, current + delta))
+        row = self._project_path_suggestion_list.get_row_at_index(target)
+        if row is None:
+            return
+
+        self._project_path_selected_index = target
+        self._project_path_suggestion_list.select_row(row)
+
+    def _scroll_project_path_row_into_view(self, row: Gtk.ListBoxRow) -> None:
+        if self._project_path_suggestion_scroll is None:
+            return
+
+        adjustment = self._project_path_suggestion_scroll.get_vadjustment()
+        allocation = row.get_allocation()
+        top = float(allocation.y)
+        bottom = top + float(allocation.height)
+        adjustment.clamp_page(top, bottom)
+
+    def _apply_project_path_completion(self, suggestion: str) -> None:
+        self._set_project_path_entry_text(suggestion)
+        if self._project_path_entry is not None:
+            self._project_path_entry.grab_focus()
+            self._project_path_entry.set_position(-1)
+        self._hide_project_path_suggestions()
+
+    def _confirm_project_path_from_entry(self) -> None:
+        if self._project_path_entry is None:
+            return
+
+        raw_value = self._project_path_entry.get_text().strip()
+        candidate = raw_value or self._project_folder or str(Path.home())
+        expanded = os.path.expanduser(candidate)
+        if not os.path.isabs(expanded):
+            expanded = os.path.abspath(expanded)
+
+        self._set_project_folder(expanded, restart_session=self._active_session_id is not None)
+
+    def _on_project_path_entry_changed(self, _entry: Gtk.Entry) -> None:
+        if self._suppress_project_entry_change:
+            return
+        self._refresh_project_path_suggestions(show_popover=True)
+
+    def _on_project_path_entry_activate(self, _entry: Gtk.Entry) -> None:
+        selected = self._get_selected_project_path_suggestion()
+        if selected is not None:
+            self._set_project_path_entry_text(selected)
+        self._confirm_project_path_from_entry()
+
+    def _on_project_path_entry_key_press(self, _entry: Gtk.Entry, event: Gdk.EventKey) -> bool:
+        if event.keyval in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab):
+            selected = self._get_selected_project_path_suggestion()
+            if selected is None:
+                return False
+            self._apply_project_path_completion(selected)
+            return True
+
+        if event.keyval == Gdk.KEY_Down:
+            self._move_project_path_selection(1)
+            return True
+
+        if event.keyval == Gdk.KEY_Up:
+            self._move_project_path_selection(-1)
+            return True
+
+        if event.keyval == Gdk.KEY_Escape:
+            self._hide_project_path_suggestions()
+            return True
+
+        return False
+
+    def _on_project_path_entry_focus_in(self, _entry: Gtk.Entry, _event: Gdk.Event) -> bool:
+        self._refresh_project_path_suggestions(show_popover=True)
+        return False
+
+    def _on_project_path_suggestion_selected(
+        self,
+        _list_box: Gtk.ListBox,
+        row: Gtk.ListBoxRow | None,
+    ) -> None:
+        if row is None:
+            self._project_path_selected_index = -1
+            return
+        self._project_path_selected_index = row.get_index()
+        self._scroll_project_path_row_into_view(row)
+
+    def _on_project_path_suggestion_activated(
+        self,
+        _list_box: Gtk.ListBox,
+        row: Gtk.ListBoxRow,
+    ) -> None:
+        suggestion = getattr(row, "_completion_path", None)
+        if not isinstance(suggestion, str):
+            return
+        self._apply_project_path_completion(suggestion)
 
     def _update_project_folder_labels(self) -> None:
         full_display = format_path(self._project_folder)
@@ -1014,8 +1341,9 @@ class ClaudeCodeWindow(Gtk.Window):
             return
 
         self._project_folder = normalized
+        self._set_project_path_entry_text(normalized)
+        self._hide_project_path_suggestions()
         self._add_recent_folder(normalized)
-        self._refresh_recent_folder_combo()
         self._update_project_folder_labels()
         self._update_context_indicator()
 
@@ -1042,9 +1370,29 @@ class ClaudeCodeWindow(Gtk.Window):
         caps = detect_cli_flag_support(binary_path)
         self._supports_model_flag = caps.supports_model_flag
         self._supports_permission_flag = caps.supports_permission_flag
+        self._supports_reasoning_flag = caps.supports_reasoning_flag
         self._supports_output_format_flag = caps.supports_output_format_flag
         self._supports_stream_json = caps.supports_stream_json
         self._supports_json = caps.supports_json
+
+    def _detect_cli_flag_support_async(self, binary_path: str) -> None:
+        import threading
+
+        def _probe() -> None:
+            caps = detect_cli_flag_support(binary_path)
+            GLib.idle_add(self._apply_cli_caps, caps)
+
+        threading.Thread(target=_probe, daemon=True).start()
+
+    def _apply_cli_caps(self, caps: "CliCapabilities") -> bool:
+        self._supports_model_flag = caps.supports_model_flag
+        self._supports_permission_flag = caps.supports_permission_flag
+        self._supports_reasoning_flag = caps.supports_reasoning_flag
+        self._supports_output_format_flag = caps.supports_output_format_flag
+        self._supports_stream_json = caps.supports_stream_json
+        self._supports_json = caps.supports_json
+        self._refresh_connection_state()
+        return False
 
     def _show_missing_binary_error(self) -> None:
         self._add_system_message(
@@ -1082,28 +1430,48 @@ class ClaudeCodeWindow(Gtk.Window):
         self._refresh_connection_state()
 
     def _prompt_for_project_folder(self) -> None:
-        selected = self._show_folder_dialog("Select Project Folder")
-        if selected is None:
+        if self._project_path_entry is None:
             return
+        self._project_path_entry.grab_focus()
+        self._project_path_entry.select_region(0, -1)
+        self._refresh_project_path_suggestions(show_popover=True)
+        self._set_status_message("Type a project folder path and press Enter", STATUS_INFO)
 
-        self._set_project_folder(selected, restart_session=self._active_session_id is not None)
+    def _choose_project_folder_with_dialog(self) -> str | None:
+        dialog = Gtk.FileChooserDialog(
+            title="Choose project folder",
+            parent=self,
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+        )
+        dialog.set_modal(True)
+        dialog.set_show_hidden(True)
+        dialog.add_buttons(
+            "Cancel",
+            Gtk.ResponseType.CANCEL,
+            "Select",
+            Gtk.ResponseType.OK,
+        )
+        if os.path.isdir(self._project_folder):
+            dialog.set_current_folder(self._project_folder)
+
+        try:
+            response = dialog.run()
+            if response != Gtk.ResponseType.OK:
+                return None
+            selected = dialog.get_filename()
+        finally:
+            dialog.destroy()
+
+        if not selected:
+            return None
+        return normalize_folder(selected)
 
     def _on_choose_folder_clicked(self, _button: Gtk.Button) -> None:
-        self._prompt_for_project_folder()
-
-    def _on_recent_folder_changed(self, combo: Gtk.ComboBoxText) -> None:
-        if self._suppress_recent_combo_change:
+        selected = self._choose_project_folder_with_dialog()
+        if selected is None:
             return
-
-        index = combo.get_active()
-        if index < 0 or index >= len(self._recent_folder_values):
-            return
-
-        chosen_folder = self._recent_folder_values[index]
-        if chosen_folder == self._project_folder:
-            return
-
-        self._set_project_folder(chosen_folder, restart_session=self._active_session_id is not None)
+        self._set_project_path_entry_text(selected)
+        self._set_project_folder(selected, restart_session=self._active_session_id is not None)
 
     def _on_js_change_folder(
         self,
@@ -1131,10 +1499,6 @@ class ClaudeCodeWindow(Gtk.Window):
             self._refresh_session_list()
         if self._has_messages and self._claude_process.is_running():
             self._interrupt_running_process("Model changed")
-        if self._has_messages:
-            self._conversation_id = None
-            self._set_status_message("Model updated. Next message starts a new Claude conversation.", STATUS_INFO)
-            return
         self._set_status_message("Model updated", STATUS_INFO)
 
     def _apply_permission_selection(self, index: int) -> None:
@@ -1156,13 +1520,6 @@ class ClaudeCodeWindow(Gtk.Window):
             self._refresh_session_list()
         if self._has_messages and self._claude_process.is_running():
             self._interrupt_running_process("Permission mode changed")
-        if self._has_messages:
-            self._conversation_id = None
-            self._set_status_message(
-                "Permission mode updated. Next message starts a new Claude conversation.",
-                STATUS_INFO,
-            )
-            return
         self._set_status_message("Permission mode updated", STATUS_INFO)
 
     def _on_new_session_clicked(self, _button: Gtk.Button) -> None:
@@ -1172,15 +1529,39 @@ class ClaudeCodeWindow(Gtk.Window):
         self._start_new_session(self._project_folder)
 
     def _on_new_session_other_folder_clicked(self, _button: Gtk.Button) -> None:
-        selected = self._show_folder_dialog("Start New Session in Folder")
-        if selected is None:
-            return
-        self._start_new_session(selected)
+        self._prompt_for_project_folder()
 
     def _on_sidebar_toggle_clicked(self, _button: Any) -> None:
-        target_width = 0 if self._sidebar_expanded else SIDEBAR_OPEN_WIDTH
         self._sidebar_expanded = not self._sidebar_expanded
+        self._set_sidebar_content_visibility(self._sidebar_expanded)
+        self._update_sidebar_toggle_button()
+        target_width = SIDEBAR_OPEN_WIDTH if self._sidebar_expanded else SIDEBAR_COLLAPSED_WIDTH
         self._animate_sidebar(target_width)
+
+    def _update_sidebar_toggle_button(self) -> None:
+        if self._sidebar_toggle_button is None:
+            return
+
+        if self._sidebar_expanded:
+            self._sidebar_toggle_button.set_label("◀")
+            self._sidebar_toggle_button.set_tooltip_text("Collapse sidebar")
+            return
+
+        self._sidebar_toggle_button.set_label("▶")
+        self._sidebar_toggle_button.set_tooltip_text("Expand sidebar")
+
+    def _set_sidebar_content_visibility(self, expanded: bool) -> None:
+        for widget in self._sidebar_expanded_only_widgets:
+            widget.set_visible(expanded)
+
+        if self._sidebar_container is None:
+            return
+
+        style_context = self._sidebar_container.get_style_context()
+        if expanded:
+            style_context.remove_class("sidebar-collapsed")
+            return
+        style_context.add_class("sidebar-collapsed")
 
     def _animate_sidebar(self, target_width: int) -> None:
         if self._sidebar_container is None:
@@ -1217,21 +1598,14 @@ class ClaudeCodeWindow(Gtk.Window):
         if self._sidebar_container is None:
             return
 
-        clamped = max(0.0, min(float(SIDEBAR_OPEN_WIDTH), width))
+        clamped = max(float(SIDEBAR_COLLAPSED_WIDTH), min(float(SIDEBAR_OPEN_WIDTH), width))
         self._sidebar_current_width = clamped
-
-        if clamped < 1.0:
-            self._sidebar_container.set_size_request(0, -1)
-            self._sidebar_container.set_opacity(0.0)
-            if self._sidebar_container.get_visible():
-                self._sidebar_container.set_visible(False)
-            return
 
         if not self._sidebar_container.get_visible():
             self._sidebar_container.set_visible(True)
 
         self._sidebar_container.set_size_request(int(clamped), -1)
-        self._sidebar_container.set_opacity(clamped / float(SIDEBAR_OPEN_WIDTH))
+        self._sidebar_container.set_opacity(1.0)
 
     def _on_map_event(self, _widget: Gtk.Widget, _event: Gdk.Event) -> bool:
         if not self._window_fade_started:
@@ -1349,7 +1723,30 @@ class ClaudeCodeWindow(Gtk.Window):
         minutes = (elapsed % 3600) // 60
         seconds = elapsed % 60
         self._session_timer_label.set_text(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+
         return True
+
+    def _update_usage_display(self) -> None:
+        if self._session_limit_label is not None:
+            cost = self._session_cost_usd
+            self._session_limit_label.set_text(f"${cost:.2f}")
+            ctx = self._session_limit_label.get_style_context()
+            ctx.remove_class("usage-warn")
+            ctx.remove_class("usage-high")
+            if cost >= 5.0:
+                ctx.add_class("usage-high")
+            elif cost >= 2.0:
+                ctx.add_class("usage-warn")
+
+        if self._weekly_limit_label is not None:
+            tokens = self._session_tokens
+            if tokens >= 1_000_000:
+                display = f"{tokens / 1_000_000:.1f}M tokens"
+            elif tokens >= 1000:
+                display = f"{tokens // 1000}k tokens"
+            else:
+                display = f"{tokens} tokens"
+            self._weekly_limit_label.set_text(display)
 
     def _on_webview_load_changed(self, _webview: WebKit2.WebView, load_event: WebKit2.LoadEvent) -> None:
         if load_event != WebKit2.LoadEvent.FINISHED:
@@ -1364,6 +1761,7 @@ class ClaudeCodeWindow(Gtk.Window):
 
         self._update_status_model_and_permission()
         self._show_welcome()
+        GLib.timeout_add(100, lambda: self._call_js("focusInput") or False)
 
     def _on_webview_focus_in(self, _webview: WebKit2.WebView, _event: Gdk.EventFocus) -> bool:
         if self._chat_shell is not None:
@@ -1392,6 +1790,26 @@ class ClaudeCodeWindow(Gtk.Window):
         raw_value = self._extract_message_from_js_result(js_result)
         permission_value = normalize_permission_value(raw_value)
         self._apply_permission_selection(self._permission_index_from_value(permission_value))
+
+    def _on_js_change_reasoning(
+        self,
+        _manager: WebKit2.UserContentManager,
+        js_result: WebKit2.JavascriptResult,
+    ) -> None:
+        value = self._extract_message_from_js_result(js_result)
+        index = self._reasoning_index_from_value(value)
+        if index == self._selected_reasoning_index:
+            return
+
+        self._selected_reasoning_index = index
+        _, reasoning_value = REASONING_LEVEL_OPTIONS[index]
+
+        active = self._get_active_session()
+        if active is not None:
+            active.reasoning_level = reasoning_value
+            self._save_sessions_safe("Could not save session reasoning level")
+
+        self._set_status_message(f"Reasoning level set to {reasoning_value}", STATUS_MUTED)
 
     def _on_js_attach_file(
         self,
@@ -1475,6 +1893,16 @@ class ClaudeCodeWindow(Gtk.Window):
         }
         self._call_js("addHostAttachment", payload)
 
+    def _on_js_stop_process(
+        self,
+        _manager: WebKit2.UserContentManager,
+        _js_result: WebKit2.JavascriptResult,
+    ) -> None:
+        if self._claude_process.is_running():
+            self._claude_process.stop()
+            self._set_status_message("Process stopped by user", STATUS_WARNING)
+            self._add_system_message("Process stopped.")
+
     def _on_js_send_message(
         self,
         _manager: WebKit2.UserContentManager,
@@ -1517,6 +1945,7 @@ class ClaudeCodeWindow(Gtk.Window):
 
         _, model_value = MODEL_OPTIONS[self._selected_model_index]
         _, permission_value, _ = PERMISSION_OPTIONS[self._selected_permission_index]
+        _, reasoning_value = REASONING_LEVEL_OPTIONS[self._selected_reasoning_index]
 
         attachment_paths = materialize_attachments(attachments)
         composed_message = compose_message_with_attachments(message, attachment_paths)
@@ -1538,6 +1967,8 @@ class ClaudeCodeWindow(Gtk.Window):
         self._save_sessions_safe("Could not save sessions")
         self._refresh_session_list()
 
+        self._add_to_history("user", composed_message)
+
         request_token = str(uuid.uuid4())
         previous_request_token = self._active_request_token
         self._active_request_token = request_token
@@ -1554,6 +1985,8 @@ class ClaudeCodeWindow(Gtk.Window):
             supports_stream_json=self._supports_stream_json,
             supports_json=self._supports_json,
             stream_json_requires_verbose=self._stream_json_requires_verbose,
+            reasoning_level=reasoning_value,
+            supports_reasoning_flag=self._supports_reasoning_flag,
         )
         started = self._claude_process.send_message(request_token=request_token, config=config)
 
@@ -1595,6 +2028,8 @@ class ClaudeCodeWindow(Gtk.Window):
         if not self._is_current_request(request_token):
             return
 
+        self._call_js("setProcessing", running)
+
         if running:
             self._set_connection_state(CONNECTION_STARTING)
             self._set_status_message("Claude is responding...", STATUS_INFO)
@@ -1629,12 +2064,22 @@ class ClaudeCodeWindow(Gtk.Window):
 
         if result.success and result.conversation_id:
             self._conversation_id = result.conversation_id
+            active = self._get_active_session()
+            if active is not None:
+                active.conversation_id = result.conversation_id
+
+        if result.cost_usd > 0:
+            self._session_cost_usd += result.cost_usd
+        if result.input_tokens > 0 or result.output_tokens > 0:
+            self._session_tokens += result.input_tokens + result.output_tokens
+        self._update_usage_display()
 
         if result.success:
             self._last_request_failed = False
             self._refresh_connection_state()
             self._set_status_message("Claude response received", STATUS_MUTED)
             self._set_active_session_status(SESSION_STATUS_ACTIVE)
+            self._save_sessions_safe("Could not save sessions")
             return
 
         error_message = result.error_message or "Claude request failed"
@@ -1685,12 +2130,18 @@ class ClaudeCodeWindow(Gtk.Window):
         self._call_js("addUserMessage", text)
 
     def _start_assistant_message(self) -> None:
+        self._active_assistant_message = ""
         self._call_js("startAssistantMessage")
 
     def _append_assistant_chunk(self, text: str) -> None:
+        self._active_assistant_message += text
         self._call_js("appendAssistantChunk", text)
 
     def _finish_assistant_message(self) -> None:
+        if self._active_assistant_message:
+            self._add_to_history("assistant", self._active_assistant_message)
+            self._save_sessions_safe("Could not save history")
+            self._active_assistant_message = ""
         self._call_js("finishAssistantMessage")
 
     def _add_system_message(self, text: str) -> None:
@@ -1725,4 +2176,3 @@ class ClaudeCodeWindow(Gtk.Window):
             self._cancel_timer(attr)
 
         Gtk.main_quit()
-

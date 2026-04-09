@@ -133,6 +133,9 @@ class ClaudeProcess:
         if config.supports_permission_flag:
             argv.extend(["--permission-mode", config.permission_mode])
 
+        if config.supports_reasoning_flag and config.reasoning_level:
+            argv.extend(["--effort", config.reasoning_level])
+
         if config.conversation_id:
             argv.extend(["--resume", config.conversation_id])
 
@@ -169,6 +172,9 @@ class ClaudeProcess:
         error_messages: list[str] = []
         captured_output: list[str] = []
         parsed_json = False
+        cost_usd = 0.0
+        input_tokens = 0
+        output_tokens = 0
 
         stdout = process.stdout
         if stdout is not None:
@@ -212,6 +218,14 @@ class ClaudeProcess:
                         raw_result = event.get("result")
                         if isinstance(raw_result, str):
                             result_text = raw_result
+
+                        raw_cost = event.get("total_cost_usd")
+                        if isinstance(raw_cost, (int, float)):
+                            cost_usd = float(raw_cost)
+                        usage = event.get("usage")
+                        if isinstance(usage, dict):
+                            input_tokens = int(usage.get("input_tokens") or 0)
+                            output_tokens = int(usage.get("output_tokens") or 0)
 
                         if bool(event.get("is_error")):
                             if isinstance(raw_result, str) and raw_result.strip():
@@ -300,6 +314,9 @@ class ClaudeProcess:
                 streamed_assistant=streamed_assistant,
                 conversation_id=detected_conversation_id,
                 error_message=error_message,
+                cost_usd=cost_usd,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             ),
             unsupported_output,
         )
@@ -339,7 +356,26 @@ class ClaudeProcess:
 
                 if block_type == "tool_use":
                     tool_name = str(block.get("name") or "tool")
-                    tools.append(f"Tool use: {tool_name}")
+                    tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
+                    tool_data: dict[str, Any] = {"__tool__": True, "name": tool_name}
+                    file_path = str(tool_input.get("file_path") or tool_input.get("path") or "")
+                    if file_path:
+                        tool_data["path"] = file_path
+                    if tool_name in ("Edit", "edit"):
+                        old_s = str(tool_input.get("old_string") or "")
+                        new_s = str(tool_input.get("new_string") or "")
+                        if old_s or new_s:
+                            tool_data["old"] = old_s[:800]
+                            tool_data["new"] = new_s[:800]
+                    elif tool_name in ("Write", "write"):
+                        content = str(tool_input.get("content") or "")
+                        if content:
+                            tool_data["content"] = content[:600]
+                    elif tool_name in ("Bash", "bash"):
+                        cmd = str(tool_input.get("command") or "")
+                        if cmd:
+                            tool_data["command"] = cmd[:200]
+                    tools.append(json.dumps(tool_data, ensure_ascii=False))
                     continue
 
             return texts, tools

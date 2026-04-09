@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,9 @@ class SessionRecord:
     status: str
     created_at: str
     last_used_at: str
+    conversation_id: str | None = None
+    history: list[dict[str, str]] = field(default_factory=list)
+    reasoning_level: str = "medium"
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "SessionRecord":
@@ -50,6 +53,17 @@ class SessionRecord:
             project_path = str(Path.home())
 
         title = str(payload.get("title") or "Untitled Session").strip() or "Untitled Session"
+
+        conversation_id = payload.get("conversation_id")
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            conversation_id = None
+
+        history = payload.get("history")
+        if not isinstance(history, list):
+            history = []
+
+        reasoning_level = str(payload.get("reasoning_level") or "medium")
+
         return cls(
             id=str(payload.get("id") or uuid.uuid4()),
             title=title,
@@ -59,9 +73,12 @@ class SessionRecord:
             status=status,
             created_at=created_at,
             last_used_at=last_used_at,
+            conversation_id=conversation_id,
+            history=history,
+            reasoning_level=reasoning_level,
         )
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "title": self.title,
@@ -71,4 +88,7 @@ class SessionRecord:
             "status": self.status,
             "created_at": self.created_at,
             "last_used_at": self.last_used_at,
+            "conversation_id": self.conversation_id,
+            "history": self.history[-200:],
+            "reasoning_level": self.reasoning_level,
         }

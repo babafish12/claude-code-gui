@@ -13,6 +13,7 @@ from pathlib import Path
 class CliCapabilities:
     supports_model_flag: bool = False
     supports_permission_flag: bool = False
+    supports_reasoning_flag: bool = False
     supports_output_format_flag: bool = False
     supports_stream_json: bool = False
     supports_json: bool = False
@@ -66,6 +67,7 @@ def detect_cli_flag_support(binary_path: str) -> CliCapabilities:
     output = f"{result.stdout}\n{result.stderr}".lower()
     caps.supports_model_flag = "--model" in output
     caps.supports_permission_flag = "--permission-mode" in output
+    caps.supports_reasoning_flag = "--effort" in output
     caps.supports_output_format_flag = "--output-format" in output
     caps.supports_stream_json = "stream-json" in output
     caps.supports_json = '"json"' in output or "json" in output

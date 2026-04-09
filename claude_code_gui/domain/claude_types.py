@@ -12,6 +12,9 @@ class ClaudeRunResult:
     streamed_assistant: bool
     conversation_id: str | None
     error_message: str | None
+    cost_usd: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 @dataclass
@@ -28,3 +31,5 @@ class ClaudeRunConfig:
     supports_stream_json: bool
     supports_json: bool
     stream_json_requires_verbose: bool
+    reasoning_level: str = "medium"
+    supports_reasoning_flag: bool = False

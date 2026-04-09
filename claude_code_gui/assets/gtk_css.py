@@ -194,6 +194,17 @@ menuitem:disabled {{
     transition: all 0.15s ease;
 }}
 
+.sidebar.sidebar-collapsed {{
+    padding: 12px 4px;
+}}
+
+.sidebar-header-toggle {{
+    min-height: 30px;
+    min-width: 30px;
+    padding: 0;
+    border-radius: 10px;
+}}
+
 .sidebar-section-title {{
     color: {FOREGROUND_MUTED};
     font-size: 11px;
@@ -201,6 +212,71 @@ menuitem:disabled {{
     letter-spacing: 0.2px;
     margin-top: 10px;
     margin-bottom: 3px;
+}}
+
+.project-path-entry {{
+    min-height: 34px;
+    border-radius: 10px;
+    border: 1px solid {BORDER_SOFT};
+    background-color: {BUTTON_BG};
+    color: {FOREGROUND};
+    padding: 0 10px;
+    font-size: 12px;
+}}
+
+.project-path-entry:focus {{
+    border-color: {ACCENT_SOFT};
+    box-shadow: 0 0 0 2px rgba(212, 132, 90, 0.3);
+}}
+
+.project-path-bar {{
+    margin-top: 8px;
+}}
+
+.project-path-browse-button {{
+    min-height: 34px;
+    min-width: 34px;
+    padding: 0;
+    border-radius: 10px;
+    background-color: {BUTTON_BG};
+    border: 1px solid {BORDER_SOFT};
+    color: {FOREGROUND};
+}}
+
+.project-path-browse-button:hover {{
+    background-color: {BUTTON_BG_HOVER};
+    border-color: {ACCENT_SOFT};
+}}
+
+.project-path-browse-button:focus {{
+    box-shadow: 0 0 0 2px rgba(212, 132, 90, 0.35);
+}}
+
+popover.path-suggestion-popover {{
+    background-color: #30302a;
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+    min-width: 560px;
+}}
+
+.path-suggestion-list row {{
+    border-radius: 8px;
+    padding: 3px 8px;
+}}
+
+.path-suggestion-list row:hover {{
+    background-color: rgba(255, 255, 255, 0.04);
+}}
+
+.path-suggestion-list row:selected {{
+    background-color: rgba(212, 132, 90, 0.18);
+}}
+
+.path-suggestion-item {{
+    color: {FOREGROUND};
+    font-size: 12px;
+    padding: 2px 0;
 }}
 
 .session-scroll {{
@@ -392,5 +468,26 @@ menuitem:disabled {{
 
 .context-progress.context-high progress {{
     background-color: {ERROR};
+}}
+
+.session-preview {{
+    color: {FOREGROUND_MUTED};
+    font-size: 10px;
+    font-weight: 400;
+    opacity: 0.65;
+}}
+
+.usage-limit-label {{
+    color: {FOREGROUND_MUTED};
+    font-size: 11px;
+    font-weight: 500;
+}}
+
+.usage-limit-label.usage-warn {{
+    color: {WARNING};
+}}
+
+.usage-limit-label.usage-high {{
+    color: {ERROR};
 }}
 """

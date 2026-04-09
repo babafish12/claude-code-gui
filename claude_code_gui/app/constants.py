@@ -8,6 +8,7 @@ APP_MIN_HEIGHT = 600
 APP_DEFAULT_WIDTH = 1440
 APP_DEFAULT_HEIGHT = 920
 SIDEBAR_OPEN_WIDTH = 292
+SIDEBAR_COLLAPSED_WIDTH = 40
 CONTEXT_MAX_TOKENS = 200_000
 ATTACHMENT_MAX_BYTES = 12 * 1024 * 1024
 
@@ -39,6 +40,12 @@ PERMISSION_OPTIONS: list[tuple[str, str, bool]] = [
     ("Auto", "auto", False),
     ("Plan mode", "plan", False),
     ("Bypass permissions (Advanced)", "bypassPermissions", True),
+]
+
+REASONING_LEVEL_OPTIONS: list[tuple[str, str]] = [
+    ("Low (Fast)", "low"),
+    ("Medium (Balanced)", "medium"),
+    ("High (Deep)", "high"),
 ]
 
 LEGACY_PERMISSION_ALIASES: dict[str, str] = {
