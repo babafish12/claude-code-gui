@@ -3794,6 +3794,9 @@ a:hover {
         }
 
         const lowered = trimmed.toLowerCase();
+        if (lowered.startsWith("data:image/svg")) {
+            return "";
+        }
         if (
             lowered.startsWith("https://") ||
             lowered.startsWith("http://") ||
@@ -3948,7 +3951,9 @@ a:hover {
             if (!src) {
                 return "";
             }
-            return '<img src="' + src + '" alt="' + alt + '" class="chat-image" loading="lazy">';
+            const safeSrc = escapeHtml(src);
+            const safeAlt = escapeHtml(alt);
+            return '<img src="' + safeSrc + '" alt="' + safeAlt + '" class="chat-image" loading="lazy">';
         });
 
         source = source.replace(/^###\s+(.+)$/gm, function (_, text) {

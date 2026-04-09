@@ -7,6 +7,7 @@ import json
 import math
 import mimetypes
 import os
+import re
 import subprocess
 import uuid
 from datetime import datetime
@@ -2386,6 +2387,8 @@ class ClaudeCodeWindow(Gtk.Window):
         self._webview.run_javascript(script)
 
     def _call_js(self, function_name: str, *args: Any) -> None:
+        if not re.fullmatch(r"[a-zA-Z0-9_.]+", function_name):
+            raise ValueError(f"Invalid JavaScript function name: {function_name}")
         serialized = ", ".join(json.dumps(arg, ensure_ascii=False) for arg in args)
         if serialized:
             script = f"if (typeof {function_name} === 'function') {{ {function_name}({serialized}); }}"
