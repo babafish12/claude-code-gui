@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -163,6 +164,8 @@ class ClaudeProcess:
 
         if mode == "stream-json" and config.stream_json_requires_verbose:
             argv.append("--verbose")
+        if mode == "stream-json" and config.supports_include_partial_messages:
+            argv.append("--include-partial-messages")
 
         if config.supports_model_flag:
             argv.extend(["--model", config.model])
@@ -177,6 +180,7 @@ class ClaudeProcess:
             argv.extend(["--resume", config.conversation_id])
 
         try:
+            process_env = dict(os.environ)
             process = subprocess.Popen(
                 argv,
                 cwd=config.cwd,
@@ -187,6 +191,7 @@ class ClaudeProcess:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                env=process_env,
             )
         except OSError as error:
             return (
@@ -237,7 +242,14 @@ class ClaudeProcess:
                     if event is None:
                         continue
                     parsed_json = True
-                    event_type = str(event.get("type") or "")
+                    event_type = str(event.get("type") or "").strip().lower()
+
+                    delta_texts = self._extract_text_deltas(event)
+                    if delta_texts:
+                        for text_chunk in delta_texts:
+                            assistant_parts.append(text_chunk)
+                            streamed_assistant = True
+                            self._emit_assistant_chunk(request_token, text_chunk)
 
                     if event_type == "assistant":
                         texts, tools, permission_requests = self._extract_assistant_content(
@@ -257,6 +269,32 @@ class ClaudeProcess:
                             assistant_parts.append(text_chunk)
                             streamed_assistant = True
                             self._emit_assistant_chunk(request_token, text_chunk)
+                        continue
+
+                    if event_type == "content_block_start":
+                        block_payload = event.get("content_block")
+                        if not isinstance(block_payload, dict):
+                            block_payload = event.get("contentBlock")
+                        if not isinstance(block_payload, dict):
+                            block_payload = {}
+                        if str(block_payload.get("type") or "").strip().lower() == "tool_use":
+                            tool_data = self._extract_tool_data(block_payload)
+                            if tool_data is not None:
+                                tool_use_id = str(tool_data.get("toolUseId") or "").strip()
+                                if tool_use_id:
+                                    pending_shell_tools[tool_use_id] = dict(tool_data)
+                                permission_request = self._extract_permission_request(
+                                    block_payload,
+                                    request_token=request_token,
+                                    fallback_tool_data=tool_data,
+                                )
+                                if permission_request is not None:
+                                    self._emit_permission_request(request_token, permission_request)
+                                else:
+                                    self._emit_system_message(
+                                        request_token,
+                                        json.dumps(tool_data, ensure_ascii=False),
+                                    )
                         continue
 
                     if event_type == "user":
@@ -491,6 +529,63 @@ class ClaudeProcess:
             texts.append(content)
 
         return texts, tools, permission_requests
+
+    def _extract_text_deltas(self, event: dict[str, Any]) -> list[str]:
+        event_type = str(event.get("type") or "").strip().lower()
+        if event_type in {"assistant", "result", "error", "system", "tool_use", "tool_result", "user"}:
+            return []
+
+        chunks: list[str] = []
+
+        def _collect(value: Any) -> None:
+            if isinstance(value, str):
+                if value:
+                    chunks.append(value)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    _collect(item)
+                return
+            if not isinstance(value, dict):
+                return
+
+            value_type = str(value.get("type") or "").strip().lower()
+            if value_type in {"tool_use", "tool_result"}:
+                return
+
+            text_value = value.get("text")
+            if isinstance(text_value, str) and text_value:
+                chunks.append(text_value)
+
+            delta_value = value.get("delta")
+            if isinstance(delta_value, str) and delta_value:
+                chunks.append(delta_value)
+            elif isinstance(delta_value, (dict, list)):
+                _collect(delta_value)
+
+            value_value = value.get("value")
+            if isinstance(value_value, str) and value_value:
+                chunks.append(value_value)
+
+            content_value = value.get("content")
+            if isinstance(content_value, (dict, list)):
+                _collect(content_value)
+
+        _collect(event.get("delta"))
+        _collect(event.get("content_block"))
+        _collect(event.get("contentBlock"))
+        _collect(event.get("content"))
+        message = event.get("message")
+        if isinstance(message, dict):
+            _collect(message.get("delta"))
+            _collect(message.get("content"))
+
+        deduped: list[str] = []
+        for chunk in chunks:
+            if deduped and deduped[-1] == chunk:
+                continue
+            deduped.append(chunk)
+        return deduped
 
     def _extract_tool_data(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         text_limit = 12000

@@ -17,6 +17,7 @@ class CliCapabilities:
     supports_output_format_flag: bool = False
     supports_stream_json: bool = False
     supports_json: bool = False
+    supports_include_partial_messages: bool = False
 
 
 def find_claude_binary() -> str | None:
@@ -71,4 +72,5 @@ def detect_cli_flag_support(binary_path: str) -> CliCapabilities:
     caps.supports_output_format_flag = "--output-format" in output
     caps.supports_stream_json = "stream-json" in output
     caps.supports_json = '"json"' in output or "json" in output
+    caps.supports_include_partial_messages = "--include-partial-messages" in output
     return caps

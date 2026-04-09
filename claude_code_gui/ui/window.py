@@ -153,6 +153,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._supports_output_format_flag = False
         self._supports_stream_json = False
         self._supports_json = False
+        self._supports_include_partial_messages = False
         self._stream_json_requires_verbose = True
 
         self._claude_process = ClaudeProcess(
@@ -1564,6 +1565,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._supports_output_format_flag = caps.supports_output_format_flag
         self._supports_stream_json = caps.supports_stream_json
         self._supports_json = caps.supports_json
+        self._supports_include_partial_messages = caps.supports_include_partial_messages
 
     def _detect_cli_flag_support_async(self, binary_path: str) -> None:
         import threading
@@ -1581,6 +1583,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._supports_output_format_flag = caps.supports_output_format_flag
         self._supports_stream_json = caps.supports_stream_json
         self._supports_json = caps.supports_json
+        self._supports_include_partial_messages = caps.supports_include_partial_messages
         self._refresh_connection_state()
         return False
 
@@ -2221,6 +2224,7 @@ class ClaudeCodeWindow(Gtk.Window):
             supports_output_format_flag=self._supports_output_format_flag,
             supports_stream_json=self._supports_stream_json,
             supports_json=self._supports_json,
+            supports_include_partial_messages=self._supports_include_partial_messages,
             stream_json_requires_verbose=self._stream_json_requires_verbose,
             reasoning_level=reasoning_value,
             supports_reasoning_flag=self._supports_reasoning_flag,

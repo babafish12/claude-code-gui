@@ -27,7 +27,8 @@ CHAT_WEBVIEW_HTML = r"""
     --artifacts-panel-bg: #2a2a25;
     --artifacts-panel-width: 360px;
     --shadow: 0 12px 36px rgba(0, 0, 0, 0.34);
-    --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
+    --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "Twemoji Mozilla", sans-serif;
+    --emoji-font-stack: "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", "Twemoji Mozilla", sans-serif;
 }
 
 * {
@@ -46,6 +47,7 @@ body {
         var(--bg);
     color: var(--text);
     font-family: var(--font-stack);
+    font-variant-emoji: emoji;
     overflow: hidden;
 }
 
@@ -603,6 +605,13 @@ a:hover {
 .system-pill,
 .composer-input {
     font-family: var(--font-stack);
+    font-variant-emoji: emoji;
+}
+
+.user-bubble-text,
+.assistant-message,
+.system-pill {
+    font-family: var(--font-stack), var(--emoji-font-stack);
 }
 
 .assistant-actions {
@@ -3830,6 +3839,10 @@ a:hover {
         });
     }
 
+    function textWithEmojiShortcodes(text) {
+        return emojiShortcodeToUnicode(String(text || ""));
+    }
+
     function fallbackHighlightCode(code) {
         let html = escapeHtml(code);
         html = html.replace(/\b(const|let|var|function|class|return|if|else|for|while|import|from|export|try|catch|finally|def|async|await|switch|case|break)\b/g, '<span class="hljs-keyword">$1</span>');
@@ -4482,7 +4495,7 @@ a:hover {
         if (safeText) {
             const textBlock = document.createElement("div");
             textBlock.className = "user-bubble-text";
-            textBlock.textContent = safeText;
+            textBlock.textContent = textWithEmojiShortcodes(safeText);
             bubble.appendChild(textBlock);
         }
 
@@ -4918,7 +4931,7 @@ a:hover {
         const rowObj = createMessageRow("system");
         const pill = document.createElement("div");
         pill.className = "system-pill";
-        pill.textContent = raw;
+        pill.textContent = textWithEmojiShortcodes(raw);
 
         rowObj.inner.appendChild(pill);
         scrollToBottom(true);

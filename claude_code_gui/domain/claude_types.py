@@ -30,6 +30,7 @@ class ClaudeRunConfig:
     supports_output_format_flag: bool
     supports_stream_json: bool
     supports_json: bool
+    supports_include_partial_messages: bool
     stream_json_requires_verbose: bool
     reasoning_level: str = "medium"
     supports_reasoning_flag: bool = False
