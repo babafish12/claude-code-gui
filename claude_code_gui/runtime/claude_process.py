@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import subprocess
 import threading
 from typing import Any, Callable
@@ -211,6 +213,7 @@ class ClaudeProcess:
         cost_usd = 0.0
         input_tokens = 0
         output_tokens = 0
+        pending_shell_tools: dict[str, dict[str, Any]] = {}
 
         stdout = process.stdout
         if stdout is not None:
@@ -244,11 +247,30 @@ class ClaudeProcess:
                         for permission_request in permission_requests:
                             self._emit_permission_request(request_token, permission_request)
                         for tool_message in tools:
+                            parsed_tool = self._parse_json_line(tool_message)
+                            if parsed_tool is not None:
+                                tool_use_id = str(parsed_tool.get("toolUseId") or "").strip()
+                                if tool_use_id:
+                                    pending_shell_tools[tool_use_id] = dict(parsed_tool)
                             self._emit_system_message(request_token, tool_message)
                         for text_chunk in texts:
                             assistant_parts.append(text_chunk)
                             streamed_assistant = True
                             self._emit_assistant_chunk(request_token, text_chunk)
+                        continue
+
+                    if event_type == "user":
+                        for tool_result_entry in self._extract_tool_result_entries(event.get("message")):
+                            merged_tool = self._merge_tool_result_with_tool_use(
+                                tool_result_entry,
+                                pending_shell_tools,
+                            )
+                            if merged_tool is None:
+                                continue
+                            self._emit_system_message(
+                                request_token,
+                                json.dumps(merged_tool, ensure_ascii=False),
+                            )
                         continue
 
                     if event_type == "tool_use":
@@ -262,9 +284,31 @@ class ClaudeProcess:
                             self._emit_permission_request(request_token, permission_request)
                             continue
                         if tool_data is not None:
+                            tool_use_id = str(tool_data.get("toolUseId") or "").strip()
+                            if tool_use_id:
+                                pending_shell_tools[tool_use_id] = dict(tool_data)
                             self._emit_system_message(
                                 request_token,
                                 json.dumps(tool_data, ensure_ascii=False),
+                            )
+                        continue
+
+                    if event_type == "tool_result":
+                        merged_tool = self._merge_tool_result_with_tool_use(
+                            {
+                                "toolUseId": event.get("tool_use_id") or event.get("toolUseId") or event.get("id"),
+                                "output": self._coerce_text(
+                                    event.get("content")
+                                    or event.get("output")
+                                    or event.get("result")
+                                ),
+                            },
+                            pending_shell_tools,
+                        )
+                        if merged_tool is not None:
+                            self._emit_system_message(
+                                request_token,
+                                json.dumps(merged_tool, ensure_ascii=False),
                             )
                         continue
 
@@ -455,17 +499,10 @@ class ClaudeProcess:
 
         def _pick_text(*values: Any) -> str:
             for value in values:
-                if value is None:
-                    continue
-                text = str(value)
+                text = self._coerce_text(value).strip()
                 if text:
                     return text
             return ""
-
-        def _clip(value: str, limit: int = text_limit) -> str:
-            if len(value) <= limit:
-                return value
-            return value[:limit]
 
         tool_name = str(
             payload.get("name")
@@ -484,6 +521,15 @@ class ClaudeProcess:
             tool_input = {}
 
         tool_data: dict[str, Any] = {"__tool__": True, "name": tool_name}
+
+        tool_use_id = str(
+            payload.get("tool_use_id")
+            or payload.get("toolUseId")
+            or payload.get("id")
+            or ""
+        ).strip()
+        if tool_use_id:
+            tool_data["toolUseId"] = tool_use_id[:120]
 
         file_path = str(
             tool_input.get("file_path")
@@ -553,31 +599,438 @@ class ClaudeProcess:
             )
 
         if old_s or new_s:
-            clipped_old = _clip(old_s)
-            clipped_new = _clip(new_s)
+            clipped_old = self._clip_text(old_s, limit=text_limit)
+            clipped_new = self._clip_text(new_s, limit=text_limit)
             tool_data["old"] = clipped_old
             tool_data["new"] = clipped_new
             tool_data["old_content"] = clipped_old
             tool_data["new_content"] = clipped_new
 
         if content:
-            tool_data["content"] = _clip(content)
+            tool_data["content"] = self._clip_text(content, limit=text_limit)
         elif normalized_tool == "write":
-            # Keep Write previews usable in the UI even when only "new" is present.
             derived_content = _pick_text(new_s)
             if derived_content:
-                tool_data["content"] = _clip(derived_content)
+                tool_data["content"] = self._clip_text(derived_content, limit=text_limit)
 
-        if normalized_tool == "bash":
-            cmd = str(tool_input.get("command") or payload.get("command") or "")
-            if cmd:
-                tool_data["command"] = cmd[:command_limit]
-        else:
-            cmd = str(tool_input.get("command") or payload.get("command") or "")
-            if cmd:
-                tool_data["command"] = cmd[:command_limit]
+        cmd = str(tool_input.get("command") or payload.get("command") or "").strip()
+        if cmd:
+            tool_data["command"] = cmd[:command_limit]
 
+        output = _pick_text(
+            payload.get("output"),
+            payload.get("stdout"),
+            payload.get("stderr"),
+            payload.get("result"),
+            payload.get("response"),
+            payload.get("tool_output"),
+            tool_input.get("output"),
+            tool_input.get("stdout"),
+            tool_input.get("stderr"),
+            tool_input.get("result"),
+        )
+        if output:
+            tool_data["output"] = self._clip_text(output, limit=text_limit)
+
+        self._attach_cipr_metadata(tool_data)
         return tool_data
+
+    @staticmethod
+    def _clip_text(value: str, *, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        return value[:limit]
+
+    def _coerce_text(self, value: Any, *, depth: int = 0) -> str:
+        if value is None or depth > 4:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, list):
+            chunks = [
+                self._coerce_text(item, depth=depth + 1).strip()
+                for item in value
+            ]
+            return "\n".join(chunk for chunk in chunks if chunk)
+        if isinstance(value, dict):
+            for key in ("text", "output", "stdout", "stderr", "result", "message", "content", "value"):
+                nested = self._coerce_text(value.get(key), depth=depth + 1).strip()
+                if nested:
+                    return nested
+            if depth <= 2:
+                try:
+                    return json.dumps(value, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    return ""
+        return ""
+
+    def _extract_tool_result_entries(self, message: Any) -> list[dict[str, Any]]:
+        if not isinstance(message, dict):
+            return []
+        content = message.get("content")
+        if not isinstance(content, list):
+            return []
+
+        entries: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("type") or "").strip().lower() != "tool_result":
+                continue
+            output = self._coerce_text(
+                block.get("content")
+                or block.get("output")
+                or block.get("result")
+            ).strip()
+            if not output:
+                continue
+            entries.append(
+                {
+                    "toolUseId": block.get("tool_use_id") or block.get("toolUseId") or block.get("id"),
+                    "output": output,
+                }
+            )
+        return entries
+
+    def _merge_tool_result_with_tool_use(
+        self,
+        entry: dict[str, Any],
+        pending_shell_tools: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        tool_use_id = str(entry.get("toolUseId") or "").strip()
+        output_text = self._coerce_text(entry.get("output")).strip()
+        if not output_text:
+            return None
+
+        base_tool = pending_shell_tools.get(tool_use_id) if tool_use_id else None
+        merged: dict[str, Any]
+        if base_tool:
+            merged = dict(base_tool)
+        else:
+            merged = {"__tool__": True, "name": "tool_result"}
+            if tool_use_id:
+                merged["toolUseId"] = tool_use_id
+
+        merged["output"] = self._clip_text(output_text, limit=12000)
+        self._attach_cipr_metadata(merged)
+
+        has_cipr = bool(merged.get("git_event") or merged.get("pr_event") or merged.get("ci_event"))
+        if not base_tool and not has_cipr:
+            return None
+
+        if tool_use_id and base_tool:
+            pending_shell_tools.pop(tool_use_id, None)
+        return merged
+
+    @staticmethod
+    def _is_shell_tool_name(tool_name: str) -> bool:
+        normalized = str(tool_name or "").strip().lower()
+        return "bash" in normalized or "execute" in normalized
+
+    @staticmethod
+    def _extract_flag_value(command: str, flag: str) -> str:
+        raw_command = str(command or "").strip()
+        if not raw_command:
+            return ""
+        try:
+            tokens = shlex.split(raw_command)
+        except ValueError:
+            tokens = raw_command.split()
+        if not tokens:
+            return ""
+
+        prefix = flag + "="
+        for index, token in enumerate(tokens):
+            if token == flag and index + 1 < len(tokens):
+                return tokens[index + 1]
+            if token.startswith(prefix):
+                return token[len(prefix):]
+        return ""
+
+    @staticmethod
+    def _extract_first_match(pattern: str, text: str, *, flags: int = 0, group: int = 0) -> str:
+        if not text:
+            return ""
+        match = re.search(pattern, text, flags)
+        if not match:
+            return ""
+        value = match.group(group)
+        return str(value or "").strip()
+
+    def _attach_cipr_metadata(self, tool_data: dict[str, Any]) -> None:
+        if not self._is_shell_tool_name(str(tool_data.get("name") or "")):
+            return
+
+        command = str(tool_data.get("command") or "").strip()
+        output = str(tool_data.get("output") or "").strip()
+
+        git_event = self._detect_git_event(command=command, output=output)
+        if git_event:
+            tool_data["git_event"] = git_event
+
+        pr_event = self._detect_pr_event(command=command, output=output, git_event=git_event)
+        if pr_event:
+            tool_data["pr_event"] = pr_event
+
+        ci_event = self._detect_ci_event(command=command, output=output, pr_event=pr_event)
+        if ci_event:
+            tool_data["ci_event"] = ci_event
+
+    def _detect_git_event(self, *, command: str, output: str) -> dict[str, Any] | None:
+        normalized_command = command.lower()
+        if not normalized_command:
+            return None
+
+        if re.search(r"\bgit\s+commit\b", normalized_command):
+            hash_value = self._extract_first_match(r"\b([0-9a-f]{7,40})\b", output, flags=re.IGNORECASE, group=1)
+            message_value = self._extract_first_match(r"\[[^\]]+\]\s+(.+)", output, group=1)
+            if not message_value:
+                message_value = self._extract_flag_value(command, "-m")
+            files_changed_raw = self._extract_first_match(
+                r"(\d+)\s+files?\s+changed",
+                output,
+                flags=re.IGNORECASE,
+                group=1,
+            )
+            event: dict[str, Any] = {"operation": "commit"}
+            if hash_value:
+                event["hash"] = hash_value
+            if message_value:
+                event["message"] = message_value[:240]
+            if files_changed_raw.isdigit():
+                event["filesChanged"] = int(files_changed_raw)
+            return event
+
+        if re.search(r"\bgit\s+push\b", normalized_command):
+            remote = "origin"
+            branch = ""
+            commit_count_raw = self._extract_first_match(
+                r"(\d+)\s+commits?",
+                output,
+                flags=re.IGNORECASE,
+                group=1,
+            )
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                tokens = command.split()
+            push_index = -1
+            for index, token in enumerate(tokens):
+                if token == "push" and index > 0 and tokens[index - 1] == "git":
+                    push_index = index
+                    break
+            if push_index >= 0:
+                args = tokens[push_index + 1:]
+                filtered = [arg for arg in args if not arg.startswith("-")]
+                if filtered:
+                    remote = filtered[0]
+                if len(filtered) > 1:
+                    branch = filtered[1]
+            if branch.startswith("HEAD:"):
+                branch = branch.split(":", 1)[1]
+            if not branch:
+                branch = self._extract_first_match(r"->\s*([A-Za-z0-9._/-]+)", output, group=1)
+
+            event = {
+                "operation": "push",
+                "remote": remote or "origin",
+            }
+            if branch:
+                event["branch"] = branch
+            if commit_count_raw.isdigit():
+                event["commitCount"] = int(commit_count_raw)
+            return event
+
+        checkout_match = re.search(
+            r"\bgit\s+(?:checkout\s+-b|switch\s+-c)\s+([^\s]+)(?:\s+([^\s]+))?",
+            command,
+            flags=re.IGNORECASE,
+        )
+        if not checkout_match:
+            checkout_match = re.search(
+                r"\bgit\s+branch\s+([^\s-][^\s]*)(?:\s+([^\s]+))?",
+                command,
+                flags=re.IGNORECASE,
+            )
+        if checkout_match:
+            branch_name = str(checkout_match.group(1) or "").strip()
+            base_name = str(checkout_match.group(2) or "").strip()
+            if branch_name:
+                event = {
+                    "operation": "branch",
+                    "branch": branch_name,
+                }
+                if base_name:
+                    event["createdFrom"] = base_name
+                return event
+
+        return None
+
+    def _detect_pr_event(
+        self,
+        *,
+        command: str,
+        output: str,
+        git_event: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        normalized_command = command.lower()
+        combined_text = "\n".join(part for part in (command, output) if part)
+        pr_url = self._extract_first_match(r"https?://[^\s)]+/pull/\d+", combined_text, flags=re.IGNORECASE)
+        if "gh pr create" not in normalized_command and not pr_url:
+            return None
+
+        pr_number = self._extract_first_match(r"/pull/(\d+)", pr_url, group=1) if pr_url else ""
+        title = self._extract_flag_value(command, "--title")
+        if not title and pr_number:
+            title = f"PR #{pr_number}"
+        if not title:
+            title = "Pull Request"
+
+        source_branch = self._extract_flag_value(command, "--head")
+        if not source_branch and git_event and str(git_event.get("operation")) == "push":
+            source_branch = str(git_event.get("branch") or "").strip()
+        target_branch = self._extract_flag_value(command, "--base")
+
+        lower_output = output.lower()
+        status = "open"
+        if "merged" in lower_output:
+            status = "merged"
+        elif "closed" in lower_output:
+            status = "closed"
+
+        file_summary = ""
+        changed_raw = self._extract_first_match(
+            r"(\d+)\s+files?\s+changed",
+            output,
+            flags=re.IGNORECASE,
+            group=1,
+        )
+        insertions_raw = self._extract_first_match(
+            r"(\d+)\s+insertions?\(\+\)",
+            output,
+            flags=re.IGNORECASE,
+            group=1,
+        )
+        deletions_raw = self._extract_first_match(
+            r"(\d+)\s+deletions?\(-\)",
+            output,
+            flags=re.IGNORECASE,
+            group=1,
+        )
+        if changed_raw.isdigit():
+            changed_count = int(changed_raw)
+            file_summary = f"{changed_count} file{'s' if changed_count != 1 else ''} changed"
+            if insertions_raw.isdigit() or deletions_raw.isdigit():
+                file_summary += (
+                    f" (+{int(insertions_raw or '0')}/-{int(deletions_raw or '0')})"
+                )
+
+        event: dict[str, Any] = {
+            "title": title[:300],
+            "status": status,
+        }
+        if pr_number:
+            event["number"] = pr_number
+        if pr_url:
+            event["url"] = pr_url
+        if source_branch:
+            event["sourceBranch"] = source_branch
+        if target_branch:
+            event["targetBranch"] = target_branch
+        if file_summary:
+            event["fileSummary"] = file_summary
+        return event
+
+    def _detect_ci_event(
+        self,
+        *,
+        command: str,
+        output: str,
+        pr_event: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        lower_command = command.lower()
+        lower_output = output.lower()
+        explicit_ci_command = any(
+            marker in lower_command
+            for marker in (
+                "gh pr checks",
+                "gh run",
+                "github actions",
+                "workflow",
+                "pipeline",
+                "buildkite",
+                "jenkins",
+                "circleci",
+            )
+        )
+
+        status = ""
+        if any(token in lower_output for token in ("failing", "failed", "failure", "error", "❌")):
+            status = "failing"
+        elif any(token in lower_output for token in ("passing", "passed", "success", "successful", "✅")):
+            status = "passing"
+        elif any(token in lower_output for token in ("pending", "queued", "in progress", "running", "⏳")):
+            status = "pending"
+        elif explicit_ci_command:
+            status = "pending"
+
+        ci_url = self._extract_first_match(
+            r"https?://[^\s)]+(?:/actions/runs/\d+|/runs/\d+|/pipelines/[^\s)]+)",
+            output,
+            flags=re.IGNORECASE,
+        )
+        if not ci_url:
+            ci_url = self._extract_first_match(
+                r"https?://[^\s)]+(?:actions/runs/\d+|runs/\d+|pipelines/[^\s)]+)",
+                command,
+                flags=re.IGNORECASE,
+            )
+
+        has_ci_signal = explicit_ci_command or bool(ci_url) or bool(status)
+        if not has_ci_signal or not status:
+            return None
+
+        pipeline = self._extract_first_match(
+            r"(?:workflow|pipeline)\s*[:=]\s*([^\n\r]+)",
+            output,
+            flags=re.IGNORECASE,
+            group=1,
+        )
+        if not pipeline:
+            pipeline = self._extract_first_match(
+                r"^([^\n\r]+?)\s+\.\.\.\s+(?:pass|fail|pending|queued|running)",
+                output,
+                flags=re.IGNORECASE | re.MULTILINE,
+                group=1,
+            )
+
+        duration = self._extract_first_match(
+            r"\b(\d+m\d+s|\d+\.\d+s|\d+\s*(?:ms|s|sec|secs|seconds|min|mins|minutes|hr|hrs|hours))\b",
+            output,
+            flags=re.IGNORECASE,
+            group=1,
+        )
+
+        event: dict[str, Any] = {"status": status}
+        if pipeline:
+            event["pipeline"] = pipeline[:200]
+        if duration:
+            event["duration"] = duration
+        if ci_url:
+            event["url"] = ci_url
+
+        if pr_event and pr_event.get("url"):
+            event["prUrl"] = pr_event.get("url")
+        elif output:
+            linked_pr_url = self._extract_first_match(r"https?://[^\s)]+/pull/\d+", output, flags=re.IGNORECASE)
+            if linked_pr_url:
+                event["prUrl"] = linked_pr_url
+
+        if status == "failing":
+            event["suggestFix"] = True
+        return event
 
     def _extract_permission_request(
         self,

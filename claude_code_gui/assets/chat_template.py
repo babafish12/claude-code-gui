@@ -21,8 +21,11 @@ CHAT_WEBVIEW_HTML = r"""
     --text: #d4d4c8;
     --muted: #8a8a7a;
     --accent: #d97757;
+    --accent-soft: rgba(217, 119, 87, 0.18);
     --chip-border: #4a4a43;
     --code-bg: #1a1a16;
+    --artifacts-panel-bg: #2a2a25;
+    --artifacts-panel-width: 360px;
     --shadow: 0 12px 36px rgba(0, 0, 0, 0.34);
     --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
 }
@@ -395,10 +398,47 @@ a:hover {
 #chatView {
     display: none;
     position: relative;
+    overflow: hidden;
 }
 
 #chatView.active {
     display: block;
+}
+
+#chatView.artifacts-open #artifactsPanel {
+    transform: translateX(0);
+    pointer-events: auto;
+}
+
+#chatToolbar {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    z-index: 45;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#artifactsToggleBtn {
+    border: 1px solid var(--chip-border);
+    background: rgba(42, 42, 37, 0.9);
+    color: var(--text);
+    border-radius: 999px;
+    min-height: 30px;
+    padding: 0 12px;
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+#artifactsToggleBtn:hover,
+#artifactsToggleBtn.active {
+    border-color: rgba(212, 132, 90, 0.72);
+    background: rgba(212, 132, 90, 0.14);
 }
 
 #dropOverlay {
@@ -427,8 +467,9 @@ a:hover {
     inset: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 26px 14px 220px;
+    padding: 52px 14px 220px;
     scroll-behavior: smooth;
+    transition: padding-right 250ms ease;
 }
 
 #messages::-webkit-scrollbar {
@@ -930,6 +971,451 @@ a:hover {
     opacity: 0.85;
 }
 
+.message-row.git .message-inner,
+.message-row.pr .message-inner,
+.message-row.ci .message-inner {
+    display: flex;
+    justify-content: flex-start;
+}
+
+.git-card,
+.pr-card,
+.ci-status-card {
+    width: 100%;
+    max-width: 768px;
+    border-radius: 12px;
+    padding: 11px 12px;
+}
+
+.git-card {
+    border: 1px solid rgba(217, 119, 87, 0.55);
+    border-left: 3px solid #d97757;
+    background: linear-gradient(180deg, rgba(53, 43, 36, 0.74), rgba(30, 28, 23, 0.95));
+}
+
+.pr-card {
+    border: 1px solid rgba(113, 129, 213, 0.62);
+    border-left: 3px solid #6c7fd8;
+    background: linear-gradient(180deg, rgba(43, 49, 72, 0.72), rgba(29, 31, 45, 0.95));
+}
+
+.ci-status-card {
+    border: 1px solid rgba(95, 95, 86, 0.9);
+    border-left: 3px solid #b0aa96;
+    background: linear-gradient(180deg, rgba(45, 45, 39, 0.8), rgba(27, 27, 23, 0.95));
+    margin-top: 8px;
+}
+
+.cipr-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.cipr-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: #e8e5d8;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.cipr-meta {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #c6c2b2;
+    word-break: break-word;
+}
+
+.cipr-meta-label {
+    color: #9f9a86;
+    margin-right: 4px;
+}
+
+.cipr-link {
+    color: #9db6ff;
+    text-decoration: underline;
+    text-decoration-color: rgba(157, 182, 255, 0.4);
+    transition: color 0.15s ease, text-decoration-color 0.15s ease;
+}
+
+.cipr-link:hover {
+    color: #c4d2ff;
+    text-decoration-color: rgba(196, 210, 255, 0.9);
+}
+
+.cipr-badge {
+    border-radius: 999px;
+    padding: 3px 9px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    text-transform: capitalize;
+}
+
+.cipr-badge.open {
+    border-color: rgba(103, 182, 126, 0.65);
+    color: #bfe8c8;
+    background: rgba(50, 117, 72, 0.35);
+}
+
+.cipr-badge.merged {
+    border-color: rgba(108, 127, 216, 0.72);
+    color: #ced9ff;
+    background: rgba(56, 67, 122, 0.42);
+}
+
+.cipr-badge.closed {
+    border-color: rgba(198, 95, 90, 0.72);
+    color: #f1c0bd;
+    background: rgba(116, 47, 44, 0.45);
+}
+
+.ci-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.ci-icon {
+    display: inline-block;
+    width: 15px;
+    text-align: center;
+}
+
+.ci-indicator.pending .ci-icon {
+    color: #e7c75e;
+    animation: ciSpin 900ms linear infinite;
+}
+
+.ci-indicator.passing .ci-icon {
+    color: #78d18d;
+}
+
+.ci-indicator.failing .ci-icon {
+    color: #e28981;
+}
+
+@keyframes ciSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.ci-fix-btn {
+    margin-top: 8px;
+    border: 1px solid rgba(198, 95, 90, 0.75);
+    border-radius: 8px;
+    background: rgba(126, 50, 45, 0.42);
+    color: #f3c6c3;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.ci-fix-btn:hover {
+    background: rgba(153, 60, 55, 0.52);
+}
+
+.pr-ci-slot {
+    margin-top: 8px;
+}
+
+.artifact-indicator {
+    margin-top: 8px;
+    border: 1px solid rgba(212, 132, 90, 0.5);
+    background: var(--accent-soft);
+    color: #f0c1a6;
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s ease;
+}
+
+.artifact-indicator:hover {
+    border-color: rgba(212, 132, 90, 0.8);
+    background: rgba(212, 132, 90, 0.24);
+}
+
+.artifact-indicator-icon {
+    font-size: 12px;
+    line-height: 1;
+}
+
+#artifactsPanel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(var(--artifacts-panel-width), 94vw);
+    border-left: 1px solid #3f3f38;
+    background:
+        radial-gradient(circle at 12% 8%, rgba(217, 119, 87, 0.08), transparent 38%),
+        var(--artifacts-panel-bg);
+    transform: translateX(100%);
+    transition: transform 250ms ease;
+    z-index: 50;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+}
+
+.artifacts-panel-header {
+    flex: none;
+    min-height: 44px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #3f3f38;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.artifacts-panel-title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.1px;
+}
+
+.artifacts-close-btn {
+    border: 1px solid var(--chip-border);
+    background: transparent;
+    color: var(--muted);
+    width: 26px;
+    height: 26px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.artifacts-close-btn:hover {
+    color: var(--text);
+    border-color: rgba(212, 132, 90, 0.72);
+    background: rgba(212, 132, 90, 0.1);
+}
+
+.artifacts-panel-body {
+    min-height: 0;
+    display: grid;
+    grid-template-rows: minmax(140px, 38%) minmax(180px, 1fr);
+    height: 100%;
+}
+
+.artifacts-list {
+    min-height: 0;
+    overflow-y: auto;
+    border-bottom: 1px solid #3f3f38;
+    padding: 8px;
+}
+
+.artifact-empty {
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    padding: 18px 12px;
+}
+
+.artifact-row {
+    width: 100%;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+    padding: 8px 9px;
+    transition: all 0.15s ease;
+}
+
+.artifact-row + .artifact-row {
+    margin-top: 4px;
+}
+
+.artifact-row:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.artifact-row.selected {
+    border-color: rgba(212, 132, 90, 0.72);
+    box-shadow: inset 2px 0 0 rgba(212, 132, 90, 0.9);
+    background: rgba(212, 132, 90, 0.09);
+}
+
+.artifact-row-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 2px;
+}
+
+.artifact-row-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.artifact-row-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.artifact-row-badge {
+    border: 1px solid #4c4c45;
+    background: rgba(58, 58, 52, 0.66);
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.35px;
+}
+
+.artifact-detail-wrap {
+    min-height: 0;
+    padding: 10px 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.artifact-detail-empty {
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    padding: 16px 10px;
+}
+
+.artifact-detail-view {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.artifact-hidden {
+    display: none !important;
+}
+
+.artifact-detail-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.artifact-detail-title {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    word-break: break-all;
+}
+
+.artifact-detail-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.artifact-tag {
+    border: 1px solid #4c4c45;
+    background: rgba(58, 58, 52, 0.66);
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 10px;
+    color: #bcb7a4;
+    text-transform: uppercase;
+    letter-spacing: 0.35px;
+}
+
+.artifact-version-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.artifact-version-label {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+#artifactVersionSelect {
+    min-height: 28px;
+    border-radius: 8px;
+    border: 1px solid var(--chip-border);
+    background: #33332d;
+    color: var(--text);
+    font-size: 12px;
+    padding: 0 8px;
+}
+
+.artifact-version-delta {
+    color: #8bbf8a;
+    font-size: 11px;
+}
+
+.artifact-detail-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.artifact-action-btn {
+    border: 1px solid var(--chip-border);
+    background: transparent;
+    color: var(--text);
+    border-radius: 999px;
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.artifact-action-btn:hover {
+    border-color: rgba(212, 132, 90, 0.72);
+    background: rgba(212, 132, 90, 0.1);
+}
+
+.artifact-detail-code {
+    min-height: 0;
+    flex: 1;
+    border-radius: 10px;
+    border: 1px solid #43433c;
+    background: var(--code-bg);
+    overflow: auto;
+}
+
+.artifact-detail-code pre {
+    margin: 0;
+    padding: 12px;
+    font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.artifact-detail-code code.hljs {
+    background: transparent;
+    padding: 0;
+}
+
 .message-row.permission .message-inner {
     display: flex;
     justify-content: flex-start;
@@ -1401,6 +1887,27 @@ a:hover {
     border-color: rgba(220, 80, 60, 0.65);
 }
 
+@media (min-width: 1100px) {
+    #chatView.artifacts-open #messages {
+        padding-right: calc(var(--artifacts-panel-width) + 20px);
+    }
+
+    #chatView.artifacts-open #chatComposer {
+        right: var(--artifacts-panel-width);
+    }
+
+    #chatView.artifacts-open #chatToolbar {
+        right: calc(var(--artifacts-panel-width) + 14px);
+    }
+}
+
+@media (max-width: 1099px) {
+    #artifactsPanel {
+        width: min(var(--artifacts-panel-width), 100vw);
+        box-shadow: -10px 0 28px rgba(0, 0, 0, 0.4);
+    }
+}
+
 @media (max-width: 900px) {
     .welcome-title {
         font-size: 25px;
@@ -1415,6 +1922,15 @@ a:hover {
         padding-left: 10px;
         padding-right: 10px;
         padding-bottom: 210px;
+    }
+
+    #chatToolbar {
+        top: 10px;
+        right: 10px;
+    }
+
+    #chatView.artifacts-open #chatToolbar {
+        right: 10px;
     }
 
     #chatComposer {
@@ -1502,7 +2018,47 @@ a:hover {
 
     <section id="chatView">
         <div id="dropOverlay">Drop file here</div>
+        <div id="chatToolbar">
+            <button id="artifactsToggleBtn" type="button" title="Open artifacts panel">📦 Artifacts</button>
+        </div>
         <div id="messages"></div>
+        <aside id="artifactsPanel" aria-hidden="true">
+            <div class="artifacts-panel-header">
+                <h2 class="artifacts-panel-title">Artifacts</h2>
+                <button id="artifactsCloseBtn" class="artifacts-close-btn" type="button" aria-label="Close artifacts panel">×</button>
+            </div>
+            <div class="artifacts-panel-body">
+                <div id="artifactsList" class="artifacts-list">
+                    <div class="artifact-empty">No artifacts yet.</div>
+                </div>
+                <div class="artifact-detail-wrap">
+                    <div id="artifactDetailEmpty" class="artifact-detail-empty">Select an artifact to view its content.</div>
+                    <div id="artifactDetailView" class="artifact-detail-view artifact-hidden">
+                        <div class="artifact-detail-meta">
+                            <h3 id="artifactDetailTitle" class="artifact-detail-title"></h3>
+                            <div class="artifact-detail-tags">
+                                <span id="artifactDetailTypeTag" class="artifact-tag"></span>
+                                <span id="artifactDetailLanguageTag" class="artifact-tag"></span>
+                                <span id="artifactDetailVersionTag" class="artifact-tag"></span>
+                            </div>
+                        </div>
+                        <div class="artifact-version-row">
+                            <span class="artifact-version-label">Version</span>
+                            <select id="artifactVersionSelect"></select>
+                            <span id="artifactVersionDelta" class="artifact-version-delta"></span>
+                        </div>
+                        <div class="artifact-detail-actions">
+                            <button id="artifactCopyBtn" class="artifact-action-btn" type="button">Copy</button>
+                            <button id="artifactDownloadBtn" class="artifact-action-btn" type="button">Download</button>
+                            <button id="artifactOpenTabBtn" class="artifact-action-btn" type="button">Open in new tab</button>
+                        </div>
+                        <div class="artifact-detail-code">
+                            <pre><code id="artifactDetailCode" class="hljs"></code></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
 
         <div id="chatComposer">
             <button id="stopBtn" class="stop-process-btn" type="button" style="display:none;">Stop generating</button>
@@ -1673,12 +2229,16 @@ a:hover {
     let permissionRequestCounter = 0;
     let toolCardCounter = 0;
     let activeToolTurn = null;
+    let lastPRUrl = "";
     let artifactsPanelOpen = false;
     let artifactCounter = 0;
     let selectedArtifactId = "";
     let selectedArtifactVersion = 0;
     let artifactSnippetCounter = 0;
     const seenPermissionRequests = Object.create(null);
+    const prCardByKey = Object.create(null);
+    const prCardByUrl = Object.create(null);
+    const ciCardByKey = Object.create(null);
     const artifacts = [];
     const artifactByKey = Object.create(null);
     const LANGUAGE_EXTENSION_MAP = Object.freeze({
@@ -3886,6 +4446,7 @@ a:hover {
 
     function addUserMessage(text, attachmentList) {
         setChatState(true);
+        resetToolTurnState();
 
         const rowObj = createMessageRow("user");
         const bubble = document.createElement("div");
@@ -3924,6 +4485,394 @@ a:hover {
         scrollToBottom(true);
     }
 
+    function toTitleCase(value) {
+        const raw = String(value || "").trim();
+        if (!raw) {
+            return "";
+        }
+        return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+    }
+
+    function statusClassName(statusValue) {
+        const value = String(statusValue || "").trim().toLowerCase();
+        if (value === "merged" || value === "closed" || value === "open" || value === "pending" || value === "passing" || value === "failing") {
+            return value;
+        }
+        return "open";
+    }
+
+    function ciStatusIcon(statusValue) {
+        const status = statusClassName(statusValue);
+        if (status === "passing") {
+            return "✓";
+        }
+        if (status === "failing") {
+            return "✕";
+        }
+        return "◌";
+    }
+
+    function appendMetaLine(container, label, value) {
+        const text = String(value || "").trim();
+        if (!text) {
+            return;
+        }
+        const line = document.createElement("div");
+        line.className = "cipr-meta";
+        line.innerHTML = '<span class="cipr-meta-label"></span><span class="cipr-meta-value"></span>';
+        const labelEl = line.querySelector(".cipr-meta-label");
+        const valueEl = line.querySelector(".cipr-meta-value");
+        if (labelEl) {
+            labelEl.textContent = String(label || "");
+        }
+        if (valueEl) {
+            valueEl.textContent = text;
+        }
+        container.appendChild(line);
+    }
+
+    function deriveCiprFallback(data) {
+        const command = String(data && data.command ? data.command : "");
+        const output = String(data && data.output ? data.output : "");
+        const lowerCommand = command.toLowerCase();
+        const lowerOutput = output.toLowerCase();
+        const events = {};
+
+        if (/\bgit\s+commit\b/.test(lowerCommand)) {
+            events.git = {
+                operation: "commit",
+                hash: (output.match(/\b([0-9a-f]{7,40})\b/i) || [])[1] || "",
+                message: (output.match(/\[[^\]]+\]\s+(.+)/) || [])[1] || "",
+                filesChanged: Number((output.match(/(\d+)\s+files?\s+changed/i) || [])[1] || 0),
+            };
+        } else if (/\bgit\s+push\b/.test(lowerCommand)) {
+            events.git = {
+                operation: "push",
+                branch: (command.match(/\bgit\s+push(?:\s+-[^\s]+|\s+--[^\s]+)*\s+[^\s]+\s+([^\s]+)/i) || [])[1] || "",
+                remote: (command.match(/\bgit\s+push(?:\s+-[^\s]+|\s+--[^\s]+)*\s+([^\s]+)/i) || [])[1] || "origin",
+            };
+        } else if (/\bgit\s+(?:checkout\s+-b|switch\s+-c|branch)\b/.test(lowerCommand)) {
+            events.git = {
+                operation: "branch",
+                branch: (command.match(/\bgit\s+(?:checkout\s+-b|switch\s+-c|branch)\s+([^\s]+)/i) || [])[1] || "",
+            };
+        }
+
+        const prUrlMatch = output.match(/https?:\/\/[^\s)]+\/pull\/\d+/i) || command.match(/https?:\/\/[^\s)]+\/pull\/\d+/i);
+        if (/\bgh\s+pr\s+create\b/.test(lowerCommand) || prUrlMatch) {
+            const prUrl = prUrlMatch ? prUrlMatch[0] : "";
+            const number = (prUrl.match(/\/pull\/(\d+)/i) || [])[1] || "";
+            events.pr = {
+                title: number ? ("PR #" + number) : "Pull Request",
+                number: number,
+                url: prUrl,
+                status: lowerOutput.indexOf("merged") >= 0 ? "merged" : (lowerOutput.indexOf("closed") >= 0 ? "closed" : "open"),
+                sourceBranch: events.git && events.git.operation === "push" ? String(events.git.branch || "") : "",
+            };
+        }
+
+        if (
+            /\bgh\s+pr\s+checks\b/.test(lowerCommand)
+            || /\bgh\s+run\b/.test(lowerCommand)
+            || lowerOutput.indexOf("pipeline") >= 0
+            || lowerOutput.indexOf("workflow") >= 0
+        ) {
+            let status = "pending";
+            if (/\b(fail|failed|failing|error)\b/i.test(output)) {
+                status = "failing";
+            } else if (/\b(pass|passed|success|successful)\b/i.test(output)) {
+                status = "passing";
+            }
+            events.ci = {
+                status: status,
+                url: (output.match(/https?:\/\/[^\s)]+(?:actions\/runs\/\d+|runs\/\d+|pipelines\/[^\s)]+)/i) || [])[0] || "",
+                prUrl: events.pr && events.pr.url ? events.pr.url : "",
+                suggestFix: status === "failing",
+            };
+        }
+
+        return events;
+    }
+
+    function addGitCard(data) {
+        if (!data || typeof data !== "object") {
+            return;
+        }
+        const operation = String(data.operation || "").trim().toLowerCase();
+        if (!operation) {
+            return;
+        }
+
+        const rowObj = createMessageRow("tool git");
+        const card = document.createElement("div");
+        card.className = "git-card";
+
+        const head = document.createElement("div");
+        head.className = "cipr-head";
+        const title = document.createElement("div");
+        title.className = "cipr-title";
+        title.textContent = "⑂ Git " + toTitleCase(operation);
+        head.appendChild(title);
+        card.appendChild(head);
+
+        if (operation === "commit") {
+            appendMetaLine(card, "Hash", data.hash || "");
+            appendMetaLine(card, "Message", data.message || "");
+            if (data.filesChanged !== undefined && data.filesChanged !== null && String(data.filesChanged) !== "") {
+                appendMetaLine(card, "Files", String(data.filesChanged));
+            }
+        } else if (operation === "push") {
+            appendMetaLine(card, "Branch", data.branch || "");
+            appendMetaLine(card, "Remote", data.remote || "origin");
+            if (data.commitCount !== undefined && data.commitCount !== null && String(data.commitCount) !== "") {
+                appendMetaLine(card, "Commits", String(data.commitCount));
+            }
+        } else if (operation === "branch") {
+            appendMetaLine(card, "Branch", data.branch || "");
+            appendMetaLine(card, "Created from", data.createdFrom || "");
+        }
+
+        rowObj.inner.appendChild(card);
+        scrollToBottom(true);
+    }
+
+    function updatePRCardView(refs, data) {
+        if (!refs || !refs.card) {
+            return;
+        }
+        const statusValue = statusClassName(data.status || "open");
+        const titleText = String(data.title || "").trim() || "Pull Request";
+        const numberText = String(data.number || "").trim();
+        refs.titleEl.textContent = numberText ? (titleText + " #" + numberText) : titleText;
+        refs.statusEl.className = "cipr-badge " + statusValue;
+        refs.statusEl.textContent = toTitleCase(statusValue);
+
+        const sourceBranch = String(data.sourceBranch || "").trim();
+        const targetBranch = String(data.targetBranch || "").trim();
+        refs.branchEl.textContent = sourceBranch || targetBranch
+            ? ("Branch: " + (sourceBranch || "?") + " \u2192 " + (targetBranch || "?"))
+            : "";
+        refs.branchEl.style.display = refs.branchEl.textContent ? "block" : "none";
+
+        refs.fileSummaryEl.textContent = String(data.fileSummary || "").trim();
+        refs.fileSummaryEl.style.display = refs.fileSummaryEl.textContent ? "block" : "none";
+
+        const url = String(data.url || "").trim();
+        if (/^https?:\/\//i.test(url)) {
+            refs.linkEl.href = url;
+            refs.linkEl.textContent = url;
+            refs.linkWrap.style.display = "block";
+            lastPRUrl = url;
+        } else {
+            refs.linkWrap.style.display = "none";
+        }
+    }
+
+    function addPRCard(data) {
+        if (!data || typeof data !== "object") {
+            return;
+        }
+        const key = String(data.url || data.number || data.title || "").trim().toLowerCase();
+        if (!key) {
+            return;
+        }
+
+        let refs = prCardByKey[key];
+        if (!refs) {
+            const rowObj = createMessageRow("tool pr");
+            const card = document.createElement("div");
+            card.className = "pr-card";
+
+            const head = document.createElement("div");
+            head.className = "cipr-head";
+
+            const title = document.createElement("div");
+            title.className = "cipr-title";
+            head.appendChild(title);
+
+            const status = document.createElement("span");
+            status.className = "cipr-badge open";
+            status.textContent = "Open";
+            head.appendChild(status);
+
+            card.appendChild(head);
+
+            const linkWrap = document.createElement("div");
+            linkWrap.className = "cipr-meta";
+            linkWrap.innerHTML = '<span class="cipr-meta-label">PR</span>';
+            const linkEl = document.createElement("a");
+            linkEl.className = "cipr-link";
+            linkEl.target = "_blank";
+            linkEl.rel = "noopener noreferrer";
+            linkWrap.appendChild(linkEl);
+            card.appendChild(linkWrap);
+
+            const branchEl = document.createElement("div");
+            branchEl.className = "cipr-meta";
+            card.appendChild(branchEl);
+
+            const fileSummaryEl = document.createElement("div");
+            fileSummaryEl.className = "cipr-meta";
+            card.appendChild(fileSummaryEl);
+
+            const ciSlot = document.createElement("div");
+            ciSlot.className = "pr-ci-slot";
+            card.appendChild(ciSlot);
+
+            rowObj.inner.appendChild(card);
+
+            refs = {
+                card: card,
+                titleEl: title,
+                statusEl: status,
+                linkWrap: linkWrap,
+                linkEl: linkEl,
+                branchEl: branchEl,
+                fileSummaryEl: fileSummaryEl,
+                ciSlot: ciSlot,
+            };
+            prCardByKey[key] = refs;
+        }
+
+        updatePRCardView(refs, data);
+
+        const urlKey = String(data.url || "").trim();
+        if (urlKey) {
+            prCardByUrl[urlKey] = refs;
+            lastPRUrl = urlKey;
+        }
+
+        scrollToBottom(true);
+    }
+
+    function upsertCIStatusCard(container, key) {
+        const existing = ciCardByKey[key];
+        if (existing) {
+            return existing;
+        }
+
+        let hostContainer = container;
+        if (!hostContainer) {
+            const rowObj = createMessageRow("tool ci");
+            hostContainer = rowObj.inner;
+        }
+
+        const card = document.createElement("div");
+        card.className = "ci-status-card";
+
+        const head = document.createElement("div");
+        head.className = "cipr-head";
+        card.appendChild(head);
+
+        const indicator = document.createElement("div");
+        indicator.className = "ci-indicator pending";
+        const icon = document.createElement("span");
+        icon.className = "ci-icon";
+        icon.textContent = ciStatusIcon("pending");
+        const title = document.createElement("span");
+        title.className = "cipr-title";
+        title.textContent = "CI Pending";
+        indicator.appendChild(icon);
+        indicator.appendChild(title);
+        head.appendChild(indicator);
+
+        const linkWrap = document.createElement("div");
+        linkWrap.className = "cipr-meta";
+        const linkLabel = document.createElement("span");
+        linkLabel.className = "cipr-meta-label";
+        linkLabel.textContent = "Run";
+        const linkEl = document.createElement("a");
+        linkEl.className = "cipr-link";
+        linkEl.target = "_blank";
+        linkEl.rel = "noopener noreferrer";
+        linkWrap.appendChild(linkLabel);
+        linkWrap.appendChild(linkEl);
+        card.appendChild(linkWrap);
+
+        const pipelineEl = document.createElement("div");
+        pipelineEl.className = "cipr-meta";
+        card.appendChild(pipelineEl);
+
+        const durationEl = document.createElement("div");
+        durationEl.className = "cipr-meta";
+        card.appendChild(durationEl);
+
+        const fixButton = document.createElement("button");
+        fixButton.type = "button";
+        fixButton.className = "ci-fix-btn";
+        fixButton.textContent = "Claude can try to fix this";
+        fixButton.style.display = "none";
+        fixButton.addEventListener("click", function () {
+            const inputEl = activeInput();
+            if (!inputEl) {
+                return;
+            }
+            inputEl.value = "CI is failing. Please inspect the failing pipeline and apply a fix.";
+            autoResizeInput(inputEl);
+            inputEl.focus();
+        });
+        card.appendChild(fixButton);
+
+        hostContainer.appendChild(card);
+
+        const refs = {
+            card: card,
+            indicator: indicator,
+            icon: icon,
+            title: title,
+            linkWrap: linkWrap,
+            linkEl: linkEl,
+            pipelineEl: pipelineEl,
+            durationEl: durationEl,
+            fixButton: fixButton,
+        };
+        ciCardByKey[key] = refs;
+        return refs;
+    }
+
+    function addCIStatus(data) {
+        if (!data || typeof data !== "object") {
+            return;
+        }
+        const status = statusClassName(data.status || "pending");
+        const prUrl = String(data.prUrl || "").trim() || lastPRUrl;
+        const pipeline = String(data.pipeline || "").trim();
+        const runUrl = String(data.url || "").trim();
+        const key = (prUrl || "global") + "|" + (pipeline || runUrl || "default");
+
+        let container = null;
+        if (prUrl && prCardByUrl[prUrl] && prCardByUrl[prUrl].ciSlot) {
+            container = prCardByUrl[prUrl].ciSlot;
+        }
+        const refs = upsertCIStatusCard(container, key);
+        if (!refs) {
+            return;
+        }
+
+        refs.indicator.className = "ci-indicator " + status;
+        refs.icon.textContent = ciStatusIcon(status);
+        refs.title.textContent = "CI " + toTitleCase(status);
+
+        refs.pipelineEl.textContent = pipeline ? ("Pipeline: " + pipeline) : "";
+        refs.pipelineEl.style.display = refs.pipelineEl.textContent ? "block" : "none";
+
+        refs.durationEl.textContent = String(data.duration || "").trim()
+            ? ("Duration: " + String(data.duration || "").trim())
+            : "";
+        refs.durationEl.style.display = refs.durationEl.textContent ? "block" : "none";
+
+        if (/^https?:\/\//i.test(runUrl)) {
+            refs.linkEl.href = runUrl;
+            refs.linkEl.textContent = runUrl;
+            refs.linkWrap.style.display = "block";
+        } else {
+            refs.linkWrap.style.display = "none";
+        }
+
+        refs.fixButton.style.display = (status === "failing" || data.suggestFix) ? "inline-flex" : "none";
+        scrollToBottom(true);
+    }
+
     function addSystemMessage(text) {
         setChatState(true);
 
@@ -3934,6 +4883,18 @@ a:hover {
             var parsed = JSON.parse(raw);
             if (parsed && parsed.__permission_request__) {
                 addPermissionRequest(parsed);
+                return;
+            }
+            if (parsed && parsed.__git_card__) {
+                addGitCard(parsed.__git_card__);
+                return;
+            }
+            if (parsed && parsed.__pr_card__) {
+                addPRCard(parsed.__pr_card__);
+                return;
+            }
+            if (parsed && parsed.__ci_status__) {
+                addCIStatus(parsed.__ci_status__);
                 return;
             }
             if (parsed && parsed.__tool__) {
@@ -3959,13 +4920,40 @@ a:hover {
     }
 
     function addToolMessage(data) {
+        const fallback = deriveCiprFallback(data);
+        const gitEvent = data && data.git_event && typeof data.git_event === "object"
+            ? data.git_event
+            : (fallback.git || null);
+        const prEvent = data && data.pr_event && typeof data.pr_event === "object"
+            ? data.pr_event
+            : (fallback.pr || null);
+        const ciEvent = data && data.ci_event && typeof data.ci_event === "object"
+            ? data.ci_event
+            : (fallback.ci || null);
+
+        if (gitEvent) {
+            addGitCard(gitEvent);
+        }
+        if (prEvent) {
+            addPRCard(prEvent);
+        }
+        if (ciEvent) {
+            addCIStatus(ciEvent);
+        }
+
         const toolName = String(data.name || "tool");
         const filePath = String(data.path || data.command || "");
-        const hasDetail = !!(data.old || data.new || data.content || data.command);
+        const commandText = String(data.command || "");
+        const outputText = String(data.output || "");
+        const diffPayload = getToolDiffPayload(data);
+        const hasDiff = !!diffPayload;
+        const hasDetail = hasDiff || !!commandText || !!outputText;
 
         const rowObj = createMessageRow("tool");
         const card = document.createElement("div");
         card.className = "tool-card";
+        toolCardCounter += 1;
+        card.id = "tool-card-" + toolCardCounter;
 
         const header = document.createElement("div");
         header.className = "tool-header";
@@ -3997,36 +4985,95 @@ a:hover {
         card.appendChild(header);
 
         var detailEl = null;
+        var summaryEntry = null;
+        var openByDefault = false;
+
         if (hasDetail) {
             detailEl = document.createElement("div");
             detailEl.className = "tool-detail";
 
-            if (data.old !== undefined || data.new !== undefined) {
-                if (data.old) {
-                    const oldBlock = document.createElement("div");
-                    oldBlock.className = "tool-diff-old";
-                    oldBlock.textContent = "- " + String(data.old).replace(/\n/g, "\n- ");
-                    detailEl.appendChild(oldBlock);
+            if (hasDiff && diffPayload) {
+                const renderedDiff = buildRenderedDiff(
+                    diffPayload.oldText,
+                    diffPayload.newText,
+                    filePath || toolName || "file"
+                );
+                const toolbar = document.createElement("div");
+                toolbar.className = "tool-detail-toolbar";
+                toolbar.appendChild(
+                    createDiffStatElement(renderedDiff.additions, renderedDiff.deletions)
+                );
+
+                const actions = document.createElement("div");
+                actions.className = "tool-detail-actions";
+                const copyDiffBtn = document.createElement("button");
+                copyDiffBtn.type = "button";
+                copyDiffBtn.className = "tool-copy-diff-btn";
+                copyDiffBtn.textContent = "Copy diff";
+                copyDiffBtn.setAttribute(
+                    "data-diff-raw",
+                    encodeURIComponent(renderedDiff.unifiedText || "")
+                );
+                actions.appendChild(copyDiffBtn);
+                toolbar.appendChild(actions);
+                detailEl.appendChild(toolbar);
+
+                const diffHeader = document.createElement("div");
+                diffHeader.className = "diff-header";
+                const iconEl = document.createElement("span");
+                iconEl.className = "diff-header-icon";
+                if (diffPayload.status === "new") {
+                    iconEl.textContent = "＋";
+                } else if (diffPayload.status === "deleted") {
+                    iconEl.textContent = "−";
+                } else {
+                    iconEl.textContent = "±";
                 }
-                if (data.new) {
-                    const newBlock = document.createElement("div");
-                    newBlock.className = "tool-diff-new";
-                    newBlock.textContent = "+ " + String(data.new).replace(/\n/g, "\n+ ");
-                    detailEl.appendChild(newBlock);
+                diffHeader.appendChild(iconEl);
+                const pathEl = document.createElement("span");
+                pathEl.className = "diff-header-path";
+                pathEl.textContent = filePath || "(inline content)";
+                diffHeader.appendChild(pathEl);
+                detailEl.appendChild(diffHeader);
+
+                const diffBody = document.createElement("div");
+                diffBody.innerHTML = renderedDiff.html;
+                detailEl.appendChild(diffBody);
+
+                if (filePath) {
+                    summaryEntry = {
+                        path: filePath,
+                        additions: renderedDiff.additions,
+                        deletions: renderedDiff.deletions,
+                        status: diffPayload.status,
+                        cardId: card.id,
+                    };
                 }
-            } else if (data.content) {
-                const codeBlock = document.createElement("div");
-                codeBlock.className = "tool-code";
-                codeBlock.textContent = String(data.content);
-                detailEl.appendChild(codeBlock);
-            } else if (data.command) {
+                openByDefault = (
+                    renderedDiff.totalLines <= DIFF_AUTO_EXPAND_MAX_LINES
+                    && !renderedDiff.truncated
+                );
+            }
+
+            if (commandText) {
                 const cmdBlock = document.createElement("div");
                 cmdBlock.className = "tool-code";
-                cmdBlock.textContent = "$ " + String(data.command);
+                cmdBlock.textContent = "$ " + commandText;
                 detailEl.appendChild(cmdBlock);
             }
 
+            if (outputText) {
+                const outputBlock = document.createElement("div");
+                outputBlock.className = "tool-code";
+                outputBlock.textContent = outputText;
+                detailEl.appendChild(outputBlock);
+            }
+
             card.appendChild(detailEl);
+            detailEl.classList.toggle("open", openByDefault);
+            if (caretEl) {
+                caretEl.classList.toggle("open", openByDefault);
+            }
 
             header.addEventListener("click", function () {
                 var isOpen = detailEl.classList.toggle("open");
@@ -4039,6 +5086,7 @@ a:hover {
 
         registerToolArtifact(data, card);
         rowObj.inner.appendChild(card);
+        trackToolEvent(summaryEntry, rowObj.row);
         scrollToBottom(true);
     }
 
@@ -4064,8 +5112,12 @@ a:hover {
         const proposedAction = String(data.proposedAction || "");
         const filePath = String(data.path || "");
         const command = String(data.command || "");
-        const oldText = data.old !== undefined ? String(data.old || "") : "";
-        const newText = data.new !== undefined ? String(data.new || "") : "";
+        const oldText = (data.old !== undefined || data.old_content !== undefined)
+            ? String(data.old_content !== undefined ? data.old_content : (data.old || ""))
+            : "";
+        const newText = (data.new !== undefined || data.new_content !== undefined)
+            ? String(data.new_content !== undefined ? data.new_content : (data.new || ""))
+            : "";
         const contentText = String(data.content || "");
 
         permissionRequestCounter += 1;
@@ -4430,6 +5482,16 @@ a:hover {
         typingRow = null;
         resetToolTurnState();
         toolCardCounter = 0;
+        lastPRUrl = "";
+        Object.keys(prCardByKey).forEach(function (key) {
+            delete prCardByKey[key];
+        });
+        Object.keys(prCardByUrl).forEach(function (key) {
+            delete prCardByUrl[key];
+        });
+        Object.keys(ciCardByKey).forEach(function (key) {
+            delete ciCardByKey[key];
+        });
         resetArtifactsSession();
         closeImageLightbox();
 
@@ -4736,6 +5798,16 @@ a:hover {
             return;
         }
 
+        const ciprLink = event.target.closest(".cipr-link");
+        if (ciprLink) {
+            const href = String(ciprLink.getAttribute("href") || "").trim();
+            if (/^https?:\/\//i.test(href)) {
+                event.preventDefault();
+                window.open(href, "_blank", "noopener,noreferrer");
+            }
+            return;
+        }
+
         const codeCopyButton = event.target.closest(".code-copy-btn");
         if (codeCopyButton) {
             const encoded = codeCopyButton.getAttribute("data-raw") || "";
@@ -4748,6 +5820,43 @@ a:hover {
                     codeCopyButton.textContent = previous;
                 }, 900);
             });
+            return;
+        }
+
+        const toolDiffCopyButton = event.target.closest(".tool-copy-diff-btn");
+        if (toolDiffCopyButton) {
+            const encoded = toolDiffCopyButton.getAttribute("data-diff-raw") || "";
+            const rawDiff = safeDecodeURIComponent(encoded);
+            copyText(rawDiff, function () {
+                const previous = toolDiffCopyButton.textContent;
+                toolDiffCopyButton.textContent = "Copied";
+                window.setTimeout(function () {
+                    toolDiffCopyButton.textContent = previous;
+                }, 900);
+            });
+            return;
+        }
+
+        const diffSummaryFileButton = event.target.closest(".diff-summary-file");
+        if (diffSummaryFileButton) {
+            const targetCardId = String(diffSummaryFileButton.getAttribute("data-target-card") || "");
+            const targetCard = targetCardId ? document.getElementById(targetCardId) : null;
+            if (targetCard) {
+                targetCard.scrollIntoView({ behavior: "smooth", block: "center" });
+                targetCard.classList.add("tool-card-highlight");
+                window.setTimeout(function () {
+                    targetCard.classList.remove("tool-card-highlight");
+                }, 1200);
+
+                const targetDetail = targetCard.querySelector(".tool-detail");
+                const targetCaret = targetCard.querySelector(".tool-caret");
+                if (targetDetail && !targetDetail.classList.contains("open")) {
+                    targetDetail.classList.add("open");
+                    if (targetCaret) {
+                        targetCaret.classList.add("open");
+                    }
+                }
+            }
             return;
         }
 
@@ -4823,6 +5932,15 @@ a:hover {
     window.addHostAttachment = function (attachment) {
         addAttachment(attachment);
     };
+    window.registerArtifact = function (artifact) {
+        return registerArtifact(artifact);
+    };
+    window.openArtifactsPanel = function (artifactId, version) {
+        setArtifactsPanelOpen(true);
+        if (artifactId) {
+            selectArtifact(artifactId, version || 0);
+        }
+    };
 
     window.updateReasoningLevel = function (value) {
         selectedReasoning = value;
@@ -4853,10 +5971,15 @@ a:hover {
         updateFolderDisplay(pathValue);
     };
 
+    resetToolTurnState();
     setChatState(false);
     renderSelectorLabels();
     updateFolderDisplay("~");
     renderAttachments();
+    renderArtifactsList();
+    renderArtifactDetail();
+    updateArtifactsToggleButton();
+    setArtifactsPanelOpen(false);
 })();
 </script>
 </body>
