@@ -449,6 +449,24 @@ class ClaudeProcess:
         return texts, tools, permission_requests
 
     def _extract_tool_data(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        text_limit = 12000
+        command_limit = 400
+        description_limit = 400
+
+        def _pick_text(*values: Any) -> str:
+            for value in values:
+                if value is None:
+                    continue
+                text = str(value)
+                if text:
+                    return text
+            return ""
+
+        def _clip(value: str, limit: int = text_limit) -> str:
+            if len(value) <= limit:
+                return value
+            return value[:limit]
+
         tool_name = str(
             payload.get("name")
             or payload.get("tool_name")
@@ -481,26 +499,83 @@ class ClaudeProcess:
 
         description = payload.get("description")
         if isinstance(description, str) and description.strip():
-            tool_data["description"] = description.strip()[:400]
+            tool_data["description"] = description.strip()[:description_limit]
 
-        if tool_name in ("Edit", "edit", "MultiEdit", "multiedit"):
-            old_s = str(tool_input.get("old_string") or "")
-            new_s = str(tool_input.get("new_string") or "")
-            if old_s or new_s:
-                tool_data["old"] = old_s[:800]
-                tool_data["new"] = new_s[:800]
-        elif tool_name in ("Write", "write"):
-            content = str(tool_input.get("content") or "")
-            if content:
-                tool_data["content"] = content[:600]
-        elif tool_name in ("Bash", "bash"):
+        normalized_tool = tool_name.strip().lower()
+
+        old_s = ""
+        new_s = ""
+        content = ""
+
+        if normalized_tool in {"edit", "multiedit"}:
+            old_s = _pick_text(
+                tool_input.get("old_string"),
+                tool_input.get("old_content"),
+                tool_input.get("old"),
+                payload.get("old_content"),
+                payload.get("old"),
+            )
+            new_s = _pick_text(
+                tool_input.get("new_string"),
+                tool_input.get("new_content"),
+                tool_input.get("new"),
+                payload.get("new_content"),
+                payload.get("new"),
+            )
+        elif normalized_tool == "write":
+            old_s = _pick_text(
+                tool_input.get("old_content"),
+                tool_input.get("old"),
+                payload.get("old_content"),
+                payload.get("old"),
+            )
+            new_s = _pick_text(
+                tool_input.get("content"),
+                tool_input.get("new_content"),
+                tool_input.get("new"),
+                payload.get("content"),
+                payload.get("new_content"),
+                payload.get("new"),
+            )
+            content = new_s
+        else:
+            old_s = _pick_text(
+                tool_input.get("old_content"),
+                tool_input.get("old"),
+                payload.get("old_content"),
+                payload.get("old"),
+            )
+            new_s = _pick_text(
+                tool_input.get("new_content"),
+                tool_input.get("new"),
+                payload.get("new_content"),
+                payload.get("new"),
+            )
+
+        if old_s or new_s:
+            clipped_old = _clip(old_s)
+            clipped_new = _clip(new_s)
+            tool_data["old"] = clipped_old
+            tool_data["new"] = clipped_new
+            tool_data["old_content"] = clipped_old
+            tool_data["new_content"] = clipped_new
+
+        if content:
+            tool_data["content"] = _clip(content)
+        elif normalized_tool == "write":
+            # Keep Write previews usable in the UI even when only "new" is present.
+            derived_content = _pick_text(new_s)
+            if derived_content:
+                tool_data["content"] = _clip(derived_content)
+
+        if normalized_tool == "bash":
             cmd = str(tool_input.get("command") or payload.get("command") or "")
             if cmd:
-                tool_data["command"] = cmd[:400]
+                tool_data["command"] = cmd[:command_limit]
         else:
             cmd = str(tool_input.get("command") or payload.get("command") or "")
             if cmd:
-                tool_data["command"] = cmd[:400]
+                tool_data["command"] = cmd[:command_limit]
 
         return tool_data
 
@@ -538,7 +613,7 @@ class ClaudeProcess:
             "proposedAction": proposed_action,
         }
 
-        for key in ("path", "command", "old", "new", "content"):
+        for key in ("path", "command", "old", "new", "old_content", "new_content", "content"):
             value = tool_data.get(key)
             if value:
                 permission_data[key] = value

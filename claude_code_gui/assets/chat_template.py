@@ -611,8 +611,20 @@ a:hover {
     justify-content: flex-start;
 }
 
+.message-row.tool-summary .message-inner {
+    display: flex;
+    justify-content: flex-start;
+}
+
 .tool-card {
+    width: 100%;
     max-width: 768px;
+    border-radius: 10px;
+    transition: box-shadow 0.2s ease;
+}
+
+.tool-card.tool-card-highlight {
+    box-shadow: 0 0 0 1px rgba(217, 119, 87, 0.72), 0 0 18px rgba(217, 119, 87, 0.2);
 }
 
 .tool-header {
@@ -659,7 +671,7 @@ a:hover {
     background: var(--code-bg);
     overflow: hidden;
     font-size: 12px;
-    max-height: 300px;
+    max-height: 520px;
     overflow-y: auto;
 }
 
@@ -670,7 +682,221 @@ a:hover {
 
 @keyframes toolReveal {
     from { opacity: 0; max-height: 0; }
-    to { opacity: 1; max-height: 300px; }
+    to { opacity: 1; max-height: 520px; }
+}
+
+.tool-detail-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid #45453e;
+    background: #252520;
+}
+
+.tool-detail-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.tool-copy-diff-btn {
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.diff-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-bottom: 1px solid #40403a;
+    background: #2a2a25;
+}
+
+.diff-header-icon {
+    font-size: 12px;
+    opacity: 0.9;
+}
+
+.diff-header-path {
+    font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+    font-size: 11px;
+    color: #e8e5d8;
+    opacity: 0.92;
+    word-break: break-all;
+}
+
+.diff-container {
+    font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+    background: #1d1d18;
+    border: 1px solid #393932;
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+}
+
+.diff-body {
+    max-height: 420px;
+    overflow: auto;
+}
+
+.diff-row {
+    display: grid;
+    grid-template-columns: 52px 52px 16px 1fr;
+    align-items: start;
+    min-height: 18px;
+    line-height: 1.45;
+    font-size: 11px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.diff-line-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 0 8px 0 4px;
+    color: #7f7f72;
+    text-align: right;
+    user-select: none;
+}
+
+.diff-line-sign {
+    text-align: center;
+    color: #a4a392;
+}
+
+.diff-line-code {
+    padding: 0 10px 0 2px;
+    white-space: pre;
+    overflow-wrap: anywhere;
+    color: #dfdccf;
+}
+
+.diff-line-add {
+    background: #2d4a2d;
+}
+
+.diff-line-add .diff-line-sign,
+.diff-line-add .diff-line-code {
+    color: #b8e5b8;
+}
+
+.diff-line-remove {
+    background: #4a2d2d;
+}
+
+.diff-line-remove .diff-line-sign,
+.diff-line-remove .diff-line-code {
+    color: #f1b7b7;
+}
+
+.diff-line-context {
+    background: #1d1d18;
+}
+
+.diff-truncated-note {
+    padding: 7px 10px;
+    border-top: 1px solid #45453e;
+    color: #b8b4a4;
+    font-size: 11px;
+}
+
+.diff-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+    font-weight: 700;
+    letter-spacing: 0.1px;
+}
+
+.diff-stat-add {
+    color: #89d589;
+}
+
+.diff-stat-remove {
+    color: #f0a2a2;
+}
+
+.tool-summary-card {
+    width: 100%;
+    max-width: 768px;
+    border-radius: 10px;
+    border: 1px solid var(--chip-border);
+    background: linear-gradient(180deg, rgba(41, 41, 36, 0.98), rgba(30, 30, 25, 0.95));
+    padding: 10px;
+}
+
+.tool-summary-title {
+    font-size: 12px;
+    color: #d2cec0;
+    margin-bottom: 8px;
+    font-weight: 600;
+}
+
+.tool-summary-files {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.diff-summary-file {
+    width: 100%;
+    border: 1px solid #4a4a43;
+    border-radius: 8px;
+    background: rgba(24, 24, 20, 0.7);
+    color: var(--text);
+    padding: 6px 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    transition: all 0.15s ease;
+}
+
+.diff-summary-file:hover {
+    border-color: rgba(217, 119, 87, 0.72);
+    background: rgba(217, 119, 87, 0.11);
+}
+
+.diff-summary-filepath {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+    font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+}
+
+.diff-summary-total {
+    margin-top: 9px;
+    padding-top: 8px;
+    border-top: 1px solid #4a4a43;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #b7b29a;
+}
+
+.file-status-new {
+    border-left: 3px solid #6dbd6d;
+    background: rgba(61, 105, 61, 0.4);
+}
+
+.file-status-modified {
+    border-left: 3px solid #d6b35b;
+    background: rgba(120, 98, 48, 0.34);
+}
+
+.file-status-deleted {
+    border-left: 3px solid #d07d7d;
+    background: rgba(122, 58, 58, 0.36);
 }
 
 .tool-diff-old {
@@ -1397,6 +1623,22 @@ a:hover {
     const imageLightboxEl = document.getElementById("imageLightbox");
     const lightboxImageEl = document.getElementById("lightboxImage");
     const lightboxCloseBtnEl = document.getElementById("lightboxCloseBtn");
+    const artifactsToggleBtnEl = document.getElementById("artifactsToggleBtn");
+    const artifactsPanelEl = document.getElementById("artifactsPanel");
+    const artifactsCloseBtnEl = document.getElementById("artifactsCloseBtn");
+    const artifactsListEl = document.getElementById("artifactsList");
+    const artifactDetailEmptyEl = document.getElementById("artifactDetailEmpty");
+    const artifactDetailViewEl = document.getElementById("artifactDetailView");
+    const artifactDetailTitleEl = document.getElementById("artifactDetailTitle");
+    const artifactDetailTypeTagEl = document.getElementById("artifactDetailTypeTag");
+    const artifactDetailLanguageTagEl = document.getElementById("artifactDetailLanguageTag");
+    const artifactDetailVersionTagEl = document.getElementById("artifactDetailVersionTag");
+    const artifactVersionSelectEl = document.getElementById("artifactVersionSelect");
+    const artifactVersionDeltaEl = document.getElementById("artifactVersionDelta");
+    const artifactDetailCodeEl = document.getElementById("artifactDetailCode");
+    const artifactCopyBtnEl = document.getElementById("artifactCopyBtn");
+    const artifactDownloadBtnEl = document.getElementById("artifactDownloadBtn");
+    const artifactOpenTabBtnEl = document.getElementById("artifactOpenTabBtn");
 
     const modelButtons = Array.from(document.querySelectorAll(".model-selector"));
     const reasoningButtons = Array.from(document.querySelectorAll(".reasoning-selector"));
@@ -1408,6 +1650,10 @@ a:hover {
     const quickChips = Array.from(document.querySelectorAll(".quick-chip"));
     const folderPathButtons = Array.from(document.querySelectorAll(".folder-path-btn"));
     const folderPathTexts = Array.from(document.querySelectorAll(".folder-path-text"));
+    const DIFF_LCS_CELL_LIMIT = 250000;
+    const DIFF_HARD_LINE_LIMIT = 1800;
+    const DIFF_RENDER_LINE_LIMIT = 1000;
+    const DIFF_AUTO_EXPAND_MAX_LINES = 180;
 
     let hasMessages = false;
     let typingRow = null;
@@ -1425,7 +1671,89 @@ a:hover {
     let attachmentCounter = 0;
     let dragDepth = 0;
     let permissionRequestCounter = 0;
+    let toolCardCounter = 0;
+    let activeToolTurn = null;
+    let artifactsPanelOpen = false;
+    let artifactCounter = 0;
+    let selectedArtifactId = "";
+    let selectedArtifactVersion = 0;
+    let artifactSnippetCounter = 0;
     const seenPermissionRequests = Object.create(null);
+    const artifacts = [];
+    const artifactByKey = Object.create(null);
+    const LANGUAGE_EXTENSION_MAP = Object.freeze({
+        bash: ".sh",
+        c: ".c",
+        cpp: ".cpp",
+        csharp: ".cs",
+        css: ".css",
+        dockerfile: ".Dockerfile",
+        go: ".go",
+        graphql: ".graphql",
+        html: ".html",
+        ini: ".ini",
+        java: ".java",
+        javascript: ".js",
+        json: ".json",
+        jsx: ".jsx",
+        kotlin: ".kt",
+        lua: ".lua",
+        markdown: ".md",
+        md: ".md",
+        php: ".php",
+        powershell: ".ps1",
+        proto: ".proto",
+        python: ".py",
+        ruby: ".rb",
+        rust: ".rs",
+        scala: ".scala",
+        shell: ".sh",
+        sql: ".sql",
+        swift: ".swift",
+        toml: ".toml",
+        ts: ".ts",
+        tsx: ".tsx",
+        typescript: ".ts",
+        xml: ".xml",
+        yaml: ".yaml",
+        yml: ".yml",
+    });
+    const EXTENSION_LANGUAGE_MAP = Object.freeze({
+        c: "c",
+        conf: "ini",
+        cpp: "cpp",
+        cs: "csharp",
+        css: "css",
+        go: "go",
+        graphql: "graphql",
+        h: "c",
+        htm: "html",
+        html: "html",
+        ini: "ini",
+        java: "java",
+        js: "javascript",
+        json: "json",
+        jsx: "jsx",
+        kt: "kotlin",
+        lua: "lua",
+        md: "markdown",
+        php: "php",
+        proto: "proto",
+        ps1: "powershell",
+        py: "python",
+        rb: "ruby",
+        rs: "rust",
+        scala: "scala",
+        sh: "bash",
+        sql: "sql",
+        swift: "swift",
+        toml: "toml",
+        ts: "typescript",
+        tsx: "tsx",
+        xml: "xml",
+        yaml: "yaml",
+        yml: "yaml",
+    });
 
     function sparkleSvg(size, className) {
         const svgClass = className || "";
@@ -1467,6 +1795,1252 @@ a:hover {
             .replace(/>/g, "&gt;")
             .replace(/\"/g, "&quot;")
             .replace(/'/g, "&#39;");
+    }
+
+    function safeDecodeURIComponent(value) {
+        const raw = String(value || "");
+        if (!raw) {
+            return "";
+        }
+        try {
+            return decodeURIComponent(raw);
+        } catch (_error) {
+            return raw;
+        }
+    }
+
+    function normalizeLanguage(language) {
+        const raw = String(language || "").trim().toLowerCase();
+        if (!raw) {
+            return "";
+        }
+        if (raw === "js") {
+            return "javascript";
+        }
+        if (raw === "ts") {
+            return "typescript";
+        }
+        if (raw === "py") {
+            return "python";
+        }
+        if (raw === "yml") {
+            return "yaml";
+        }
+        return raw;
+    }
+
+    function extensionFromFilename(filename) {
+        const base = String(filename || "").split(/[\\/]/).pop() || "";
+        const dotIndex = base.lastIndexOf(".");
+        if (dotIndex <= 0 || dotIndex === base.length - 1) {
+            return "";
+        }
+        return base.slice(dotIndex + 1).toLowerCase();
+    }
+
+    function languageFromFilename(filename) {
+        const base = String(filename || "").split(/[\\/]/).pop() || "";
+        if (base.toLowerCase() === "dockerfile") {
+            return "dockerfile";
+        }
+        const ext = extensionFromFilename(base);
+        if (!ext) {
+            return "";
+        }
+        return EXTENSION_LANGUAGE_MAP[ext] || "";
+    }
+
+    function looksLikeFilenameToken(token) {
+        const raw = String(token || "").trim().replace(/^['"`]+|['"`:;,]+$/g, "");
+        if (!raw) {
+            return false;
+        }
+        if (/[\\/]/.test(raw)) {
+            return true;
+        }
+        if (/^\.\w+/.test(raw)) {
+            return true;
+        }
+        if (/^[\w.-]+\.(?:[a-z0-9]{1,12})$/i.test(raw)) {
+            return true;
+        }
+        if (/^(dockerfile|makefile)$/i.test(raw)) {
+            return true;
+        }
+        return false;
+    }
+
+    function parseFenceInfo(info) {
+        const raw = String(info || "").trim();
+        if (!raw) {
+            return {
+                info: "",
+                language: "",
+                filename: "",
+            };
+        }
+
+        const lower = raw.toLowerCase();
+        const tokens = raw.split(/\s+/).filter(Boolean);
+        let filename = "";
+        let language = "";
+        const explicitFile = raw.match(/(?:file|filename|path)\s*[:=]\s*([^\s]+)/i);
+
+        if (explicitFile && explicitFile[1]) {
+            filename = String(explicitFile[1] || "").replace(/^['"`]+|['"`:;,]+$/g, "");
+        }
+
+        if (lower.startsWith("language:")) {
+            language = raw.split(":").slice(1).join(":").trim();
+        }
+
+        tokens.forEach(function (token) {
+            if (!filename && looksLikeFilenameToken(token)) {
+                filename = String(token || "").replace(/^['"`]+|['"`:;,]+$/g, "");
+                return;
+            }
+            if (!language) {
+                language = String(token || "").replace(/^language[:=]/i, "").replace(/^['"`]+|['"`:;,]+$/g, "");
+            }
+        });
+
+        if (!language && filename) {
+            language = languageFromFilename(filename);
+        }
+
+        language = normalizeLanguage(language);
+        return {
+            info: raw,
+            language: language,
+            filename: filename,
+        };
+    }
+
+    function isStructuredLanguage(language) {
+        const normalized = normalizeLanguage(language);
+        return normalized === "json"
+            || normalized === "yaml"
+            || normalized === "toml"
+            || normalized === "ini"
+            || normalized === "xml"
+            || normalized === "graphql"
+            || normalized === "env";
+    }
+
+    function detectStructuredLanguage(content) {
+        const text = String(content || "").trim();
+        if (!text) {
+            return "";
+        }
+
+        if (
+            (text.startsWith("{") && text.endsWith("}"))
+            || (text.startsWith("[") && text.endsWith("]"))
+        ) {
+            try {
+                JSON.parse(text);
+                return "json";
+            } catch (_error) {}
+        }
+
+        if (/^[\w.-]+\s*:\s*[^\n]+/m.test(text) && text.indexOf("{") < 0) {
+            return "yaml";
+        }
+
+        if (/^\[[^\]]+\]\s*$/m.test(text) && /^[\w.-]+\s*=/m.test(text)) {
+            return "ini";
+        }
+
+        return "";
+    }
+
+    function isLikelyStructured(language, content) {
+        const text = String(content || "");
+        if (text.length < 180) {
+            return false;
+        }
+        return isStructuredLanguage(language) || !!detectStructuredLanguage(content);
+    }
+
+    function createToolTurnState() {
+        return {
+            toolCount: 0,
+            firstToolRow: null,
+            summaryRow: null,
+            summaryTitleEl: null,
+            summaryFilesEl: null,
+            summaryTotalEl: null,
+            files: Object.create(null),
+            totalAdditions: 0,
+            totalDeletions: 0,
+        };
+    }
+
+    function resetToolTurnState() {
+        activeToolTurn = createToolTurnState();
+    }
+
+    function normalizeTextForDiff(value) {
+        return String(value === undefined || value === null ? "" : value)
+            .replace(/\r\n/g, "\n")
+            .replace(/\r/g, "\n");
+    }
+
+    function splitLinesForDiff(value) {
+        const text = normalizeTextForDiff(value);
+        if (!text) {
+            return [];
+        }
+        return text.split("\n");
+    }
+
+    function classifyDiffStatus(oldText, newText) {
+        const hasOld = String(oldText || "").length > 0;
+        const hasNew = String(newText || "").length > 0;
+        if (!hasOld && hasNew) {
+            return "new";
+        }
+        if (hasOld && !hasNew) {
+            return "deleted";
+        }
+        return "modified";
+    }
+
+    function normalizeDiffType(value) {
+        if (value === "add" || value === "remove" || value === "context") {
+            return value;
+        }
+        return "context";
+    }
+
+    function mergeFileStatus(left, right) {
+        if (left === right) {
+            return left;
+        }
+        return "modified";
+    }
+
+    function createDiffOp(type, text) {
+        return {
+            type: normalizeDiffType(type),
+            text: String(text === undefined || text === null ? "" : text),
+        };
+    }
+
+    function buildLcsDiffOperations(oldLines, newLines) {
+        const oldLen = oldLines.length;
+        const newLen = newLines.length;
+        const width = newLen + 1;
+        const scores = new Uint32Array((oldLen + 1) * (newLen + 1));
+
+        for (let i = oldLen - 1; i >= 0; i -= 1) {
+            const rowOffset = i * width;
+            const nextOffset = (i + 1) * width;
+            for (let j = newLen - 1; j >= 0; j -= 1) {
+                if (oldLines[i] === newLines[j]) {
+                    scores[rowOffset + j] = scores[nextOffset + j + 1] + 1;
+                } else {
+                    const removeScore = scores[nextOffset + j];
+                    const addScore = scores[rowOffset + j + 1];
+                    scores[rowOffset + j] = removeScore >= addScore ? removeScore : addScore;
+                }
+            }
+        }
+
+        const operations = [];
+        let i = 0;
+        let j = 0;
+        while (i < oldLen && j < newLen) {
+            if (oldLines[i] === newLines[j]) {
+                operations.push(createDiffOp("context", oldLines[i]));
+                i += 1;
+                j += 1;
+                continue;
+            }
+            const removeScore = scores[(i + 1) * width + j];
+            const addScore = scores[i * width + j + 1];
+            if (removeScore >= addScore) {
+                operations.push(createDiffOp("remove", oldLines[i]));
+                i += 1;
+            } else {
+                operations.push(createDiffOp("add", newLines[j]));
+                j += 1;
+            }
+        }
+
+        while (i < oldLen) {
+            operations.push(createDiffOp("remove", oldLines[i]));
+            i += 1;
+        }
+        while (j < newLen) {
+            operations.push(createDiffOp("add", newLines[j]));
+            j += 1;
+        }
+
+        return operations;
+    }
+
+    function buildFallbackDiffOperations(oldLines, newLines) {
+        const operations = [];
+        let start = 0;
+        let oldEnd = oldLines.length - 1;
+        let newEnd = newLines.length - 1;
+
+        while (
+            start <= oldEnd &&
+            start <= newEnd &&
+            oldLines[start] === newLines[start]
+        ) {
+            operations.push(createDiffOp("context", oldLines[start]));
+            start += 1;
+        }
+
+        const suffix = [];
+        while (
+            oldEnd >= start &&
+            newEnd >= start &&
+            oldLines[oldEnd] === newLines[newEnd]
+        ) {
+            suffix.push(createDiffOp("context", oldLines[oldEnd]));
+            oldEnd -= 1;
+            newEnd -= 1;
+        }
+
+        for (let index = start; index <= oldEnd; index += 1) {
+            operations.push(createDiffOp("remove", oldLines[index]));
+        }
+        for (let index = start; index <= newEnd; index += 1) {
+            operations.push(createDiffOp("add", newLines[index]));
+        }
+        while (suffix.length) {
+            operations.push(suffix.pop());
+        }
+
+        return operations;
+    }
+
+    function computeLineDiffOperations(oldLines, newLines) {
+        if (!oldLines.length && !newLines.length) {
+            return { operations: [] };
+        }
+        if (!oldLines.length) {
+            return {
+                operations: newLines.map(function (line) {
+                    return createDiffOp("add", line);
+                }),
+            };
+        }
+        if (!newLines.length) {
+            return {
+                operations: oldLines.map(function (line) {
+                    return createDiffOp("remove", line);
+                }),
+            };
+        }
+
+        const cellCount = (oldLines.length + 1) * (newLines.length + 1);
+        const needsFallback =
+            cellCount > DIFF_LCS_CELL_LIMIT ||
+            (oldLines.length + newLines.length) > DIFF_HARD_LINE_LIMIT;
+        if (needsFallback) {
+            return {
+                operations: buildFallbackDiffOperations(oldLines, newLines),
+                usedFallback: true,
+            };
+        }
+
+        return { operations: buildLcsDiffOperations(oldLines, newLines) };
+    }
+
+    function annotateDiffRows(operations) {
+        const rows = [];
+        let oldLine = 1;
+        let newLine = 1;
+        let additions = 0;
+        let deletions = 0;
+
+        operations.forEach(function (op) {
+            const type = normalizeDiffType(op.type);
+            const row = {
+                type: type,
+                text: String(op.text || ""),
+                oldLine: "",
+                newLine: "",
+                sign: " ",
+            };
+
+            if (type === "remove") {
+                row.oldLine = oldLine;
+                row.sign = "-";
+                oldLine += 1;
+                deletions += 1;
+            } else if (type === "add") {
+                row.newLine = newLine;
+                row.sign = "+";
+                newLine += 1;
+                additions += 1;
+            } else {
+                row.oldLine = oldLine;
+                row.newLine = newLine;
+                oldLine += 1;
+                newLine += 1;
+            }
+
+            rows.push(row);
+        });
+
+        return {
+            rows: rows,
+            additions: additions,
+            deletions: deletions,
+        };
+    }
+
+    function rowCssClassForType(type) {
+        if (type === "add") {
+            return "diff-line-add";
+        }
+        if (type === "remove") {
+            return "diff-line-remove";
+        }
+        return "diff-line-context";
+    }
+
+    function buildUnifiedDiffText(pathValue, rows) {
+        const path = String(pathValue || "file");
+        const lines = [
+            "--- a/" + path,
+            "+++ b/" + path,
+        ];
+        rows.forEach(function (row) {
+            lines.push(String(row.sign || " ") + String(row.text || ""));
+        });
+        return lines.join("\n");
+    }
+
+    function renderDiffRows(rows, truncated) {
+        const rowHtml = rows.map(function (row) {
+            const className = rowCssClassForType(row.type);
+            const oldNum = row.oldLine === "" ? "" : String(row.oldLine);
+            const newNum = row.newLine === "" ? "" : String(row.newLine);
+            const safeText = row.text.length ? escapeHtml(row.text) : "&nbsp;";
+            return [
+                '<div class="diff-row ' + className + '">',
+                '  <span class="diff-line-number">' + oldNum + "</span>",
+                '  <span class="diff-line-number">' + newNum + "</span>",
+                '  <span class="diff-line-sign">' + escapeHtml(row.sign || " ") + "</span>",
+                '  <span class="diff-line-code">' + safeText + "</span>",
+                "</div>",
+            ].join("");
+        }).join("");
+
+        return [
+            '<div class="diff-container">',
+            '  <div class="diff-body">' + rowHtml + "</div>",
+            truncated
+                ? '  <div class="diff-truncated-note">Diff preview truncated for performance.</div>'
+                : "",
+            "</div>",
+        ].join("");
+    }
+
+    function buildRenderedDiff(oldText, newText, pathValue) {
+        const oldLines = splitLinesForDiff(oldText);
+        const newLines = splitLinesForDiff(newText);
+        const diffResult = computeLineDiffOperations(oldLines, newLines);
+        const annotated = annotateDiffRows(diffResult.operations);
+        const sourceRows = annotated.rows.length
+            ? annotated.rows
+            : [{
+                type: "context",
+                text: "(empty file)",
+                oldLine: "",
+                newLine: "",
+                sign: " ",
+            }];
+        const totalLines = sourceRows.length;
+        const truncated = totalLines > DIFF_RENDER_LINE_LIMIT;
+        const visibleRows = truncated
+            ? sourceRows.slice(0, DIFF_RENDER_LINE_LIMIT)
+            : sourceRows;
+
+        return {
+            html: renderDiffRows(visibleRows, truncated),
+            additions: annotated.additions,
+            deletions: annotated.deletions,
+            totalLines: totalLines,
+            truncated: truncated || !!diffResult.usedFallback,
+            unifiedText: buildUnifiedDiffText(pathValue, annotated.rows),
+        };
+    }
+
+    function renderDiff(oldText, newText) {
+        return buildRenderedDiff(oldText, newText, "").html;
+    }
+
+    function getToolDiffPayload(data) {
+        const hasOld = data.old !== undefined || data.old_content !== undefined;
+        const hasNew = data.new !== undefined || data.new_content !== undefined;
+        const hasContent = data.content !== undefined;
+
+        if (!hasOld && !hasNew && !hasContent) {
+            return null;
+        }
+
+        let oldText = "";
+        let newText = "";
+
+        if (hasOld) {
+            oldText = normalizeTextForDiff(
+                data.old_content !== undefined ? data.old_content : data.old
+            );
+        }
+        if (hasNew) {
+            newText = normalizeTextForDiff(
+                data.new_content !== undefined ? data.new_content : data.new
+            );
+        }
+        if (!hasNew && hasContent) {
+            newText = normalizeTextForDiff(data.content);
+        }
+
+        return {
+            oldText: oldText,
+            newText: newText,
+            status: classifyDiffStatus(oldText, newText),
+        };
+    }
+
+    function createDiffStatElement(additions, deletions) {
+        const stat = document.createElement("span");
+        stat.className = "diff-stat";
+        stat.innerHTML = [
+            '<span class="diff-stat-add">+' + Number(additions || 0) + "</span>",
+            '<span class="diff-stat-remove">-' + Number(deletions || 0) + "</span>",
+            "<span>lines</span>",
+        ].join(" ");
+        return stat;
+    }
+
+    function ensureToolSummaryCard() {
+        if (!activeToolTurn || activeToolTurn.summaryRow) {
+            return;
+        }
+        if (!activeToolTurn.firstToolRow || !activeToolTurn.firstToolRow.parentNode) {
+            return;
+        }
+
+        const summaryRow = document.createElement("div");
+        summaryRow.className = "message-row tool-summary";
+        const inner = document.createElement("div");
+        inner.className = "message-inner";
+        const card = document.createElement("div");
+        card.className = "tool-summary-card";
+
+        const title = document.createElement("div");
+        title.className = "tool-summary-title";
+        card.appendChild(title);
+
+        const files = document.createElement("div");
+        files.className = "tool-summary-files";
+        card.appendChild(files);
+
+        const total = document.createElement("div");
+        total.className = "diff-summary-total";
+        card.appendChild(total);
+
+        inner.appendChild(card);
+        summaryRow.appendChild(inner);
+
+        activeToolTurn.summaryRow = summaryRow;
+        activeToolTurn.summaryTitleEl = title;
+        activeToolTurn.summaryFilesEl = files;
+        activeToolTurn.summaryTotalEl = total;
+
+        messagesEl.insertBefore(summaryRow, activeToolTurn.firstToolRow);
+    }
+
+    function updateToolSummaryCard() {
+        if (!activeToolTurn) {
+            return;
+        }
+
+        const fileEntries = Object.keys(activeToolTurn.files).map(function (key) {
+            return activeToolTurn.files[key];
+        });
+
+        if (activeToolTurn.toolCount < 2 || !fileEntries.length) {
+            if (activeToolTurn.summaryRow) {
+                activeToolTurn.summaryRow.remove();
+                activeToolTurn.summaryRow = null;
+                activeToolTurn.summaryTitleEl = null;
+                activeToolTurn.summaryFilesEl = null;
+                activeToolTurn.summaryTotalEl = null;
+            }
+            return;
+        }
+
+        ensureToolSummaryCard();
+        if (!activeToolTurn.summaryFilesEl || !activeToolTurn.summaryTotalEl || !activeToolTurn.summaryTitleEl) {
+            return;
+        }
+
+        fileEntries.sort(function (left, right) {
+            return String(left.path || "").localeCompare(String(right.path || ""));
+        });
+        activeToolTurn.summaryTitleEl.textContent = fileEntries.length === 1
+            ? "1 changed file in this turn"
+            : fileEntries.length + " changed files in this turn";
+
+        activeToolTurn.summaryFilesEl.innerHTML = "";
+        fileEntries.forEach(function (entry) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "diff-summary-file file-status-" + entry.status;
+            button.setAttribute("data-target-card", entry.cardId);
+
+            const filePathEl = document.createElement("span");
+            filePathEl.className = "diff-summary-filepath";
+            filePathEl.textContent = String(entry.path || "(unknown)");
+            button.appendChild(filePathEl);
+
+            button.appendChild(createDiffStatElement(entry.additions, entry.deletions));
+            activeToolTurn.summaryFilesEl.appendChild(button);
+        });
+
+        const summaryLabel = document.createElement("span");
+        summaryLabel.textContent = "Total";
+        const summaryStat = createDiffStatElement(
+            activeToolTurn.totalAdditions,
+            activeToolTurn.totalDeletions
+        );
+        activeToolTurn.summaryTotalEl.innerHTML = "";
+        activeToolTurn.summaryTotalEl.appendChild(summaryLabel);
+        activeToolTurn.summaryTotalEl.appendChild(summaryStat);
+    }
+
+    function trackToolEvent(summaryEntry, rowElement) {
+        if (!activeToolTurn) {
+            resetToolTurnState();
+        }
+
+        activeToolTurn.toolCount += 1;
+        if (!activeToolTurn.firstToolRow && rowElement) {
+            activeToolTurn.firstToolRow = rowElement;
+        }
+
+        if (summaryEntry && summaryEntry.path) {
+            const key = String(summaryEntry.path);
+            const additions = Number(summaryEntry.additions || 0);
+            const deletions = Number(summaryEntry.deletions || 0);
+            const status = String(summaryEntry.status || "modified");
+            const cardId = String(summaryEntry.cardId || "");
+            const existing = activeToolTurn.files[key];
+
+            if (existing) {
+                existing.additions += additions;
+                existing.deletions += deletions;
+                existing.status = mergeFileStatus(existing.status, status);
+                if (!existing.cardId && cardId) {
+                    existing.cardId = cardId;
+                }
+            } else {
+                activeToolTurn.files[key] = {
+                    path: key,
+                    additions: additions,
+                    deletions: deletions,
+                    status: status,
+                    cardId: cardId,
+                };
+            }
+
+            activeToolTurn.totalAdditions += additions;
+            activeToolTurn.totalDeletions += deletions;
+        }
+
+        updateToolSummaryCard();
+    }
+
+    function artifactIconForType(type) {
+        if (type === "file") {
+            return "📄";
+        }
+        if (type === "data") {
+            return "🧱";
+        }
+        return "💻";
+    }
+
+    function artifactTypeLabel(type) {
+        if (type === "file") {
+            return "file";
+        }
+        if (type === "data") {
+            return "data";
+        }
+        return "code";
+    }
+
+    function languageLabel(language) {
+        const normalized = normalizeLanguage(language);
+        return normalized || "plain text";
+    }
+
+    function formatArtifactTimestamp(timestamp) {
+        const date = new Date(timestamp || Date.now());
+        if (Number.isNaN(date.getTime())) {
+            return "";
+        }
+        return date.toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+        });
+    }
+
+    function artifactDisplayTitle(title, fallbackType, fallbackLanguage) {
+        const rawTitle = String(title || "").trim();
+        if (rawTitle) {
+            return rawTitle;
+        }
+        artifactSnippetCounter += 1;
+        const base = fallbackType === "data"
+            ? "structured-data"
+            : (normalizeLanguage(fallbackLanguage) || "code");
+        return base + "-snippet-" + artifactSnippetCounter;
+    }
+
+    function artifactKeyFrom(type, title, language) {
+        const normalizedType = String(type || "code").toLowerCase();
+        const normalizedTitle = String(title || "").trim().toLowerCase();
+        const normalizedLanguage = normalizeLanguage(language);
+        if (normalizedType === "file" && normalizedTitle) {
+            return "file:" + normalizedTitle;
+        }
+        if (normalizedType === "data" && normalizedTitle) {
+            return "data:" + normalizedTitle;
+        }
+        return normalizedType + ":" + normalizedTitle + ":" + normalizedLanguage;
+    }
+
+    function findArtifactById(artifactId) {
+        const id = String(artifactId || "");
+        if (!id) {
+            return null;
+        }
+        return artifacts.find(function (artifact) {
+            return artifact.id === id;
+        }) || null;
+    }
+
+    function getArtifactVersionEntry(artifact, versionNumber) {
+        if (!artifact || !artifact.versions || !artifact.versions.length) {
+            return null;
+        }
+        const preferred = Number(versionNumber || 0);
+        if (preferred > 0) {
+            const picked = artifact.versions.find(function (entry) {
+                return entry.version === preferred;
+            });
+            if (picked) {
+                return picked;
+            }
+        }
+        return artifact.versions[artifact.versions.length - 1];
+    }
+
+    function setArtifactsPanelOpen(isOpen) {
+        artifactsPanelOpen = !!isOpen;
+        chatViewEl.classList.toggle("artifacts-open", artifactsPanelOpen);
+        if (artifactsPanelEl) {
+            artifactsPanelEl.setAttribute("aria-hidden", artifactsPanelOpen ? "false" : "true");
+        }
+        if (artifactsToggleBtnEl) {
+            artifactsToggleBtnEl.classList.toggle("active", artifactsPanelOpen);
+            artifactsToggleBtnEl.setAttribute("aria-expanded", artifactsPanelOpen ? "true" : "false");
+        }
+    }
+
+    function updateArtifactsToggleButton() {
+        if (!artifactsToggleBtnEl) {
+            return;
+        }
+        const count = artifacts.length;
+        artifactsToggleBtnEl.textContent = count > 0
+            ? "📦 Artifacts (" + count + ")"
+            : "📦 Artifacts";
+    }
+
+    function renderArtifactsList() {
+        if (!artifactsListEl) {
+            return;
+        }
+
+        artifactsListEl.innerHTML = "";
+        if (!artifacts.length) {
+            const emptyEl = document.createElement("div");
+            emptyEl.className = "artifact-empty";
+            emptyEl.textContent = "No artifacts yet.";
+            artifactsListEl.appendChild(emptyEl);
+            return;
+        }
+
+        artifacts.forEach(function (artifact) {
+            const row = document.createElement("button");
+            row.type = "button";
+            row.className = "artifact-row";
+            row.setAttribute("data-artifact-id", artifact.id);
+            if (artifact.id === selectedArtifactId) {
+                row.classList.add("selected");
+            }
+
+            const head = document.createElement("div");
+            head.className = "artifact-row-head";
+
+            const title = document.createElement("div");
+            title.className = "artifact-row-title";
+            title.textContent = artifactIconForType(artifact.type) + " " + artifact.title;
+            head.appendChild(title);
+
+            const versionBadge = document.createElement("span");
+            versionBadge.className = "artifact-row-badge";
+            versionBadge.textContent = "v" + artifact.version;
+            head.appendChild(versionBadge);
+            row.appendChild(head);
+
+            const meta = document.createElement("div");
+            meta.className = "artifact-row-meta";
+            meta.textContent = artifactTypeLabel(artifact.type) + " • " + formatArtifactTimestamp(artifact.timestamp);
+            row.appendChild(meta);
+
+            row.addEventListener("click", function () {
+                selectArtifact(artifact.id, artifact.version);
+            });
+
+            artifactsListEl.appendChild(row);
+        });
+    }
+
+    function artifactLineDeltaSummary(currentText, previousText) {
+        const currentLines = String(currentText || "").split("\n");
+        const previousLines = String(previousText || "").split("\n");
+        const maxLen = Math.max(currentLines.length, previousLines.length);
+        let additions = 0;
+        let deletions = 0;
+
+        for (let index = 0; index < maxLen; index += 1) {
+            const currentLine = currentLines[index];
+            const previousLine = previousLines[index];
+            if (currentLine === previousLine) {
+                continue;
+            }
+            if (currentLine !== undefined) {
+                additions += 1;
+            }
+            if (previousLine !== undefined) {
+                deletions += 1;
+            }
+        }
+
+        if (!additions && !deletions) {
+            return "No changes";
+        }
+        return "+" + additions + " / -" + deletions + " lines";
+    }
+
+    function renderArtifactDetail() {
+        const artifact = findArtifactById(selectedArtifactId);
+        if (!artifact) {
+            if (artifactDetailEmptyEl) {
+                artifactDetailEmptyEl.classList.remove("artifact-hidden");
+            }
+            if (artifactDetailViewEl) {
+                artifactDetailViewEl.classList.add("artifact-hidden");
+            }
+            return;
+        }
+
+        const versionEntry = getArtifactVersionEntry(artifact, selectedArtifactVersion);
+        if (!versionEntry) {
+            return;
+        }
+
+        selectedArtifactVersion = versionEntry.version;
+        if (artifactDetailEmptyEl) {
+            artifactDetailEmptyEl.classList.add("artifact-hidden");
+        }
+        if (artifactDetailViewEl) {
+            artifactDetailViewEl.classList.remove("artifact-hidden");
+        }
+        if (artifactDetailTitleEl) {
+            artifactDetailTitleEl.textContent = artifact.title;
+        }
+        if (artifactDetailTypeTagEl) {
+            artifactDetailTypeTagEl.textContent = artifactTypeLabel(artifact.type);
+        }
+        if (artifactDetailLanguageTagEl) {
+            artifactDetailLanguageTagEl.textContent = languageLabel(versionEntry.language || artifact.language);
+        }
+        if (artifactDetailVersionTagEl) {
+            artifactDetailVersionTagEl.textContent = "v" + versionEntry.version;
+        }
+
+        if (artifactVersionSelectEl) {
+            artifactVersionSelectEl.innerHTML = "";
+            artifact.versions.slice().reverse().forEach(function (entry) {
+                const option = document.createElement("option");
+                option.value = String(entry.version);
+                option.textContent = "v" + entry.version + " • " + formatArtifactTimestamp(entry.timestamp);
+                if (entry.version === versionEntry.version) {
+                    option.selected = true;
+                }
+                artifactVersionSelectEl.appendChild(option);
+            });
+        }
+
+        const previousVersion = artifact.versions.find(function (entry) {
+            return entry.version === versionEntry.version - 1;
+        });
+        if (artifactVersionDeltaEl) {
+            artifactVersionDeltaEl.textContent = previousVersion
+                ? artifactLineDeltaSummary(versionEntry.content, previousVersion.content)
+                : "Initial version";
+        }
+
+        if (artifactDetailCodeEl) {
+            artifactDetailCodeEl.className = versionEntry.language
+                ? "hljs language-" + normalizeLanguage(versionEntry.language)
+                : "hljs";
+            artifactDetailCodeEl.innerHTML = highlightCode(versionEntry.content, versionEntry.language || artifact.language);
+        }
+    }
+
+    function selectArtifact(artifactId, versionNumber) {
+        selectedArtifactId = String(artifactId || "");
+        selectedArtifactVersion = Number(versionNumber || 0);
+        renderArtifactsList();
+        renderArtifactDetail();
+    }
+
+    function suggestArtifactFilename(artifact, versionEntry) {
+        const rawTitle = String((artifact && artifact.title) || "").trim() || "artifact";
+        const baseName = rawTitle.split(/[\\/]/).pop() || "artifact";
+        const hasExtension = /\.[a-z0-9]{1,12}$/i.test(baseName);
+        const language = normalizeLanguage((versionEntry && versionEntry.language) || (artifact && artifact.language));
+
+        if (hasExtension) {
+            return baseName.replace(/[\\:*?"<>|]/g, "_");
+        }
+        if (language === "dockerfile") {
+            return "Dockerfile";
+        }
+        const extension = LANGUAGE_EXTENSION_MAP[language] || ".txt";
+        return (baseName + extension).replace(/[\\:*?"<>|]/g, "_");
+    }
+
+    function downloadArtifactContent() {
+        const artifact = findArtifactById(selectedArtifactId);
+        if (!artifact) {
+            return;
+        }
+        const versionEntry = getArtifactVersionEntry(artifact, selectedArtifactVersion);
+        if (!versionEntry) {
+            return;
+        }
+
+        const blob = new Blob([String(versionEntry.content || "")], {
+            type: "text/plain;charset=utf-8",
+        });
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = blobUrl;
+        link.download = suggestArtifactFilename(artifact, versionEntry);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(function () {
+            URL.revokeObjectURL(blobUrl);
+        }, 1000);
+    }
+
+    function openArtifactInNewTab() {
+        const artifact = findArtifactById(selectedArtifactId);
+        if (!artifact) {
+            return;
+        }
+        const versionEntry = getArtifactVersionEntry(artifact, selectedArtifactVersion);
+        if (!versionEntry) {
+            return;
+        }
+
+        const blob = new Blob([String(versionEntry.content || "")], {
+            type: "text/plain;charset=utf-8",
+        });
+        const blobUrl = URL.createObjectURL(blob);
+        window.open(blobUrl, "_blank", "noopener,noreferrer");
+        window.setTimeout(function () {
+            URL.revokeObjectURL(blobUrl);
+        }, 4000);
+    }
+
+    function registerArtifact(artifact) {
+        const typeValue = String(artifact && artifact.type ? artifact.type : "code").toLowerCase();
+        const type = typeValue === "file" || typeValue === "data" ? typeValue : "code";
+        const content = String(artifact && artifact.content ? artifact.content : "");
+        if (!content.trim()) {
+            return null;
+        }
+
+        const language = normalizeLanguage((artifact && artifact.language) || "");
+        const title = artifactDisplayTitle(artifact && artifact.title, type, language);
+        const timestamp = String((artifact && artifact.timestamp) || new Date().toISOString());
+        const key = String((artifact && artifact.key) || artifactKeyFrom(type, title, language)).trim();
+
+        let record = key ? findArtifactById(artifactByKey[key]) : null;
+        if (record) {
+            const latest = record.versions[record.versions.length - 1];
+            const nextLanguage = language || latest.language || record.language;
+            const nextContent = content;
+            if (latest.content !== nextContent || latest.language !== nextLanguage) {
+                const nextVersion = latest.version + 1;
+                record.versions.push({
+                    version: nextVersion,
+                    content: nextContent,
+                    language: nextLanguage,
+                    timestamp: timestamp,
+                });
+                record.version = nextVersion;
+                record.content = nextContent;
+                record.language = nextLanguage;
+            }
+            record.timestamp = timestamp;
+            record.title = title;
+            record.type = type;
+
+            const index = artifacts.indexOf(record);
+            if (index > 0) {
+                artifacts.splice(index, 1);
+                artifacts.unshift(record);
+            }
+        } else {
+            artifactCounter += 1;
+            const id = artifact && artifact.id ? String(artifact.id) : "artifact-" + artifactCounter;
+            record = {
+                id: id,
+                type: type,
+                title: title,
+                language: language,
+                content: content,
+                timestamp: timestamp,
+                version: 1,
+                key: key,
+                versions: [{
+                    version: 1,
+                    content: content,
+                    language: language,
+                    timestamp: timestamp,
+                }],
+            };
+            artifacts.unshift(record);
+            if (key) {
+                artifactByKey[key] = id;
+            }
+        }
+
+        updateArtifactsToggleButton();
+        renderArtifactsList();
+        if (selectedArtifactId === record.id) {
+            selectedArtifactVersion = record.version;
+            renderArtifactDetail();
+        }
+        return record;
+    }
+
+    function createArtifactIndicator(artifact) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "artifact-indicator";
+        button.setAttribute("data-artifact-id", artifact.id);
+        button.setAttribute("data-artifact-version", String(artifact.version));
+
+        const icon = document.createElement("span");
+        icon.className = "artifact-indicator-icon";
+        icon.textContent = artifactIconForType(artifact.type);
+        button.appendChild(icon);
+
+        const label = document.createElement("span");
+        label.textContent = "Open in Artifacts • " + artifact.title;
+        button.appendChild(label);
+        return button;
+    }
+
+    function appendArtifactIndicator(anchorEl, artifact) {
+        if (!anchorEl || !artifact) {
+            return;
+        }
+
+        const existing = anchorEl.nextElementSibling;
+        if (
+            existing
+            && existing.classList
+            && existing.classList.contains("artifact-indicator")
+            && existing.getAttribute("data-artifact-id") === artifact.id
+        ) {
+            existing.setAttribute("data-artifact-version", String(artifact.version));
+            return;
+        }
+
+        const indicator = createArtifactIndicator(artifact);
+        anchorEl.insertAdjacentElement("afterend", indicator);
+    }
+
+    function extractCodeFences(rawText) {
+        const source = String(rawText || "").replace(/\r\n/g, "\n");
+        const blocks = [];
+        let match;
+        const regex = /```([^\n`]*)\n?([\s\S]*?)```/g;
+
+        while ((match = regex.exec(source)) !== null) {
+            const info = parseFenceInfo(match[1]);
+            blocks.push({
+                info: info.info,
+                lang: info.language,
+                filename: info.filename,
+                code: match[2] || "",
+            });
+        }
+        return blocks;
+    }
+
+    function artifactFromCodeFence(block, index) {
+        if (!block) {
+            return null;
+        }
+        const language = normalizeLanguage(block.lang || languageFromFilename(block.filename));
+        const content = String(block.code || "");
+        const title = String(block.filename || "").trim();
+        const structured = isLikelyStructured(language, content);
+        const hasMeta = !!(title || language);
+
+        if (!hasMeta && !structured) {
+            return null;
+        }
+
+        const type = title ? "file" : (structured ? "data" : "code");
+        const fallbackTitle = type === "data"
+            ? ((language || detectStructuredLanguage(content) || "data") + "-output")
+            : ((language || "code") + "-snippet-" + (index + 1));
+        return {
+            type: type,
+            title: title || fallbackTitle,
+            language: language || detectStructuredLanguage(content),
+            content: content,
+            key: title ? ("file:" + title.toLowerCase()) : "",
+        };
+    }
+
+    function artifactFromStructuredText(rawText) {
+        const trimmed = String(rawText || "").trim();
+        if (trimmed.length < 220) {
+            return null;
+        }
+        const language = detectStructuredLanguage(trimmed);
+        if (!language) {
+            return null;
+        }
+        return {
+            type: "data",
+            title: "structured-output." + (language === "yaml" ? "yaml" : language),
+            language: language,
+            content: trimmed,
+            key: "data:structured-output",
+        };
+    }
+
+    function registerAssistantArtifacts(messageBodyEl, rawText) {
+        if (!messageBodyEl) {
+            return;
+        }
+
+        const parsedBlocks = extractCodeFences(rawText);
+        parsedBlocks.forEach(function (block, index) {
+            const candidate = artifactFromCodeFence(block, index);
+            if (!candidate) {
+                return;
+            }
+            const artifact = registerArtifact(candidate);
+            if (!artifact) {
+                return;
+            }
+            const anchor = messageBodyEl.querySelector('.code-block[data-code-index="' + index + '"]');
+            if (anchor) {
+                appendArtifactIndicator(anchor, artifact);
+            }
+        });
+
+        if (!parsedBlocks.length) {
+            const structuredCandidate = artifactFromStructuredText(rawText);
+            if (structuredCandidate) {
+                const artifact = registerArtifact(structuredCandidate);
+                if (artifact) {
+                    appendArtifactIndicator(messageBodyEl, artifact);
+                }
+            }
+        }
+    }
+
+    function registerToolArtifact(data, cardEl) {
+        if (!data || !cardEl) {
+            return;
+        }
+        const toolName = String(data.name || "").trim().toLowerCase();
+        const filePath = String(data.path || "").trim();
+        const modifiesFile = toolName === "write" || toolName === "edit" || toolName === "multiedit";
+        if (!filePath && !modifiesFile) {
+            return;
+        }
+
+        let content = "";
+        if (data.new !== undefined && data.new !== null && String(data.new).trim()) {
+            content = String(data.new);
+        } else if (data.content !== undefined && data.content !== null && String(data.content).trim()) {
+            content = String(data.content);
+        } else if (data.command !== undefined && data.command !== null && String(data.command).trim()) {
+            content = "$ " + String(data.command);
+        } else if (data.old !== undefined && data.old !== null && String(data.old).trim()) {
+            content = String(data.old);
+        }
+
+        if (!content.trim()) {
+            return;
+        }
+
+        const language = normalizeLanguage(languageFromFilename(filePath) || detectStructuredLanguage(content));
+        const title = filePath || (toolName + "-artifact");
+        const artifact = registerArtifact({
+            type: filePath ? "file" : "code",
+            title: title,
+            language: language,
+            content: content,
+            key: filePath ? ("file:" + filePath.toLowerCase()) : "",
+        });
+        if (artifact) {
+            appendArtifactIndicator(cardEl, artifact);
+        }
+    }
+
+    function resetArtifactsSession() {
+        artifacts.length = 0;
+        Object.keys(artifactByKey).forEach(function (key) {
+            delete artifactByKey[key];
+        });
+        artifactCounter = 0;
+        artifactSnippetCounter = 0;
+        selectedArtifactId = "";
+        selectedArtifactVersion = 0;
+        setArtifactsPanelOpen(false);
+        renderArtifactsList();
+        renderArtifactDetail();
+        updateArtifactsToggleButton();
     }
 
     const EMOJI_SHORTCODES = Object.freeze({
@@ -1796,9 +3370,15 @@ a:hover {
         let source = String(input || "").replace(/\r\n/g, "\n");
         const codeBlocks = [];
 
-        source = source.replace(/```([a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g, function (_, lang, code) {
+        source = source.replace(/```([^\n`]*)\n?([\s\S]*?)```/g, function (_, info, code) {
             const id = codeBlocks.length;
-            codeBlocks.push({ lang: String(lang || "").trim(), code: code || "" });
+            const parsedInfo = parseFenceInfo(info);
+            codeBlocks.push({
+                info: parsedInfo.info,
+                lang: parsedInfo.language,
+                filename: parsedInfo.filename,
+                code: code || "",
+            });
             return "@@CODEBLOCK_" + id + "@@";
         });
 
@@ -1859,16 +3439,26 @@ a:hover {
 
         html = html.replace(/@@CODEBLOCK_(\d+)@@/g, function (_, indexStr) {
             const index = Number(indexStr);
-            const block = codeBlocks[index] || { lang: "", code: "" };
+            const block = codeBlocks[index] || { lang: "", filename: "", code: "" };
             const code = String(block.code || "");
             const highlighted = highlightCode(code, block.lang);
             const rawEncoded = encodeURIComponent(code);
-            const lang = escapeHtml(block.lang || "code");
+            const lang = normalizeLanguage(block.lang || "");
+            const filename = String(block.filename || "").trim();
+            const title = filename || lang || "code";
+            const titleEncoded = encodeURIComponent(title);
+            const langEncoded = encodeURIComponent(lang);
+            const fileEncoded = encodeURIComponent(filename);
+            const label = escapeHtml(
+                filename && lang
+                    ? (filename + " • " + lang)
+                    : title
+            );
             const codeClass = block.lang ? "hljs language-" + escapeHtml(block.lang) : "hljs";
             return [
-                '<div class="code-block">',
+                '<div class="code-block" data-code-index="' + index + '" data-code-title="' + titleEncoded + '" data-code-lang="' + langEncoded + '" data-code-filename="' + fileEncoded + '">',
                 '  <div class="code-head">',
-                "    <span>" + lang + "</span>",
+                "    <span>" + label + "</span>",
                 '    <button class="action-btn code-copy-btn" data-raw="' + rawEncoded + '">Copy</button>',
                 "  </div>",
                 '  <pre><code class="' + codeClass + '">' + highlighted + '</code></pre>',
@@ -2447,6 +4037,7 @@ a:hover {
             });
         }
 
+        registerToolArtifact(data, card);
         rowObj.inner.appendChild(card);
         scrollToBottom(true);
     }
@@ -2837,6 +4428,9 @@ a:hover {
         currentAssistantBody = null;
         currentAssistantRow = null;
         typingRow = null;
+        resetToolTurnState();
+        toolCardCounter = 0;
+        resetArtifactsSession();
         closeImageLightbox();
 
         messagesEl.innerHTML = "";
@@ -3014,6 +4608,62 @@ a:hover {
         });
     });
 
+    if (artifactsToggleBtnEl) {
+        artifactsToggleBtnEl.addEventListener("click", function () {
+            setArtifactsPanelOpen(!artifactsPanelOpen);
+            if (artifactsPanelOpen && !selectedArtifactId && artifacts.length) {
+                selectArtifact(artifacts[0].id, artifacts[0].version);
+            }
+        });
+    }
+
+    if (artifactsCloseBtnEl) {
+        artifactsCloseBtnEl.addEventListener("click", function () {
+            setArtifactsPanelOpen(false);
+        });
+    }
+
+    if (artifactVersionSelectEl) {
+        artifactVersionSelectEl.addEventListener("change", function () {
+            const version = Number(artifactVersionSelectEl.value || 0);
+            if (selectedArtifactId) {
+                selectArtifact(selectedArtifactId, version);
+            }
+        });
+    }
+
+    if (artifactCopyBtnEl) {
+        artifactCopyBtnEl.addEventListener("click", function () {
+            const artifact = findArtifactById(selectedArtifactId);
+            if (!artifact) {
+                return;
+            }
+            const versionEntry = getArtifactVersionEntry(artifact, selectedArtifactVersion);
+            if (!versionEntry) {
+                return;
+            }
+            copyText(versionEntry.content, function () {
+                const previous = artifactCopyBtnEl.textContent;
+                artifactCopyBtnEl.textContent = "Copied";
+                window.setTimeout(function () {
+                    artifactCopyBtnEl.textContent = previous;
+                }, 900);
+            });
+        });
+    }
+
+    if (artifactDownloadBtnEl) {
+        artifactDownloadBtnEl.addEventListener("click", function () {
+            downloadArtifactContent();
+        });
+    }
+
+    if (artifactOpenTabBtnEl) {
+        artifactOpenTabBtnEl.addEventListener("click", function () {
+            openArtifactInNewTab();
+        });
+    }
+
     if (lightboxCloseBtnEl) {
         lightboxCloseBtnEl.addEventListener("click", function () {
             closeImageLightbox();
@@ -3089,12 +4739,7 @@ a:hover {
         const codeCopyButton = event.target.closest(".code-copy-btn");
         if (codeCopyButton) {
             const encoded = codeCopyButton.getAttribute("data-raw") || "";
-            let raw = "";
-            try {
-                raw = decodeURIComponent(encoded);
-            } catch (_error) {
-                raw = "";
-            }
+            const raw = safeDecodeURIComponent(encoded);
 
             copyText(raw, function () {
                 const previous = codeCopyButton.textContent;
@@ -3103,6 +4748,17 @@ a:hover {
                     codeCopyButton.textContent = previous;
                 }, 900);
             });
+            return;
+        }
+
+        const artifactButton = event.target.closest(".artifact-indicator");
+        if (artifactButton) {
+            const artifactId = String(artifactButton.getAttribute("data-artifact-id") || "");
+            const artifactVersion = Number(artifactButton.getAttribute("data-artifact-version") || 0);
+            if (artifactId) {
+                setArtifactsPanelOpen(true);
+                selectArtifact(artifactId, artifactVersion);
+            }
             return;
         }
 
@@ -3142,6 +4798,10 @@ a:hover {
         if (event.key === "Escape") {
             if (imageLightboxEl && imageLightboxEl.classList.contains("open")) {
                 closeImageLightbox();
+                return;
+            }
+            if (artifactsPanelOpen) {
+                setArtifactsPanelOpen(false);
                 return;
             }
             closeActivePopup(false);
