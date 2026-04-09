@@ -704,6 +704,223 @@ a:hover {
     opacity: 0.85;
 }
 
+.message-row.permission .message-inner {
+    display: flex;
+    justify-content: flex-start;
+}
+
+.permission-request-card {
+    width: 100%;
+    max-width: 768px;
+    border-radius: 12px;
+    border: 1px solid rgba(217, 131, 64, 0.75);
+    background:
+        linear-gradient(135deg, rgba(72, 56, 36, 0.66), rgba(47, 47, 42, 0.96)),
+        #2f2f2a;
+    box-shadow:
+        0 0 0 1px rgba(217, 131, 64, 0.16),
+        0 10px 28px rgba(0, 0, 0, 0.24);
+    padding: 12px;
+}
+
+.permission-request-card.pending {
+    animation: permissionPulse 1800ms ease-in-out infinite;
+}
+
+.permission-request-card.resolved {
+    animation: none;
+    opacity: 0.82;
+}
+
+@keyframes permissionPulse {
+    0% {
+        box-shadow:
+            0 0 0 1px rgba(217, 131, 64, 0.16),
+            0 10px 28px rgba(0, 0, 0, 0.24);
+    }
+    50% {
+        box-shadow:
+            0 0 0 1px rgba(217, 131, 64, 0.34),
+            0 10px 30px rgba(0, 0, 0, 0.24),
+            0 0 18px rgba(217, 131, 64, 0.2);
+    }
+    100% {
+        box-shadow:
+            0 0 0 1px rgba(217, 131, 64, 0.16),
+            0 10px 28px rgba(0, 0, 0, 0.24);
+    }
+}
+
+.permission-request-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.permission-request-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(217, 131, 64, 0.18);
+    color: #f8c16d;
+    font-size: 13px;
+}
+
+.permission-request-title {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.permission-request-tool {
+    color: #f7d9b0;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+}
+
+.permission-request-subtitle {
+    color: #c8b9a0;
+    font-size: 11px;
+}
+
+.permission-request-description {
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.4;
+    margin: 0 0 8px;
+}
+
+.permission-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.permission-meta-item {
+    flex: 1 1 240px;
+    min-width: 0;
+}
+
+.permission-meta-label {
+    color: #c3a882;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.35px;
+    margin-bottom: 2px;
+}
+
+.permission-meta-value {
+    color: #e4ddd0;
+    font-size: 12px;
+    font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+    word-break: break-word;
+}
+
+.permission-preview {
+    border-radius: 8px;
+    border: 1px solid rgba(217, 131, 64, 0.28);
+    background: rgba(20, 20, 16, 0.5);
+    overflow: hidden;
+    font-size: 11px;
+    margin-bottom: 10px;
+}
+
+.permission-preview .tool-diff-old,
+.permission-preview .tool-diff-new,
+.permission-preview .tool-code {
+    border-bottom: 1px solid rgba(217, 131, 64, 0.16);
+}
+
+.permission-preview .tool-code:last-child,
+.permission-preview .tool-diff-new:last-child {
+    border-bottom: 0;
+}
+
+.permission-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.permission-action-btn {
+    border: 1px solid rgba(110, 110, 100, 0.85);
+    border-radius: 8px;
+    background: rgba(56, 56, 50, 0.9);
+    color: #ddd6c9;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.permission-action-btn:hover {
+    border-color: rgba(217, 131, 64, 0.72);
+}
+
+.permission-action-btn.allow {
+    border-color: rgba(93, 174, 122, 0.72);
+    background: rgba(36, 95, 56, 0.4);
+    color: #bde9cb;
+}
+
+.permission-action-btn.allow:hover {
+    background: rgba(52, 130, 76, 0.46);
+}
+
+.permission-action-btn.deny {
+    border-color: rgba(197, 92, 88, 0.72);
+    background: rgba(110, 40, 38, 0.45);
+    color: #f1bfbc;
+}
+
+.permission-action-btn.deny:hover {
+    background: rgba(142, 52, 48, 0.52);
+}
+
+.permission-comment-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 300px;
+    min-width: 220px;
+}
+
+.permission-comment-input {
+    flex: 1 1 auto;
+    min-width: 140px;
+    border: 1px solid rgba(110, 110, 100, 0.85);
+    border-radius: 8px;
+    background: rgba(30, 30, 25, 0.7);
+    color: var(--text);
+    font-size: 12px;
+    padding: 6px 8px;
+}
+
+.permission-comment-input:focus {
+    outline: none;
+    border-color: rgba(217, 131, 64, 0.78);
+    box-shadow: 0 0 0 1px rgba(217, 131, 64, 0.34);
+}
+
+.permission-response-status {
+    margin-top: 9px;
+    color: #d6c6ad;
+    font-size: 11px;
+}
+
+.permission-request-card.resolved .permission-action-btn,
+.permission-request-card.resolved .permission-comment-input {
+    cursor: default;
+    opacity: 0.62;
+}
+
 
 .markdown-body p {
     margin: 0 0 0.7em;
@@ -1207,6 +1424,8 @@ a:hover {
     let attachments = [];
     let attachmentCounter = 0;
     let dragDepth = 0;
+    let permissionRequestCounter = 0;
+    const seenPermissionRequests = Object.create(null);
 
     function sparkleSvg(size, className) {
         const svgClass = className || "";
@@ -2123,6 +2342,10 @@ a:hover {
 
         try {
             var parsed = JSON.parse(raw);
+            if (parsed && parsed.__permission_request__) {
+                addPermissionRequest(parsed);
+                return;
+            }
             if (parsed && parsed.__tool__) {
                 addToolMessage(parsed);
                 return;
@@ -2223,6 +2446,263 @@ a:hover {
                 scrollToBottom(false);
             });
         }
+
+        rowObj.inner.appendChild(card);
+        scrollToBottom(true);
+    }
+
+    function permissionIconForTool(toolName) {
+        const name = String(toolName || "").trim().toLowerCase();
+        if (name === "bash") {
+            return "⌘";
+        }
+        if (name === "edit" || name === "multiedit" || name === "write") {
+            return "✎";
+        }
+        if (name === "read" || name === "grep" || name === "glob") {
+            return "📄";
+        }
+        return "⚠";
+    }
+
+    function addPermissionRequest(data) {
+        setChatState(true);
+
+        const toolName = String(data.name || "Tool");
+        const description = String(data.description || "Claude requests approval before running this tool.");
+        const proposedAction = String(data.proposedAction || "");
+        const filePath = String(data.path || "");
+        const command = String(data.command || "");
+        const oldText = data.old !== undefined ? String(data.old || "") : "";
+        const newText = data.new !== undefined ? String(data.new || "") : "";
+        const contentText = String(data.content || "");
+
+        permissionRequestCounter += 1;
+        const requestId = String(data.requestId || "").trim() || ("permission-" + permissionRequestCounter);
+        if (seenPermissionRequests[requestId]) {
+            return;
+        }
+        seenPermissionRequests[requestId] = true;
+
+        const rowObj = createMessageRow("permission");
+        const card = document.createElement("div");
+        card.className = "permission-request-card pending";
+        card.setAttribute("data-request-id", requestId);
+
+        const header = document.createElement("div");
+        header.className = "permission-request-header";
+
+        const icon = document.createElement("span");
+        icon.className = "permission-request-icon";
+        icon.textContent = permissionIconForTool(toolName);
+        header.appendChild(icon);
+
+        const titleWrap = document.createElement("div");
+        titleWrap.className = "permission-request-title";
+
+        const toolLabel = document.createElement("div");
+        toolLabel.className = "permission-request-tool";
+        toolLabel.textContent = toolName;
+        titleWrap.appendChild(toolLabel);
+
+        const subtitle = document.createElement("div");
+        subtitle.className = "permission-request-subtitle";
+        subtitle.textContent = "Permission required";
+        titleWrap.appendChild(subtitle);
+
+        header.appendChild(titleWrap);
+        card.appendChild(header);
+
+        const descriptionEl = document.createElement("p");
+        descriptionEl.className = "permission-request-description";
+        descriptionEl.textContent = description;
+        card.appendChild(descriptionEl);
+
+        const meta = document.createElement("div");
+        meta.className = "permission-meta";
+
+        if (proposedAction) {
+            const actionItem = document.createElement("div");
+            actionItem.className = "permission-meta-item";
+            actionItem.innerHTML = [
+                '<div class="permission-meta-label">Proposed action</div>',
+                '<div class="permission-meta-value"></div>',
+            ].join("");
+            const valueEl = actionItem.querySelector(".permission-meta-value");
+            if (valueEl) {
+                valueEl.textContent = proposedAction;
+            }
+            meta.appendChild(actionItem);
+        }
+
+        if (filePath) {
+            const fileItem = document.createElement("div");
+            fileItem.className = "permission-meta-item";
+            fileItem.innerHTML = [
+                '<div class="permission-meta-label">Path</div>',
+                '<div class="permission-meta-value"></div>',
+            ].join("");
+            const valueEl = fileItem.querySelector(".permission-meta-value");
+            if (valueEl) {
+                valueEl.textContent = filePath;
+            }
+            meta.appendChild(fileItem);
+        }
+
+        if (command) {
+            const commandItem = document.createElement("div");
+            commandItem.className = "permission-meta-item";
+            commandItem.innerHTML = [
+                '<div class="permission-meta-label">Command</div>',
+                '<div class="permission-meta-value"></div>',
+            ].join("");
+            const valueEl = commandItem.querySelector(".permission-meta-value");
+            if (valueEl) {
+                valueEl.textContent = command;
+            }
+            meta.appendChild(commandItem);
+        }
+
+        if (meta.children.length > 0) {
+            card.appendChild(meta);
+        }
+
+        const hasPreview = !!(oldText || newText || contentText || command);
+        if (hasPreview) {
+            const preview = document.createElement("div");
+            preview.className = "permission-preview";
+
+            if (oldText || newText) {
+                if (oldText) {
+                    const oldBlock = document.createElement("div");
+                    oldBlock.className = "tool-diff-old";
+                    oldBlock.textContent = "- " + oldText.replace(/\n/g, "\n- ");
+                    preview.appendChild(oldBlock);
+                }
+                if (newText) {
+                    const newBlock = document.createElement("div");
+                    newBlock.className = "tool-diff-new";
+                    newBlock.textContent = "+ " + newText.replace(/\n/g, "\n+ ");
+                    preview.appendChild(newBlock);
+                }
+            } else if (contentText) {
+                const contentBlock = document.createElement("div");
+                contentBlock.className = "tool-code";
+                contentBlock.textContent = contentText;
+                preview.appendChild(contentBlock);
+            } else if (command) {
+                const commandBlock = document.createElement("div");
+                commandBlock.className = "tool-code";
+                commandBlock.textContent = "$ " + command;
+                preview.appendChild(commandBlock);
+            }
+
+            card.appendChild(preview);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "permission-actions";
+
+        const allowButton = document.createElement("button");
+        allowButton.type = "button";
+        allowButton.className = "permission-action-btn allow";
+        allowButton.textContent = "Allow";
+        actions.appendChild(allowButton);
+
+        const denyButton = document.createElement("button");
+        denyButton.type = "button";
+        denyButton.className = "permission-action-btn deny";
+        denyButton.textContent = "Deny";
+        actions.appendChild(denyButton);
+
+        const commentWrap = document.createElement("div");
+        commentWrap.className = "permission-comment-wrap";
+
+        const commentInput = document.createElement("input");
+        commentInput.type = "text";
+        commentInput.className = "permission-comment-input";
+        commentInput.placeholder = "Add comment or modification request";
+        commentWrap.appendChild(commentInput);
+
+        const commentButton = document.createElement("button");
+        commentButton.type = "button";
+        commentButton.className = "permission-action-btn";
+        commentButton.textContent = "Send";
+        commentWrap.appendChild(commentButton);
+
+        actions.appendChild(commentWrap);
+        card.appendChild(actions);
+
+        const status = document.createElement("div");
+        status.className = "permission-response-status";
+        status.textContent = "Waiting for your decision.";
+        card.appendChild(status);
+
+        let resolved = false;
+
+        function resolveCard(action, commentText) {
+            if (resolved) {
+                return;
+            }
+            resolved = true;
+            card.classList.remove("pending");
+            card.classList.add("resolved");
+
+            allowButton.disabled = true;
+            denyButton.disabled = true;
+            commentButton.disabled = true;
+            commentInput.disabled = true;
+
+            if (action === "allow") {
+                status.textContent = "Approved. Sent to Claude.";
+                return;
+            }
+            if (action === "deny") {
+                status.textContent = "Denied. Claude will not run this action.";
+                return;
+            }
+            status.textContent = commentText
+                ? 'Comment sent: "' + commentText + '"'
+                : "Comment sent to Claude.";
+        }
+
+        function submitResponse(action) {
+            if (resolved) {
+                return;
+            }
+
+            const trimmedComment = String(commentInput.value || "").trim();
+            if (action === "comment" && !trimmedComment) {
+                commentInput.focus();
+                return;
+            }
+
+            postToHost("permissionResponse", JSON.stringify({
+                action: action,
+                comment: action === "comment" ? trimmedComment : "",
+                requestId: requestId,
+            }));
+            resolveCard(action, trimmedComment);
+        }
+
+        allowButton.addEventListener("click", function () {
+            submitResponse("allow");
+        });
+
+        denyButton.addEventListener("click", function () {
+            submitResponse("deny");
+        });
+
+        commentButton.addEventListener("click", function () {
+            submitResponse("comment");
+        });
+
+        commentInput.addEventListener("keydown", function (event) {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                submitResponse("comment");
+            }
+        });
 
         rowObj.inner.appendChild(card);
         scrollToBottom(true);
@@ -2676,6 +3156,7 @@ a:hover {
     window.appendAssistantChunk = appendAssistantChunk;
     window.finishAssistantMessage = finishAssistantMessage;
     window.addSystemMessage = addSystemMessage;
+    window.addPermissionRequest = addPermissionRequest;
     window.setTyping = setTyping;
     window.clearMessages = clearMessages;
     window.showWelcome = showWelcome;

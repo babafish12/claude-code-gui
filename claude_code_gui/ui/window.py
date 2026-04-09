@@ -7,12 +7,13 @@ import json
 import math
 import mimetypes
 import os
+import subprocess
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from gi.repository import Gdk, GLib, Gtk, Pango, WebKit2
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit2
 
 from claude_code_gui.app.constants import (
     APP_DEFAULT_HEIGHT,
@@ -113,6 +114,14 @@ class ClaudeCodeWindow(Gtk.Window):
         self._suppress_project_entry_change = False
         self._session_list_box: Gtk.Box | None = None
         self._session_empty_label: Gtk.Label | None = None
+        self._sessions_title_label: Gtk.Label | None = None
+        self._session_search_entry: Gtk.Entry | None = None
+        self._session_filter_buttons: dict[str, Gtk.Button] = {}
+        self._session_filter = "all"
+        self._session_search_query = ""
+        self._window_has_focus = True
+        self._permission_request_pending = False
+        self._notification_counter = 0
 
         self._connection_dot: Gtk.Label | None = None
         self._connection_label: Gtk.Label | None = None
@@ -149,6 +158,7 @@ class ClaudeCodeWindow(Gtk.Window):
             on_running_changed=self._on_process_running_changed,
             on_assistant_chunk=self._on_process_assistant_chunk,
             on_system_message=self._on_process_system_message,
+            on_permission_request=self._on_process_permission_request,
             on_complete=self._on_process_complete,
         )
 
@@ -172,6 +182,8 @@ class ClaudeCodeWindow(Gtk.Window):
 
         self.connect("destroy", self._on_destroy)
         self.connect("map-event", self._on_map_event)
+        self.connect("focus-in-event", self._on_window_focus_in)
+        self.connect("focus-out-event", self._on_window_focus_out)
 
         if self._binary_path is None:
             self._set_connection_state(CONNECTION_DISCONNECTED)
@@ -233,6 +245,60 @@ class ClaudeCodeWindow(Gtk.Window):
 
         self._session_timer_id = GLib.timeout_add_seconds(1, self._update_session_timer)
 
+    def _window_is_focused(self) -> bool:
+        return bool(self.is_active() or self._window_has_focus)
+
+    @staticmethod
+    def _notification_urgency(urgency: str) -> str:
+        normalized = str(urgency or "normal").strip().lower()
+        if normalized in {"low", "normal", "critical"}:
+            return normalized
+        if normalized == "urgent":
+            return "critical"
+        if normalized == "high":
+            return "normal"
+        return "normal"
+
+    def send_notification(self, title: str, body: str, urgency: str = "normal") -> None:
+        if self._window_is_focused():
+            return
+
+        title_text = str(title or APP_NAME).strip() or APP_NAME
+        body_text = str(body or "").strip()
+        normalized_urgency = self._notification_urgency(urgency)
+
+        app = Gio.Application.get_default()
+        if isinstance(app, Gio.Application):
+            try:
+                notification = Gio.Notification.new(title_text)
+                if body_text:
+                    notification.set_body(body_text)
+                priority = {
+                    "low": Gio.NotificationPriority.LOW,
+                    "normal": Gio.NotificationPriority.NORMAL,
+                    "critical": Gio.NotificationPriority.URGENT,
+                }.get(normalized_urgency, Gio.NotificationPriority.NORMAL)
+                notification.set_priority(priority)
+                self._notification_counter += 1
+                app.send_notification(f"claude-code-gui-{self._notification_counter}", notification)
+                return
+            except Exception:
+                pass
+
+        command = ["notify-send", title_text, body_text, "--urgency", normalized_urgency]
+        try:
+            subprocess.run(command, check=False)
+        except (OSError, ValueError):
+            return
+
+    def _on_window_focus_in(self, _widget: Gtk.Widget, _event: Gdk.EventFocus) -> bool:
+        self._window_has_focus = True
+        return False
+
+    def _on_window_focus_out(self, _widget: Gtk.Widget, _event: Gdk.EventFocus) -> bool:
+        self._window_has_focus = False
+        return False
+
     def _build_sidebar(self) -> Gtk.Box:
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         sidebar.get_style_context().add_class("sidebar")
@@ -263,10 +329,35 @@ class ClaudeCodeWindow(Gtk.Window):
         sidebar_top.pack_start(new_session_button, True, True, 0)
         sidebar.pack_start(sidebar_top, False, False, 0)
 
-        sessions_title = Gtk.Label(label="Sessions")
+        sessions_title = Gtk.Label(label="Sessions (0)")
         sessions_title.set_xalign(0.0)
         sessions_title.get_style_context().add_class("sidebar-section-title")
         sidebar.pack_start(sessions_title, False, False, 0)
+        self._sessions_title_label = sessions_title
+
+        filter_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        filter_row.get_style_context().add_class("session-filter-row")
+        sidebar.pack_start(filter_row, False, False, 0)
+
+        filter_items = (
+            ("all", "All"),
+            ("active", "Active"),
+            ("archived", "Archived"),
+        )
+        for key, label in filter_items:
+            button = Gtk.Button(label=label)
+            button.set_relief(Gtk.ReliefStyle.NONE)
+            button.get_style_context().add_class("session-filter-pill")
+            button.connect("clicked", self._on_session_filter_clicked, key)
+            filter_row.pack_start(button, False, False, 0)
+            self._session_filter_buttons[key] = button
+
+        search_entry = Gtk.Entry()
+        search_entry.set_placeholder_text("Search sessions")
+        search_entry.get_style_context().add_class("session-search-entry")
+        search_entry.connect("changed", self._on_session_search_changed)
+        sidebar.pack_start(search_entry, False, False, 0)
+        self._session_search_entry = search_entry
 
         session_scroll = Gtk.ScrolledWindow()
         session_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -287,7 +378,14 @@ class ClaudeCodeWindow(Gtk.Window):
         session_list.pack_start(empty, False, False, 0)
         self._session_empty_label = empty
 
-        self._sidebar_expanded_only_widgets = [new_session_button, sessions_title, session_scroll]
+        self._update_session_filter_buttons()
+        self._sidebar_expanded_only_widgets = [
+            new_session_button,
+            sessions_title,
+            filter_row,
+            search_entry,
+            session_scroll,
+        ]
         self._update_sidebar_toggle_button()
         self._set_sidebar_content_visibility(self._sidebar_expanded)
 
@@ -327,12 +425,14 @@ class ClaudeCodeWindow(Gtk.Window):
         manager.register_script_message_handler("changeReasoning")
         manager.register_script_message_handler("changeFolder")
         manager.register_script_message_handler("attachFile")
+        manager.register_script_message_handler("permissionResponse")
         manager.connect("script-message-received::sendMessage", self._on_js_send_message)
         manager.connect("script-message-received::changeModel", self._on_js_change_model)
         manager.connect("script-message-received::changePermission", self._on_js_change_permission)
         manager.connect("script-message-received::changeReasoning", self._on_js_change_reasoning)
         manager.connect("script-message-received::changeFolder", self._on_js_change_folder)
         manager.connect("script-message-received::attachFile", self._on_js_attach_file)
+        manager.connect("script-message-received::permissionResponse", self._on_js_permission_response)
         manager.register_script_message_handler("stopProcess")
         manager.connect("script-message-received::stopProcess", self._on_js_stop_process)
         self._webview_user_content_manager = manager
@@ -726,6 +826,77 @@ class ClaudeCodeWindow(Gtk.Window):
         return "Älter"
 
     @staticmethod
+    def _is_permission_request_message(message: str) -> bool:
+        raw = str(message or "").strip()
+        if not raw:
+            return False
+
+        lowered = raw.casefold()
+        if "tool confirmation" in lowered:
+            return True
+        if "permission" in lowered and any(
+            token in lowered for token in ("wait", "confirm", "approval", "approve", "allow")
+        ):
+            return True
+
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return False
+
+        if not isinstance(parsed, dict):
+            return False
+
+        if bool(parsed.get("permission_request")) or bool(parsed.get("requires_confirmation")):
+            return True
+
+        status = str(parsed.get("status") or "").casefold()
+        if status in {"awaiting_confirmation", "waiting_for_confirmation", "pending_confirmation"}:
+            return True
+
+        detail = str(parsed.get("message") or parsed.get("error") or "").casefold()
+        return "permission" in detail and "confirm" in detail
+
+    def _update_session_filter_buttons(self) -> None:
+        for key, button in self._session_filter_buttons.items():
+            context = button.get_style_context()
+            if key == self._session_filter:
+                context.add_class("session-filter-pill-active")
+                continue
+            context.remove_class("session-filter-pill-active")
+
+    def _on_session_filter_clicked(self, _button: Gtk.Button, selected_filter: str) -> None:
+        if selected_filter not in {"all", "active", "archived"}:
+            return
+        if self._session_filter == selected_filter:
+            return
+        self._session_filter = selected_filter
+        self._update_session_filter_buttons()
+        self._refresh_session_list()
+
+    def _on_session_search_changed(self, entry: Gtk.Entry) -> None:
+        self._session_search_query = entry.get_text().strip().casefold()
+        self._refresh_session_list()
+
+    def _get_filtered_sessions(self) -> list[SessionRecord]:
+        if self._session_filter == "active":
+            candidates = [s for s in self._sessions if s.status == SESSION_STATUS_ACTIVE]
+        elif self._session_filter == "archived":
+            candidates = [s for s in self._sessions if s.status == SESSION_STATUS_ARCHIVED]
+        else:
+            candidates = [s for s in self._sessions if s.status != SESSION_STATUS_ARCHIVED]
+
+        if self._session_search_query:
+            query = self._session_search_query
+            candidates = [
+                session
+                for session in candidates
+                if query in (session.title or "").casefold() or query in (session.project_path or "").casefold()
+            ]
+
+        return sorted(candidates, key=self._session_sort_key, reverse=True)
+
+    @staticmethod
     def _get_session_preview(session: SessionRecord) -> str:
         if not session.history:
             return ""
@@ -754,10 +925,20 @@ class ClaudeCodeWindow(Gtk.Window):
         open_button.connect("clicked", lambda _button, sid=session.id: self._switch_to_session(sid))
 
         label_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+
+        status = session.status if session.status in SESSION_STATUSES else SESSION_STATUS_ENDED
+        status_dot = Gtk.Box()
+        status_dot.set_size_request(8, 8)
+        status_dot.get_style_context().add_class("session-status-dot")
+        status_dot.get_style_context().add_class(f"session-status-{status}")
+        title_row.pack_start(status_dot, False, False, 0)
+
         title = Gtk.Label(label=session.title or "New chat")
         title.set_xalign(0.0)
         title.get_style_context().add_class("session-title")
-        label_box.pack_start(title, False, False, 0)
+        title_row.pack_start(title, True, True, 0)
+        label_box.pack_start(title_row, False, False, 0)
 
         preview_text = self._get_session_preview(session)
         if preview_text:
@@ -812,13 +993,20 @@ class ClaudeCodeWindow(Gtk.Window):
         if self._session_list_box is None or self._session_empty_label is None:
             return
 
+        if self._sessions_title_label is not None:
+            self._sessions_title_label.set_text(f"Sessions ({len(self._sessions)})")
+
         self._clear_box(self._session_list_box)
-        visible_sessions = sorted(
-            [s for s in self._sessions if s.status != SESSION_STATUS_ARCHIVED],
-            key=self._session_sort_key,
-            reverse=True,
-        )
+        visible_sessions = self._get_filtered_sessions()
         if not visible_sessions:
+            if self._session_search_query:
+                self._session_empty_label.set_text("No sessions match your search.")
+            elif self._session_filter == "active":
+                self._session_empty_label.set_text("No active sessions.")
+            elif self._session_filter == "archived":
+                self._session_empty_label.set_text("No archived sessions.")
+            else:
+                self._session_empty_label.set_text("No chats yet. Click + New Chat.")
             self._session_list_box.pack_start(self._session_empty_label, False, False, 0)
             self._session_empty_label.show()
             return
@@ -843,7 +1031,8 @@ class ClaudeCodeWindow(Gtk.Window):
             self._session_list_box.pack_start(label, False, False, 0)
 
             for session in sessions:
-                row = self._make_session_row(session, allow_open=True)
+                allow_open = session.status != SESSION_STATUS_ARCHIVED
+                row = self._make_session_row(session, allow_open=allow_open)
                 self._session_list_box.pack_start(row, False, False, 0)
 
         self._session_list_box.show_all()
@@ -1395,6 +1584,11 @@ class ClaudeCodeWindow(Gtk.Window):
         return False
 
     def _show_missing_binary_error(self) -> None:
+        self.send_notification(
+            "Claude CLI not found",
+            "Install claude or claude-code so requests can run.",
+            urgency="critical",
+        )
         self._add_system_message(
             "Claude CLI was not found. Searched for claude, claude-code, and ~/.config/Claude/claude-code/."
         )
@@ -1421,6 +1615,7 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _interrupt_running_process(self, reason: str) -> None:
         self._invalidate_active_request()
+        self._permission_request_pending = False
         if not self._claude_process.is_running():
             return
 
@@ -1903,6 +2098,46 @@ class ClaudeCodeWindow(Gtk.Window):
             self._set_status_message("Process stopped by user", STATUS_WARNING)
             self._add_system_message("Process stopped.")
 
+    def _on_js_permission_response(
+        self,
+        _manager: WebKit2.UserContentManager,
+        js_result: WebKit2.JavascriptResult,
+    ) -> None:
+        raw_payload = self._extract_message_from_js_result(js_result)
+        if not raw_payload:
+            return
+
+        try:
+            parsed_payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return
+
+        if not isinstance(parsed_payload, dict):
+            return
+
+        action = str(parsed_payload.get("action") or "").strip().lower()
+        if action not in {"allow", "deny", "comment"}:
+            return
+
+        comment = str(parsed_payload.get("comment") or "")
+        request_id = str(parsed_payload.get("requestId") or "")
+        sent = self._claude_process.send_permission_response(
+            action=action,
+            comment=comment,
+            request_id=request_id,
+        )
+        if not sent:
+            self._set_status_message("Could not deliver permission response", STATUS_WARNING)
+            self._add_system_message("Could not send permission response to Claude.")
+            return
+
+        if action == "allow":
+            self._set_status_message("Permission approved", STATUS_INFO)
+        elif action == "deny":
+            self._set_status_message("Permission denied", STATUS_WARNING)
+        else:
+            self._set_status_message("Permission comment sent", STATUS_INFO)
+
     def _on_js_send_message(
         self,
         _manager: WebKit2.UserContentManager,
@@ -1968,6 +2203,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._refresh_session_list()
 
         self._add_to_history("user", composed_message)
+        self._permission_request_pending = False
 
         request_token = str(uuid.uuid4())
         previous_request_token = self._active_request_token
@@ -2050,6 +2286,30 @@ class ClaudeCodeWindow(Gtk.Window):
         if not message:
             return
         self._add_system_message(message)
+        if not self._permission_request_pending and self._is_permission_request_message(message):
+            self._permission_request_pending = True
+            self.send_notification(
+                "Claude needs permission",
+                "A tool permission request is waiting for your input.",
+                urgency="critical",
+            )
+
+    def _on_process_permission_request(self, request_token: str, payload: dict[str, Any]) -> None:
+        if not self._is_current_request(request_token):
+            return
+        if not payload:
+            return
+
+        self._set_typing(False)
+        self._call_js("addPermissionRequest", payload)
+        self._set_status_message("Waiting for tool confirmation", STATUS_WARNING)
+        if not self._permission_request_pending:
+            self._permission_request_pending = True
+            self.send_notification(
+                "Claude needs permission",
+                "A tool permission request is waiting for your input.",
+                urgency="critical",
+            )
 
     def _on_process_complete(self, request_token: str, result: ClaudeRunResult) -> None:
         temp_paths = self._request_temp_files.pop(request_token, [])
@@ -2060,7 +2320,9 @@ class ClaudeCodeWindow(Gtk.Window):
 
         self._invalidate_active_request()
         self._set_typing(False)
+        had_assistant_output = bool(self._active_assistant_message.strip())
         self._finish_assistant_message()
+        self._permission_request_pending = False
 
         if result.success and result.conversation_id:
             self._conversation_id = result.conversation_id
@@ -2080,6 +2342,11 @@ class ClaudeCodeWindow(Gtk.Window):
             self._set_status_message("Claude response received", STATUS_MUTED)
             self._set_active_session_status(SESSION_STATUS_ACTIVE)
             self._save_sessions_safe("Could not save sessions")
+            if had_assistant_output:
+                self.send_notification(
+                    "Claude response complete",
+                    "Claude finished responding.",
+                )
             return
 
         error_message = result.error_message or "Claude request failed"
@@ -2088,6 +2355,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._set_status_message(error_message, STATUS_ERROR)
         self._set_active_session_status(SESSION_STATUS_ERROR)
         self._add_system_message(error_message)
+        self.send_notification("Claude error", error_message, urgency="critical")
 
     def _enqueue_javascript(self, script: str) -> None:
         if not script:

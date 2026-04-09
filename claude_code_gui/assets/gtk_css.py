@@ -284,6 +284,48 @@ popover.path-suggestion-popover {{
     background-color: transparent;
 }}
 
+.session-filter-row {{
+    margin-top: 2px;
+}}
+
+.session-filter-pill {{
+    min-height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid {BORDER_SOFT};
+    background-color: #31312b;
+    color: {FOREGROUND_MUTED};
+    font-size: 11px;
+    font-weight: 600;
+}}
+
+.session-filter-pill:hover {{
+    background-color: #3a3a33;
+    border-color: {ACCENT_SOFT};
+    color: {FOREGROUND};
+}}
+
+.session-filter-pill.session-filter-pill-active {{
+    background-color: {ACCENT};
+    border-color: {ACCENT};
+    color: #f7efe9;
+}}
+
+.session-search-entry {{
+    min-height: 30px;
+    border-radius: 9px;
+    border: 1px solid {BORDER_SOFT};
+    background-color: {BUTTON_BG};
+    color: {FOREGROUND};
+    padding: 0 10px;
+    font-size: 11px;
+}}
+
+.session-search-entry:focus {{
+    border-color: {ACCENT_SOFT};
+    box-shadow: 0 0 0 2px rgba(212, 132, 90, 0.25);
+}}
+
 .session-list {{
     padding: 4px 0;
 }}
@@ -339,6 +381,29 @@ popover.path-suggestion-popover {{
     color: {FOREGROUND};
     font-size: 12px;
     font-weight: 600;
+}}
+
+.session-status-dot {{
+    min-width: 8px;
+    min-height: 8px;
+    border-radius: 999px;
+    margin-top: 4px;
+}}
+
+.session-status-dot.session-status-active {{
+    background-color: {SUCCESS};
+}}
+
+.session-status-dot.session-status-ended {{
+    background-color: #7b7b70;
+}}
+
+.session-status-dot.session-status-archived {{
+    background-color: #585850;
+}}
+
+.session-status-dot.session-status-error {{
+    background-color: {ERROR};
 }}
 
 .session-menu-button {{

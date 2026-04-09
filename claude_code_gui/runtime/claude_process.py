@@ -20,17 +20,20 @@ class ClaudeProcess:
         on_running_changed: Callable[[str, bool], None],
         on_assistant_chunk: Callable[[str, str], None],
         on_system_message: Callable[[str, str], None],
+        on_permission_request: Callable[[str, dict[str, Any]], None],
         on_complete: Callable[[str, ClaudeRunResult], None],
     ) -> None:
         self._on_running_changed = on_running_changed
         self._on_assistant_chunk = on_assistant_chunk
         self._on_system_message = on_system_message
+        self._on_permission_request = on_permission_request
         self._on_complete = on_complete
 
         self._lock = threading.Lock()
         self._running = False
         self._stop_requested = False
         self._process: subprocess.Popen[str] | None = None
+        self._permission_counter = 0
 
     def is_running(self) -> bool:
         with self._lock:
@@ -49,6 +52,38 @@ class ClaudeProcess:
                 process.terminate()
             except OSError:
                 return
+
+    def send_permission_response(self, *, action: str, comment: str = "", request_id: str = "") -> bool:
+        normalized_action = str(action or "").strip().lower()
+        payload = ""
+
+        if normalized_action == "allow":
+            payload = "y\n"
+        elif normalized_action == "deny":
+            payload = "n\n"
+        elif normalized_action == "comment":
+            text = str(comment or "").strip()
+            if not text:
+                return False
+            payload = f"{text}\n"
+        else:
+            return False
+
+        with self._lock:
+            process = self._process
+            running = self._running and not self._stop_requested
+
+        if not running or process is None or process.stdin is None or process.poll() is not None:
+            return False
+
+        try:
+            process.stdin.write(payload)
+            process.stdin.flush()
+        except OSError:
+            return False
+
+        _ = request_id
+        return True
 
     def send_message(self, *, request_token: str, config: ClaudeRunConfig) -> bool:
         with self._lock:
@@ -143,6 +178,7 @@ class ClaudeProcess:
             process = subprocess.Popen(
                 argv,
                 cwd=config.cwd,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -201,13 +237,44 @@ class ClaudeProcess:
                     event_type = str(event.get("type") or "")
 
                     if event_type == "assistant":
-                        texts, tools = self._extract_assistant_content(event.get("message"))
+                        texts, tools, permission_requests = self._extract_assistant_content(
+                            event.get("message"),
+                            request_token=request_token,
+                        )
+                        for permission_request in permission_requests:
+                            self._emit_permission_request(request_token, permission_request)
                         for tool_message in tools:
                             self._emit_system_message(request_token, tool_message)
                         for text_chunk in texts:
                             assistant_parts.append(text_chunk)
                             streamed_assistant = True
                             self._emit_assistant_chunk(request_token, text_chunk)
+                        continue
+
+                    if event_type == "tool_use":
+                        tool_data = self._extract_tool_data(event)
+                        permission_request = self._extract_permission_request(
+                            event,
+                            request_token=request_token,
+                            fallback_tool_data=tool_data,
+                        )
+                        if permission_request is not None:
+                            self._emit_permission_request(request_token, permission_request)
+                            continue
+                        if tool_data is not None:
+                            self._emit_system_message(
+                                request_token,
+                                json.dumps(tool_data, ensure_ascii=False),
+                            )
+                        continue
+
+                    permission_request = self._extract_permission_request(
+                        event,
+                        request_token=request_token,
+                        fallback_tool_data=None,
+                    )
+                    if permission_request is not None:
+                        self._emit_permission_request(request_token, permission_request)
                         continue
 
                     if event_type == "result":
@@ -333,13 +400,18 @@ class ClaudeProcess:
             return parsed
         return None
 
-    @staticmethod
-    def _extract_assistant_content(message: Any) -> tuple[list[str], list[str]]:
+    def _extract_assistant_content(
+        self,
+        message: Any,
+        *,
+        request_token: str,
+    ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
         texts: list[str] = []
         tools: list[str] = []
+        permission_requests: list[dict[str, Any]] = []
 
         if not isinstance(message, dict):
-            return texts, tools
+            return texts, tools, permission_requests
 
         content = message.get("content")
         if isinstance(content, list):
@@ -355,35 +427,199 @@ class ClaudeProcess:
                     continue
 
                 if block_type == "tool_use":
-                    tool_name = str(block.get("name") or "tool")
-                    tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
-                    tool_data: dict[str, Any] = {"__tool__": True, "name": tool_name}
-                    file_path = str(tool_input.get("file_path") or tool_input.get("path") or "")
-                    if file_path:
-                        tool_data["path"] = file_path
-                    if tool_name in ("Edit", "edit"):
-                        old_s = str(tool_input.get("old_string") or "")
-                        new_s = str(tool_input.get("new_string") or "")
-                        if old_s or new_s:
-                            tool_data["old"] = old_s[:800]
-                            tool_data["new"] = new_s[:800]
-                    elif tool_name in ("Write", "write"):
-                        content = str(tool_input.get("content") or "")
-                        if content:
-                            tool_data["content"] = content[:600]
-                    elif tool_name in ("Bash", "bash"):
-                        cmd = str(tool_input.get("command") or "")
-                        if cmd:
-                            tool_data["command"] = cmd[:200]
-                    tools.append(json.dumps(tool_data, ensure_ascii=False))
+                    tool_data = self._extract_tool_data(block)
+                    if tool_data is None:
+                        continue
+                    permission_request = self._extract_permission_request(
+                        block,
+                        request_token=request_token,
+                        fallback_tool_data=tool_data,
+                    )
+                    if permission_request is not None:
+                        permission_requests.append(permission_request)
+                    else:
+                        tools.append(json.dumps(tool_data, ensure_ascii=False))
                     continue
 
-            return texts, tools
+            return texts, tools, permission_requests
 
         if isinstance(content, str) and content:
             texts.append(content)
 
-        return texts, tools
+        return texts, tools, permission_requests
+
+    def _extract_tool_data(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        tool_name = str(
+            payload.get("name")
+            or payload.get("tool_name")
+            or (
+                payload.get("tool", {}).get("name")
+                if isinstance(payload.get("tool"), dict)
+                else ""
+            )
+            or "tool"
+        )
+        tool_input = payload.get("input")
+        if not isinstance(tool_input, dict):
+            tool_input = payload.get("tool_input")
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+
+        tool_data: dict[str, Any] = {"__tool__": True, "name": tool_name}
+
+        file_path = str(
+            tool_input.get("file_path")
+            or tool_input.get("path")
+            or tool_input.get("target_file")
+            or tool_input.get("target_path")
+            or payload.get("file_path")
+            or payload.get("path")
+            or ""
+        ).strip()
+        if file_path:
+            tool_data["path"] = file_path
+
+        description = payload.get("description")
+        if isinstance(description, str) and description.strip():
+            tool_data["description"] = description.strip()[:400]
+
+        if tool_name in ("Edit", "edit", "MultiEdit", "multiedit"):
+            old_s = str(tool_input.get("old_string") or "")
+            new_s = str(tool_input.get("new_string") or "")
+            if old_s or new_s:
+                tool_data["old"] = old_s[:800]
+                tool_data["new"] = new_s[:800]
+        elif tool_name in ("Write", "write"):
+            content = str(tool_input.get("content") or "")
+            if content:
+                tool_data["content"] = content[:600]
+        elif tool_name in ("Bash", "bash"):
+            cmd = str(tool_input.get("command") or payload.get("command") or "")
+            if cmd:
+                tool_data["command"] = cmd[:400]
+        else:
+            cmd = str(tool_input.get("command") or payload.get("command") or "")
+            if cmd:
+                tool_data["command"] = cmd[:400]
+
+        return tool_data
+
+    def _extract_permission_request(
+        self,
+        payload: dict[str, Any],
+        *,
+        request_token: str,
+        fallback_tool_data: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not self._requires_permission(payload):
+            return None
+
+        tool_data = fallback_tool_data or self._extract_tool_data(payload)
+        if tool_data is None:
+            return None
+
+        request_id = str(
+            payload.get("request_id")
+            or payload.get("permission_request_id")
+            or payload.get("id")
+            or ""
+        ).strip()
+        if not request_id:
+            request_id = self._next_permission_request_id(request_token)
+
+        description = self._permission_description(payload, tool_data)
+        proposed_action = self._permission_action(payload, tool_data)
+
+        permission_data: dict[str, Any] = {
+            "__permission_request__": True,
+            "requestId": request_id,
+            "name": tool_data.get("name") or "tool",
+            "description": description,
+            "proposedAction": proposed_action,
+        }
+
+        for key in ("path", "command", "old", "new", "content"):
+            value = tool_data.get(key)
+            if value:
+                permission_data[key] = value
+
+        return permission_data
+
+    @staticmethod
+    def _requires_permission(payload: dict[str, Any]) -> bool:
+        truthy_fields = (
+            "requires_permission",
+            "requires_approval",
+            "requires_confirmation",
+            "permission_required",
+            "approval_required",
+            "awaiting_approval",
+            "needs_confirmation",
+        )
+        for field in truthy_fields:
+            value = payload.get(field)
+            if value is True:
+                return True
+            if isinstance(value, str) and value.strip().lower() in {"true", "yes", "1", "required"}:
+                return True
+
+        status = str(payload.get("status") or payload.get("state") or "").strip().lower()
+        if status in {
+            "pending_approval",
+            "requires_approval",
+            "awaiting_approval",
+            "awaiting_confirmation",
+            "requires_permission",
+            "permission_required",
+            "pending_permission",
+        }:
+            return True
+
+        event_type = str(payload.get("type") or "").strip().lower()
+        subtype = str(payload.get("subtype") or "").strip().lower()
+        if event_type in {"permission_request", "approval_request"}:
+            return True
+        if event_type in {"system", "input"} and subtype in {"permission_request", "approval_request"}:
+            return True
+
+        return False
+
+    @staticmethod
+    def _permission_description(payload: dict[str, Any], tool_data: dict[str, Any]) -> str:
+        for key in ("description", "prompt", "message"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:400]
+
+        tool_name = str(tool_data.get("name") or "tool").strip().lower()
+        if tool_name == "bash":
+            return "Claude wants to execute a shell command."
+        if tool_name in {"edit", "multiedit", "write"}:
+            return "Claude wants to modify project files."
+        return "Claude requests approval before running this tool."
+
+    @staticmethod
+    def _permission_action(payload: dict[str, Any], tool_data: dict[str, Any]) -> str:
+        explicit = payload.get("proposed_action") or payload.get("action")
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()[:400]
+
+        command = tool_data.get("command")
+        if isinstance(command, str) and command.strip():
+            return f"Run command: {command.strip()[:240]}"
+
+        path = tool_data.get("path")
+        if isinstance(path, str) and path.strip():
+            return f"Access path: {path.strip()}"
+
+        name = str(tool_data.get("name") or "tool").strip()
+        return f"Run tool: {name}"
+
+    def _next_permission_request_id(self, request_token: str) -> str:
+        with self._lock:
+            self._permission_counter += 1
+            next_value = self._permission_counter
+        return f"{request_token}-permission-{next_value}"
 
     def _emit_running_changed(self, request_token: str, running: bool) -> None:
         GLib.idle_add(self._on_running_changed, request_token, running)
@@ -393,6 +629,9 @@ class ClaudeProcess:
 
     def _emit_system_message(self, request_token: str, message: str) -> None:
         GLib.idle_add(self._on_system_message, request_token, message)
+
+    def _emit_permission_request(self, request_token: str, payload: dict[str, Any]) -> None:
+        GLib.idle_add(self._on_permission_request, request_token, payload)
 
     def _emit_complete(self, request_token: str, result: ClaudeRunResult) -> None:
         GLib.idle_add(self._on_complete, request_token, result)
