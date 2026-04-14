@@ -423,7 +423,7 @@ button:disabled {
 }
 
 .plus-btn,
-.artifacts-toggle-btn,
+.agent-mode-toggle-btn,
 .selector-btn,
 .permission-btn,
 .action-btn,
@@ -449,7 +449,7 @@ button:disabled {
     cursor: pointer;
 }
 
-.artifacts-toggle-btn {
+.agent-mode-toggle-btn {
     width: 30px;
     height: 30px;
     border-radius: 999px;
@@ -460,18 +460,18 @@ button:disabled {
     cursor: pointer;
 }
 
-.artifacts-toggle-btn:hover {
+.agent-mode-toggle-btn:hover {
     background-color: var(--accent-rgba-012);
     border-color: var(--accent-rgba-072);
 }
 
-.artifacts-toggle-btn.active {
+.agent-mode-toggle-btn.active {
     background-color: var(--accent-rgba-012);
     border-color: var(--accent-rgba-072);
 }
 
 .plus-btn-icon,
-.artifacts-toggle-icon {
+.agent-mode-toggle-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -479,7 +479,7 @@ button:disabled {
 }
 
 .plus-btn-icon svg,
-.artifacts-toggle-icon svg {
+.agent-mode-toggle-icon svg {
     width: 14px;
     height: 14px;
     fill: none;
@@ -501,12 +501,12 @@ button:disabled {
     transition: transform var(--motion-fast) var(--glass-spring-standard);
 }
 
-.artifacts-toggle-btn.active .toggle-knob {
+.agent-mode-toggle-btn.active .toggle-knob {
     transform: translateX(6px);
 }
 
 .plus-btn:hover,
-.artifacts-toggle-btn:hover,
+.agent-mode-toggle-btn:hover,
 .selector-btn:hover,
 .permission-btn:hover,
 .chip:hover,
@@ -619,7 +619,7 @@ button:disabled {
 
 .folder-path-btn,
 .plus-btn,
-.artifacts-toggle-btn,
+.agent-mode-toggle-btn,
 .selector-btn,
 .permission-btn,
 .permission-selector,
@@ -645,7 +645,7 @@ button:disabled {
 
 .folder-path-btn:hover,
 .plus-btn:hover,
-.artifacts-toggle-btn:hover,
+.agent-mode-toggle-btn:hover,
 .selector-btn:hover,
 .permission-btn:hover,
 .permission-selector:hover,
@@ -669,7 +669,7 @@ button:disabled {
 
 .folder-path-btn::before,
 .plus-btn::before,
-.artifacts-toggle-btn::before,
+.agent-mode-toggle-btn::before,
 .selector-btn::before,
 .permission-btn::before,
 .permission-selector::before,
@@ -693,7 +693,7 @@ button:disabled {
 
 .folder-path-btn:hover::before,
 .plus-btn:hover::before,
-.artifacts-toggle-btn:hover::before,
+.agent-mode-toggle-btn:hover::before,
 .selector-btn:hover::before,
 .permission-btn:hover::before,
 .permission-selector:hover::before,
@@ -710,7 +710,7 @@ button:disabled {
 
 .folder-path-btn:active,
 .plus-btn:active,
-.artifacts-toggle-btn:active,
+.agent-mode-toggle-btn:active,
 .selector-btn:active,
 .permission-btn:active,
 .permission-selector:active,
@@ -730,7 +730,7 @@ button:disabled {
 
 .folder-path-btn,
 .plus-btn,
-.artifacts-toggle-btn,
+.agent-mode-toggle-btn,
 .selector-btn,
 .permission-btn,
 .permission-selector,
@@ -2943,7 +2943,7 @@ body.reduced-motion *::after {
 @media (prefers-reduced-transparency: reduce) {
     .folder-path-btn,
     .plus-btn,
-    .artifacts-toggle-btn,
+    .agent-mode-toggle-btn,
     .selector-btn,
     .permission-btn,
     .permission-selector,
@@ -3054,8 +3054,8 @@ body.reduced-motion *::after {
                                     </svg>
                                 </span>
                             </button>
-                            <button class="artifacts-toggle-btn" type="button" aria-label="Enable agent mode" aria-pressed="false" title="Agent mode is disabled">
-                                <span class="artifacts-toggle-icon" aria-hidden="true">
+                            <button class="agent-mode-toggle-btn" type="button" aria-label="Enable agent mode" aria-pressed="false" title="Agent mode is disabled">
+                                <span class="agent-mode-toggle-icon" aria-hidden="true">
                                     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <rect class="toggle-track" x="3" y="6" width="18" height="12" rx="6" />
                                         <circle class="toggle-knob" cx="9" cy="12" r="4" />
@@ -3187,8 +3187,8 @@ body.reduced-motion *::after {
                                 </svg>
                             </span>
                         </button>
-                        <button class="artifacts-toggle-btn" type="button" aria-label="Enable agent mode" aria-pressed="false" title="Agent mode is disabled">
-                            <span class="artifacts-toggle-icon" aria-hidden="true">
+                            <button class="agent-mode-toggle-btn" type="button" aria-label="Enable agent mode" aria-pressed="false" title="Agent mode is disabled">
+                            <span class="agent-mode-toggle-icon" aria-hidden="true">
                                 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                     <rect class="toggle-track" x="3" y="6" width="18" height="12" rx="6" />
                                     <circle class="toggle-knob" cx="9" cy="12" r="4" />
@@ -3389,7 +3389,7 @@ body.reduced-motion *::after {
     const reasoningPopups = Array.from(document.querySelectorAll(".reasoning-popup"));
     const permissionPopups = Array.from(document.querySelectorAll(".permission-popup"));
     const plusButtons = Array.from(document.querySelectorAll(".plus-btn"));
-    const agentModeToggleButtons = Array.from(document.querySelectorAll(".artifacts-toggle-btn"));
+    const agentModeToggleButtons = Array.from(document.querySelectorAll(".agent-mode-toggle-btn"));
     const quickChips = Array.from(document.querySelectorAll(".quick-chip"));
     const folderPathButtons = Array.from(document.querySelectorAll(".folder-path-btn"));
     const folderPathTexts = Array.from(document.querySelectorAll(".folder-path-text"));
@@ -8113,7 +8113,7 @@ body.reduced-motion *::after {
 var GLASS_BUTTON_SELECTOR = [
     ".folder-path-btn",
     ".plus-btn",
-    ".artifacts-toggle-btn",
+    ".agent-mode-toggle-btn",
     ".selector-btn",
     ".permission-btn",
         ".permission-selector",
@@ -9049,8 +9049,12 @@ var GLASS_BUTTON_SELECTOR = [
     window.setTyping = setTyping;
     window.clearMessages = clearMessages;
     window.showWelcome = showWelcome;
-    window.addHostAttachment = function (attachment) {
-        addAttachment(attachment);
+    window.addHostAttachment = function (attachments) {
+        if (Array.isArray(attachments)) {
+            attachments.forEach(addAttachment);
+            return;
+        }
+        addAttachment(attachments);
     };
     window.registerArtifact = function (artifact) {
         return registerArtifact(artifact);

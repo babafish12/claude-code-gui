@@ -44,7 +44,7 @@ def test_providers_registry_contains_expected_entries() -> None:
     assert claude.binary_names == ("claude", "claude-code")
     assert codex.binary_names == ("codex",)
     assert claude.supports_reasoning is True
-    assert codex.supports_reasoning is False
+    assert codex.supports_reasoning is True
 
     for config in (claude, codex):
         assert config.model_options

@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from claude_code_gui.domain.provider import PROVIDERS
+from claude_code_gui.assets.glass_tokens import (
+    GLASS_SPRING_CSS,
+    GLASS_RADII,
+    glass_gtk_define_colors,
+)
 
 
 def build_gtk_css(
     colors: dict[str, str],
     accent_rgb: tuple[int, int, int],
     accent_soft_rgb: tuple[int, int, int],
+    reduced_motion: bool = False,
 ) -> str:
     WINDOW_BG = colors["window_bg"]
     HEADER_BG = colors["header_bg"]
@@ -66,7 +72,12 @@ def build_gtk_css(
         f"rgba({accent_soft_r}, {accent_soft_g}, {accent_soft_b}, 0.18)"
     )
 
+    button_transition = "0ms" if reduced_motion else "280ms"
+    chrome_transition = "none" if reduced_motion else "all 0.15s ease"
+    glass_tokens = glass_gtk_define_colors()
+
     return f"""
+{glass_tokens}
 window,
 .app-root {{
     background-color: {WINDOW_BG};
@@ -100,75 +111,103 @@ window,
     padding: 0;
 }}
 
+/* GLASS-PHASE3-START */
 .button,
 .sidebar-button,
 .sidebar-toggle-gtk,
 .new-session-button,
-.session-menu-button {{
-    background-color: {BUTTON_BG};
+.agentctl-toggle-button,
+.session-open-button,
+.session-filter-pill,
+.project-path-browse-button,
+.provider-switch-button {{
+    background: @glass_tint_base;
     color: {FOREGROUND};
     border: 1px solid {BORDER_SOFT};
-    border-radius: 999px;
+    border-radius: {GLASS_RADII["pill"]}px;
     padding: 5px 12px;
     font-size: 12px;
     font-weight: 600;
-    transition: all 0.15s ease;
+    box-shadow: none;
+    transition:
+        background-color {button_transition} {GLASS_SPRING_CSS["standard"]},
+        box-shadow {button_transition} {GLASS_SPRING_CSS["standard"]},
+        border-color {button_transition} {GLASS_SPRING_CSS["standard"]};
 }}
 
 .button:hover,
 .sidebar-button:hover,
 .sidebar-toggle-gtk:hover,
 .new-session-button:hover,
-.session-menu-button:hover {{
-    background-color: {BUTTON_BG_HOVER};
-    border-color: {ACCENT_SOFT};
-    box-shadow: 0 2px 9px rgba(0, 0, 0, 0.2);
+.agentctl-toggle-button:hover {{
+    background: @glass_tint_interactive;
+    border-color: @glass_tint_interactive_hover;
+    box-shadow: none;
 }}
 
 .button:active,
 .sidebar-button:active,
 .sidebar-toggle-gtk:active,
 .new-session-button:active,
-.session-menu-button:active {{
-    background-color: {BUTTON_BG_ACTIVE};
+.agentctl-toggle-button:active {{
+    background: @glass_tint_interactive_hover;
+    border-color: @glass_tint_interactive_hover_solid;
     box-shadow: none;
+    transition-timing-function: {GLASS_SPRING_CSS["press"]};
 }}
 
 .button:focus,
 .sidebar-button:focus,
 .sidebar-toggle-gtk:focus,
 .new-session-button:focus,
-.session-menu-button:focus {{
-    box-shadow: 0 0 0 2px {ACCENT_RGBA_035};
+.agentctl-toggle-button:focus {{
+    box-shadow: none;
+    border-color: @glass_tint_interactive_hover;
 }}
+/* GLASS-PHASE3-END */
 
 .new-session-button {{
-    border-radius: 12px;
+    border-radius: {GLASS_RADII["control"]}px;
 }}
 
 .new-session-button {{
     min-height: 38px;
-    background: {NEW_SESSION_BG};
-    border-color: {NEW_SESSION_BORDER};
+    background: @glass_tint_base;
+    border-color: {BORDER_SOFT};
     color: {FOREGROUND};
     font-weight: 600;
     padding: 0 12px;
+}}
+
+.agentctl-toggle-button {{
+    min-height: 30px;
+    min-width: 56px;
+    background: @glass_tint_base;
+    border-color: {BORDER_SOFT};
+    color: {FOREGROUND};
+    font-weight: 700;
+    padding: 0 10px;
+}}
+
+.agentctl-toggle-button:checked {{
+    background: @glass_tint_interactive;
+    border-color: @glass_tint_interactive_hover;
 }}
 
 .sidebar-toggle-gtk {{
     min-height: 34px;
     min-width: 34px;
     padding: 0;
-    border-radius: 10px;
+    border-radius: {GLASS_RADII["control"]}px;
 }}
 
 .sidebar-toggle-gtk.sidebar-toggle-expanded {{
-    background-color: {NEW_SESSION_BG};
+    background: @glass_tint_interactive;
 }}
 
 .sidebar-toggle-gtk.sidebar-toggle-collapsed {{
-    background-color: {SIDEBAR_TOGGLE_COLLAPSED_BG};
-    border-color: {ACCENT_SOFT_RGBA_045};
+    background: @glass_tint_base;
+    border-color: {BORDER_SOFT};
 }}
 
 .sidebar-toggle-glyph {{
@@ -180,31 +219,38 @@ window,
 
 .bottom-combo button,
 .recent-combo button {{
-    background-color: {BUTTON_BG};
+    background: @glass_tint_base;
     color: {FOREGROUND};
     border: 1px solid {BORDER_SOFT};
-    border-radius: 10px;
     padding: 4px 10px;
     font-size: 12px;
     font-weight: 500;
-    transition: all 0.15s ease;
+    border-radius: {GLASS_RADII["pill"]}px;
+    box-shadow: none;
+    transition:
+        background-color {button_transition} {GLASS_SPRING_CSS["standard"]},
+        box-shadow {button_transition} {GLASS_SPRING_CSS["standard"]},
+        border-color {button_transition} {GLASS_SPRING_CSS["standard"]};
 }}
 
 .bottom-combo button:hover,
 .recent-combo button:hover {{
-    background-color: {BUTTON_BG_HOVER};
-    border-color: {ACCENT_SOFT};
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+    background: @glass_tint_interactive;
+    border-color: @glass_tint_interactive_hover;
+    box-shadow: none;
 }}
 
 .bottom-combo button:focus,
 .recent-combo button:focus {{
-    box-shadow: 0 0 0 2px {ACCENT_RGBA_035};
+    box-shadow: none;
+    border-color: {ACCENT_SOFT};
 }}
 
 .bottom-combo button:active,
 .recent-combo button:active {{
-    background-color: {BUTTON_BG_ACTIVE};
+    background: @glass_tint_interactive_hover;
+    box-shadow: none;
+    transition-timing-function: {GLASS_SPRING_CSS["press"]};
 }}
 
 .bottom-combo:disabled button,
@@ -225,8 +271,8 @@ window,
 }}
 
 menu {{
-    background-color: {MENU_BG};
-    border: 1px solid {BORDER};
+    background-color: {POPOVER_BG};
+    border: 1px solid {BORDER_SOFT};
     border-radius: 10px;
     padding: 4px;
 }}
@@ -234,11 +280,14 @@ menu {{
 menuitem {{
     color: {FOREGROUND};
     border-radius: 8px;
-    padding: 6px 10px;
+    border: 1px solid transparent;
+    background: transparent;
+    padding: 6px 9px;
 }}
 
 menuitem:hover {{
-    background-color: {ACCENT_RGBA_02};
+    border-color: transparent;
+    background-color: {SESSION_FILTER_HOVER_BG};
 }}
 
 menuitem:disabled {{
@@ -253,7 +302,7 @@ menuitem:disabled {{
     background: {SIDEBAR_BG};
     border-right: 1px solid {BORDER_SOFT};
     padding: 12px 10px;
-    transition: all 0.15s ease;
+    transition: {chrome_transition};
 }}
 
 .sidebar.sidebar-collapsed {{
@@ -272,24 +321,31 @@ menuitem:disabled {{
 .provider-switch-button {{
     min-height: 30px;
     padding: 0 10px;
-    border-radius: 10px;
-    border: 1px solid {ACCENT_SOFT_RGBA_045};
-    background: {ACCENT_RGBA_012};
-    color: {ACCENT_SOFT};
+    border-radius: {GLASS_RADII["pill"]}px;
+    border: 1px solid {BORDER_SOFT};
+    background: @glass_tint_base;
+    color: {FOREGROUND_MUTED};
     font-size: 11px;
     font-weight: 700;
 }}
 
 .provider-switch-button:hover {{
     border-color: {ACCENT_SOFT};
-    background: {ACCENT_RGBA_018};
+    background: @glass_tint_interactive;
     color: {FOREGROUND};
+    box-shadow: none;
 }}
 
 .provider-switch-button:disabled {{
     color: {FOREGROUND_MUTED};
     border-color: {BORDER_SOFT};
     background: transparent;
+}}
+
+.provider-switch-icon {{
+    min-width: 16px;
+    min-height: 16px;
+    opacity: 0.96;
 }}
 
 .sidebar-section-title {{
@@ -313,7 +369,7 @@ menuitem:disabled {{
 
 .project-path-entry:focus {{
     border-color: {ACCENT_SOFT};
-    box-shadow: 0 0 0 2px {ACCENT_RGBA_03};
+    box-shadow: none;
 }}
 
 .project-path-bar {{
@@ -324,27 +380,29 @@ menuitem:disabled {{
     min-height: 34px;
     min-width: 34px;
     padding: 0;
-    border-radius: 10px;
-    background-color: {BUTTON_BG};
+    border-radius: {GLASS_RADII["control"]}px;
+    background: @glass_tint_base;
     border: 1px solid {BORDER_SOFT};
     color: {FOREGROUND};
 }}
 
 .project-path-browse-button:hover {{
-    background-color: {BUTTON_BG_HOVER};
-    border-color: {ACCENT_SOFT};
+    background: @glass_tint_interactive;
+    border-color: @glass_tint_interactive_hover;
+    box-shadow: none;
 }}
 
 .project-path-browse-button:focus {{
-    box-shadow: 0 0 0 2px {ACCENT_RGBA_035};
+    box-shadow: none;
+    border-color: {ACCENT_SOFT};
 }}
 
 popover.path-suggestion-popover {{
     background-color: {POPOVER_BG};
-    border: 1px solid {BORDER};
+    border: 1px solid {BORDER_SOFT};
     border-radius: 10px;
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
-    min-width: 560px;
+    box-shadow: none;
+    min-width: 240px;
 }}
 
 .path-suggestion-list row {{
@@ -378,18 +436,19 @@ popover.path-suggestion-popover {{
 .session-filter-pill {{
     min-height: 24px;
     padding: 0 10px;
-    border-radius: 999px;
+    border-radius: {GLASS_RADII["pill"]}px;
     border: 1px solid {BORDER_SOFT};
-    background-color: {SESSION_FILTER_BG};
+    background: {SESSION_FILTER_BG};
     color: {FOREGROUND_MUTED};
     font-size: 11px;
     font-weight: 600;
 }}
 
 .session-filter-pill:hover {{
-    background-color: {SESSION_FILTER_HOVER_BG};
+    background: {SESSION_FILTER_HOVER_BG};
     border-color: {ACCENT_SOFT};
     color: {FOREGROUND};
+    box-shadow: none;
 }}
 
 .session-filter-pill.session-filter-pill-active {{
@@ -410,7 +469,7 @@ popover.path-suggestion-popover {{
 
 .session-search-entry:focus {{
     border-color: {ACCENT_SOFT};
-    box-shadow: 0 0 0 2px {ACCENT_RGBA_025};
+    box-shadow: none;
 }}
 
 .session-list {{
@@ -428,7 +487,11 @@ popover.path-suggestion-popover {{
     border-radius: 12px;
     background-color: transparent;
     padding: 4px 6px;
-    transition: all 0.15s ease;
+    background: linear-gradient(180deg, @glass_tint_base 0%, @glass_tint_base_solid 100%);
+    transition:
+        background-color {button_transition} {GLASS_SPRING_CSS["standard"]},
+        border-color {button_transition} {GLASS_SPRING_CSS["standard"]},
+        box-shadow {button_transition} {GLASS_SPRING_CSS["standard"]};
     box-shadow: none;
 }}
 
@@ -437,13 +500,14 @@ popover.path-suggestion-popover {{
 }}
 
 .session-row:hover {{
-    background-color: {SESSION_ROW_HOVER_BG};
+    background: linear-gradient(180deg, @glass_tint_interactive 0%, @glass_tint_interactive_hover 100%);
+    border-color: @glass_tint_interactive_hover;
 }}
 
 .session-row.session-row-active {{
-    background-color: {SESSION_ROW_ACTIVE_BG};
-    border-color: {ACCENT_SOFT_RGBA_04};
-    box-shadow: inset 0 0 0 1px {ACCENT_SOFT_RGBA_018};
+    background: linear-gradient(180deg, @glass_tint_interactive_hover 0%, @glass_tint_interactive 100%);
+    border-color: @glass_tint_interactive_hover;
+    box-shadow: none;
 }}
 
 .session-open-button {{
@@ -452,7 +516,7 @@ popover.path-suggestion-popover {{
     color: {FOREGROUND};
     padding: 4px 2px;
     font-size: 12px;
-    transition: all 0.15s ease;
+    transition: {chrome_transition};
 }}
 
 .session-open-button:hover {{
@@ -461,7 +525,7 @@ popover.path-suggestion-popover {{
 }}
 
 .session-open-button:focus {{
-    box-shadow: 0 0 0 2px {ACCENT_RGBA_035};
+    box-shadow: none;
 }}
 
 .session-title {{
@@ -494,12 +558,24 @@ popover.path-suggestion-popover {{
 }}
 
 .session-menu-button {{
-    min-height: 24px;
-    min-width: 24px;
-    padding: 0;
+    min-height: 22px;
+    min-width: 22px;
+    padding: 0 2px;
     border-radius: 999px;
+    border: none;
     background: transparent;
-    border-color: transparent;
+    box-shadow: none;
+    font-size: 13px;
+    color: {FOREGROUND_MUTED};
+}}
+
+.session-menu-button:hover {{
+    background: {SESSION_FILTER_HOVER_BG};
+    color: {FOREGROUND};
+}}
+
+.session-menu-button:active {{
+    background: {SESSION_FILTER_BG};
 }}
 
 .session-group-label {{
@@ -510,14 +586,20 @@ popover.path-suggestion-popover {{
 }}
 
 .session-popover button {{
-    border-radius: 9px;
+    border-radius: 8px;
     border: 1px solid transparent;
-    transition: all 0.15s ease;
+    background: transparent;
+    color: {FOREGROUND};
+    transition:
+        background-color {button_transition} {GLASS_SPRING_CSS["standard"]},
+        border-color {button_transition} {GLASS_SPRING_CSS["standard"]},
+        color {button_transition} {GLASS_SPRING_CSS["standard"]};
 }}
 
 .session-popover button:hover {{
-    border-color: {ACCENT_RGBA_045};
-    background-color: {ACCENT_RGBA_012};
+    border-color: transparent;
+    background-color: {SESSION_FILTER_HOVER_BG};
+    color: {FOREGROUND};
 }}
 
 .chat-wrap {{
@@ -525,17 +607,61 @@ popover.path-suggestion-popover {{
     background: radial-gradient(circle at top left, {ACCENT_RGBA_011}, transparent 35%), {CHAT_OUTER_BG};
 }}
 
+.pane-root {{
+    border: none;
+    border-radius: 12px;
+    background: transparent;
+}}
+
+.pane-root.pane-active {{
+    border-color: transparent;
+}}
+
+.pane-header {{
+    min-height: 30px;
+    padding: 3px 8px;
+    border-bottom: 1px solid {BORDER_SOFT};
+    background: {SIDEBAR_BG};
+}}
+
+.pane-title {{
+    color: {FOREGROUND};
+    font-size: 11px;
+    font-weight: 700;
+}}
+
+.pane-session-label {{
+    color: {FOREGROUND_MUTED};
+    font-size: 10px;
+}}
+
+.pane-close-button {{
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0;
+    border-radius: 999px;
+    border: 1px solid {BORDER_SOFT};
+    background: transparent;
+    color: {FOREGROUND_MUTED};
+}}
+
+.pane-close-button:hover {{
+    background: {SESSION_FILTER_HOVER_BG};
+    border-color: {ACCENT_SOFT};
+    color: {FOREGROUND};
+}}
+
 .chat-shell {{
     background-color: {CHAT_BG};
-    border: 1px solid {BORDER};
+    border: none;
     border-radius: 12px;
-    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.23);
-    transition: all 0.15s ease;
+    box-shadow: none;
+    transition: {chrome_transition};
 }}
 
 .chat-shell.chat-focused {{
-    border-color: {ACCENT};
-    box-shadow: 0 0 0 1px {ACCENT_RGBA_034}, 0 14px 28px rgba(0, 0, 0, 0.28);
+    border-color: {BORDER};
+    box-shadow: none;
 }}
 
 .chat-overlay-toggle {{

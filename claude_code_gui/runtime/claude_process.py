@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -21,6 +22,8 @@ from claude_code_gui.domain.cli_dialect import (
 )
 from claude_code_gui.domain.claude_types import ClaudeRunConfig, ClaudeRunResult
 from claude_code_gui.domain.provider import normalize_provider_id
+
+logger = logging.getLogger(__name__)
 
 
 class ClaudeProcess:
@@ -68,6 +71,7 @@ class ClaudeProcess:
                     process.kill()
                 else:
                     process.terminate()
+                logger.info("request_stop force=%s", force)
             except OSError:
                 return
 
@@ -97,7 +101,7 @@ class ClaudeProcess:
         try:
             process.stdin.write(payload)
             process.stdin.flush()
-        except OSError:
+        except (OSError, ValueError):
             return False
 
         _ = request_id
@@ -123,7 +127,13 @@ class ClaudeProcess:
 
         provider_id = normalize_provider_id(config.provider_id)
         provider_label = "Codex" if provider_id == "codex" else "Claude"
-        modes = self._build_modes(config)
+        mode_attempts = self._build_mode_attempts(config)
+        logger.info(
+            "request=%s provider=%s run_start attempts=%s",
+            request_token,
+            provider_id,
+            len(mode_attempts),
+        )
 
         final_result = ClaudeRunResult(
             success=False,
@@ -134,19 +144,34 @@ class ClaudeProcess:
         )
 
         try:
-            for index, mode in enumerate(modes):
+            for index, (mode, include_reasoning) in enumerate(mode_attempts):
                 if index > 0:
-                    label = "JSON" if mode == "json" else "Plain text"
-                    self._emit_system_message(request_token, f"Falling back to {label} output mode.")
+                    prev_mode, prev_include_reasoning = mode_attempts[index - 1]
+                    if mode != prev_mode:
+                        label = "JSON" if mode == "json" else "Plain text"
+                        self._emit_system_message(request_token, f"Falling back to {label} output mode.")
+                    elif prev_include_reasoning and not include_reasoning:
+                        self._emit_system_message(
+                            request_token,
+                            "Falling back to stream without extra reasoning argument.",
+                        )
 
                 result, unsupported_output = self._run_single_attempt(
                     request_token=request_token,
                     config=config,
                     mode=mode,
+                    include_reasoning=include_reasoning,
                 )
 
                 final_result = result
-                if unsupported_output and index < len(modes) - 1:
+                if unsupported_output and index < len(mode_attempts) - 1:
+                    logger.info(
+                        "request=%s provider=%s fallback_next_attempt mode=%s include_reasoning=%s",
+                        request_token,
+                        provider_id,
+                        mode,
+                        include_reasoning,
+                    )
                     continue
                 break
         finally:
@@ -160,19 +185,31 @@ class ClaudeProcess:
 
             self._emit_running_changed(request_token, False)
             self._emit_complete(request_token, final_result)
+            logger.info(
+                "request=%s provider=%s run_complete success=%s stopped=%s",
+                request_token,
+                provider_id,
+                final_result.success,
+                was_stopped,
+            )
 
     @staticmethod
-    def _build_modes(config: ClaudeRunConfig) -> list[str]:
+    def _build_mode_attempts(config: ClaudeRunConfig) -> list[tuple[str, bool]]:
         if normalize_provider_id(config.provider_id) == "codex":
-            return ["stream-json"]
+            use_reasoning = bool(config.supports_reasoning_flag)
+            attempts: list[tuple[str, bool]] = [("stream-json", use_reasoning)]
+            if use_reasoning:
+                attempts.append(("stream-json", False))
+            attempts.append(("text", False))
+            return attempts
 
-        modes: list[str] = []
+        modes: list[tuple[str, bool]] = []
         if config.supports_output_format_flag:
             if config.supports_stream_json:
-                modes.append("stream-json")
+                modes.append(("stream-json", config.supports_reasoning_flag))
             if config.supports_json:
-                modes.append("json")
-        modes.append("text")
+                modes.append(("json", config.supports_reasoning_flag))
+        modes.append(("text", config.supports_reasoning_flag))
         return modes
 
     @staticmethod
@@ -183,7 +220,15 @@ class ClaudeProcess:
         return self._dialects.get(provider_id, self._dialects["claude"])
 
     @staticmethod
-    def _build_cli_run_config(config: ClaudeRunConfig, *, mode: str) -> CliRunConfig:
+    def _build_cli_run_config(
+        config: ClaudeRunConfig,
+        *,
+        mode: str,
+        include_reasoning: bool = True,
+    ) -> CliRunConfig:
+        provider_id = normalize_provider_id(config.provider_id)
+        is_codex = provider_id == "codex"
+
         return CliRunConfig(
             binary_path=config.binary_path,
             cwd=config.cwd,
@@ -192,12 +237,12 @@ class ClaudeProcess:
             reasoning_level=config.reasoning_level,
             allowed_tools=list(config.allowed_tools) if config.allowed_tools else None,
             output_format=mode,
-            supports_model_flag=config.supports_model_flag,
-            supports_permission_flag=config.supports_permission_flag,
-            supports_output_format_flag=config.supports_output_format_flag,
+            supports_model_flag=config.supports_model_flag or is_codex,
+            supports_permission_flag=config.supports_permission_flag or is_codex,
+            supports_output_format_flag=config.supports_output_format_flag or is_codex,
             supports_include_partial_messages=config.supports_include_partial_messages,
             stream_json_requires_verbose=config.stream_json_requires_verbose,
-            supports_reasoning_flag=config.supports_reasoning_flag,
+            supports_reasoning_flag=config.supports_reasoning_flag and include_reasoning,
         )
 
     def _run_single_attempt(
@@ -206,11 +251,16 @@ class ClaudeProcess:
         request_token: str,
         config: ClaudeRunConfig,
         mode: str,
+        include_reasoning: bool = True,
     ) -> tuple[ClaudeRunResult, bool]:
         provider_id = normalize_provider_id(config.provider_id)
         provider_label = self._provider_label(provider_id)
         dialect = self._get_dialect(provider_id)
-        dialect_config = self._build_cli_run_config(config, mode=mode)
+        dialect_config = self._build_cli_run_config(
+            config,
+            mode=mode,
+            include_reasoning=include_reasoning,
+        )
         if config.conversation_id:
             argv = dialect.build_resume_argv(
                 config.conversation_id,
@@ -219,6 +269,14 @@ class ClaudeProcess:
             )
         else:
             argv = dialect.build_argv(config.message, dialect_config)
+        logger.info(
+            "request=%s provider=%s attempt_start mode=%s include_reasoning=%s resume=%s",
+            request_token,
+            provider_id,
+            mode,
+            include_reasoning,
+            bool(config.conversation_id),
+        )
 
         try:
             process_env = dict(os.environ)
@@ -234,7 +292,23 @@ class ClaudeProcess:
                 bufsize=1,
                 env=process_env,
             )
+            if provider_id == "codex":
+                # Codex consumes stdin when present and waits for EOF.
+                # It receives the prompt as an argument, so closing stdin
+                # keeps non-interactive runs from hanging.
+                try:
+                    if process.stdin is not None and hasattr(process.stdin, "close"):
+                        process.stdin.close()
+                except (OSError, AttributeError):
+                    pass
         except OSError as error:
+            logger.warning(
+                "request=%s provider=%s attempt_start_failed mode=%s error=%s",
+                request_token,
+                provider_id,
+                mode,
+                error,
+            )
             return (
                 ClaudeRunResult(
                     success=False,
@@ -281,6 +355,9 @@ class ClaudeProcess:
                     event = self._parse_json_line(stripped)
                     if event is not None:
                         parsed_json = True
+
+                    if event is None and provider_id == "codex":
+                        continue
 
                     suppressed_tool_use_ids: set[str] = set()
                     suppress_tools_without_id = False
@@ -356,6 +433,25 @@ class ClaudeProcess:
             )
             if mode == "stream-json" and not parsed_json and return_code != 0:
                 unsupported_output = unsupported_output or "error" in combined
+            if mode == "stream-json" and provider_id == "codex":
+                no_assistant_content = not assistant_parts and not result_text
+                if no_assistant_content and not error_messages and return_code == 0:
+                    unsupported_output = True
+            if provider_id == "codex" and any(
+                marker in combined
+                for marker in (
+                    "unknown config",
+                    "unrecognized argument",
+                    "unrecognized arguments",
+                    "unknown option",
+                    "invalid argument",
+                    "unknown flag",
+                    "model_reasoning_effort",
+                    "-c:",
+                    "unknown option:",
+                )
+            ):
+                unsupported_output = True
 
         assistant_text = "".join(assistant_parts)
         if not assistant_text.strip() and isinstance(result_text, str) and result_text.strip():
@@ -371,6 +467,20 @@ class ClaudeProcess:
             error_message = output_hint
 
         success = return_code == 0 and not error_messages
+        if provider_id == "codex" and success and not assistant_text.strip():
+            success = False
+            if not error_message:
+                error_message = captured_output[-1] if captured_output else "Codex returned no assistant response."
+        logger.info(
+            "request=%s provider=%s attempt_complete mode=%s rc=%s success=%s unsupported=%s streamed=%s",
+            request_token,
+            provider_id,
+            mode,
+            return_code,
+            success,
+            unsupported_output,
+            streamed_assistant,
+        )
 
         return (
             ClaudeRunResult(

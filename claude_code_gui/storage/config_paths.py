@@ -7,6 +7,7 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".config" / "claude-code-gui"
 RECENT_FOLDERS_PATH = CONFIG_DIR / "recent_folders.json"
 SESSIONS_PATH = CONFIG_DIR / "sessions.json"
+APP_SETTINGS_PATH = CONFIG_DIR / "app_settings.json"
 RECENT_FOLDERS_LIMIT = 10
 
 

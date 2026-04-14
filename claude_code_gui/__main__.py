@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
-import gi
-
-gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")
-try:
-    gi.require_version("WebKit2", "4.1")
-except ValueError:
-    gi.require_version("WebKit2", "4.0")
-
-from gi.repository import Gtk
+from claude_code_gui.gi_runtime import Gtk, GTK4
 
 from claude_code_gui.ui.window import ClaudeCodeWindow
 
 
 def main() -> None:
     window = ClaudeCodeWindow()
-    window.show_all()
+    if GTK4:
+        window.present()
+    else:
+        window.show_all()
     Gtk.main()
 
 

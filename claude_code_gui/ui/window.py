@@ -13,7 +13,6 @@ import os
 import re
 import shlex
 import subprocess
-import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -69,6 +68,8 @@ from claude_code_gui.domain.provider import (
 from claude_code_gui.domain.session import SessionRecord
 from claude_code_gui.runtime.claude_process import ClaudeProcess
 from claude_code_gui.services.attachment_service import (
+    MAX_ATTACHMENTS_PER_MESSAGE,
+    MAX_ATTACHMENT_TOTAL_BYTES,
     cleanup_temp_paths,
     compose_message_with_attachments,
     decode_data_url,
@@ -125,6 +126,10 @@ _AGENTCTL_COMMAND_KEYWORDS = {
     "summary",
     "switch",
 }
+
+_MAX_JS_OPTION_PAYLOAD_CHARS = 512
+_MAX_JS_PERMISSION_PAYLOAD_CHARS = 64_000
+_MAX_JS_SEND_PAYLOAD_CHARS = int((MAX_ATTACHMENT_TOTAL_BYTES * 4) / 3) + (MAX_ATTACHMENTS_PER_MESSAGE * 2048) + 256_000
 
 _ICONS_DIR = Path(__file__).resolve().parents[2] / "icons"
 
@@ -540,9 +545,9 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _state_pane(self) -> PaneController | None:
         if self._pane_context_id is not None:
-            pane = self._pane_by_id(self._pane_context_id)
-            if pane is not None:
-                return pane
+            # Do not fall back to active pane when a context pane was removed.
+            # Falling back can route async callbacks into the wrong pane state.
+            return self._pane_by_id(self._pane_context_id)
         return self._pane_by_id(self._active_pane_id)
 
     def _state_pane_or_raise(self) -> PaneController:
@@ -1108,6 +1113,12 @@ class ClaudeCodeWindow(Gtk.Window):
             if pane._webview is not None:
                 pane._webview.grab_focus()
 
+    def _activate_existing_pane(self, pane_id: str, *, grab_focus: bool = False) -> bool:
+        if pane_id not in self._pane_registry:
+            return False
+        self._set_active_pane(pane_id, grab_focus=grab_focus)
+        return True
+
     def _update_pane_header(self, pane_id: str) -> None:
         pane = self._pane_by_id(pane_id)
         if pane is None:
@@ -1317,7 +1328,7 @@ class ClaudeCodeWindow(Gtk.Window):
         for block_match in re.finditer(r"```(agentctl|agent)\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL):
             block_body = str(block_match.group(2) or "")
             for raw_line in block_body.splitlines():
-                command = ClaudeCodeWindow._normalize_agentctl_line(raw_line, allow_prefixless=True)
+                command = ClaudeCodeWindow._normalize_agentctl_line(raw_line, allow_prefixless=False)
                 if not command:
                     continue
                 line = command
@@ -3662,9 +3673,15 @@ class ClaudeCodeWindow(Gtk.Window):
         self,
         pane_id: str,
         _manager: WebKit.UserContentManager,
-        _js_result: WebKit.JavascriptResult,
+        js_result: WebKit.JavascriptResult,
     ) -> None:
-        self._set_active_pane(pane_id)
+        if not self._activate_existing_pane(pane_id):
+            return
+        if self._extract_action_from_js_result(
+            js_result,
+            allowed_actions={"change", "open"},
+        ) is None:
+            return
         selected = self._choose_project_folder_with_dialog()
         if selected is None:
             return
@@ -4077,6 +4094,13 @@ class ClaudeCodeWindow(Gtk.Window):
         helper_label.set_line_wrap(True)
         content_area.pack_start(helper_label, False, False, 0)
 
+        validation_label = Gtk.Label(label="")
+        validation_label.set_xalign(0.0)
+        validation_label.set_line_wrap(True)
+        validation_label.set_visible(False)
+        validation_label.get_style_context().add_class("status-warning")
+        content_area.pack_start(validation_label, False, False, 0)
+
         notebook = Gtk.Notebook()
         notebook.set_scrollable(True)
         settings_scroller = Gtk.ScrolledWindow()
@@ -4137,6 +4161,23 @@ class ClaudeCodeWindow(Gtk.Window):
             if color is not None and hasattr(widget, "override_color"):
                 widget.override_color(Gtk.StateFlags.NORMAL, color)
 
+        color_entry_map: dict[tuple[str, str], Gtk.Entry] = {}
+
+        def _set_entry_validation(entry: Gtk.Entry | None, message: str | None) -> None:
+            if entry is None:
+                return
+            context = entry.get_style_context()
+            context.remove_class("error")
+            if message:
+                context.add_class("error")
+                entry.set_tooltip_text(message)
+                return
+            entry.set_tooltip_text(None)
+
+        def _clear_color_entry_validation() -> None:
+            for entry in color_entry_map.values():
+                _set_entry_validation(entry, None)
+
         def _selected_reasoning_labels() -> list[tuple[str, str]]:
             result: list[tuple[str, str]] = []
             for entry in working_payload.get("reasoning_options", []):
@@ -4180,32 +4221,60 @@ class ClaudeCodeWindow(Gtk.Window):
                 options.append({"label": label, "value": value})
             provider["model_options"] = options
 
-        def _normalize_payload() -> bool:
+        def _normalize_payload() -> tuple[bool, str, Gtk.Entry | None]:
+            _clear_color_entry_validation()
             providers = working_payload.get("providers")
             if not isinstance(providers, dict):
-                return False
-            for provider in providers.values():
+                return (False, "Settings payload is missing providers.", None)
+
+            for (provider_id, color_key), entry in color_entry_map.items():
+                normalized = _normalize_hex(entry.get_text())
+                if normalized is None:
+                    _set_entry_validation(entry, "Use #RRGGBB")
+                    return (
+                        False,
+                        f"Invalid color value in {provider_id}.{color_key}. Use #RRGGBB.",
+                        entry,
+                    )
+                _set_entry_validation(entry, None)
+                if entry.get_text().strip().lower() != normalized:
+                    entry.set_text(normalized)
+                provider_payload = providers.get(provider_id)
+                if not isinstance(provider_payload, dict):
+                    return (False, f"Provider '{provider_id}' is invalid.", None)
+                colors_payload = provider_payload.get("colors")
+                if not isinstance(colors_payload, dict):
+                    return (False, f"Provider '{provider_id}' colors are missing.", None)
+                colors_payload[color_key] = normalized
+
+            for provider_id, provider in providers.items():
                 if not isinstance(provider, dict):
-                    return False
+                    return (False, f"Provider '{provider_id}' is invalid.", None)
                 colors = provider.get("colors")
                 if not isinstance(colors, dict):
-                    return False
+                    return (False, f"Provider '{provider_id}' colors are missing.", None)
                 for key, value in list(colors.items()):
                     normalized = _normalize_hex(str(value))
                     if normalized is None:
-                        return False
+                        entry = color_entry_map.get((provider_id, key))
+                        _set_entry_validation(entry, "Use #RRGGBB")
+                        return (
+                            False,
+                            f"Invalid color value in {provider_id}.{key}. Use #RRGGBB.",
+                            entry,
+                        )
                     colors[key] = normalized
 
                 for key in ("accent_rgb", "accent_soft_rgb"):
                     rgb = provider.get(key)
                     if not isinstance(rgb, list) or len(rgb) < 3:
-                        return False
+                        return (False, f"Provider '{provider_id}' has invalid '{key}' values.", None)
                     provider[key] = [_normalize_rgb_component(v) for v in rgb[:3]]
 
                 model_options = provider.get("model_options", [])
                 normalized_models: list[dict[str, str]] = []
                 if not isinstance(model_options, list) or not model_options:
-                    return False
+                    return (False, f"Provider '{provider_id}' must define at least one model option.", None)
                 for entry in model_options:
                     if not isinstance(entry, dict):
                         continue
@@ -4215,9 +4284,9 @@ class ClaudeCodeWindow(Gtk.Window):
                 if normalized_models:
                     provider["model_options"] = normalized_models
                 else:
-                    return False
+                    return (False, f"Provider '{provider_id}' has invalid model options.", None)
 
-            return True
+            return (True, "", None)
 
         def _build_reasoning_tab() -> Gtk.Widget:
             page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -4491,7 +4560,9 @@ class ClaudeCodeWindow(Gtk.Window):
             def _color_sync(entry: Gtk.Entry, pid: str, key: str, button: Gtk.ColorButton) -> None:
                 normalized = _normalize_hex(entry.get_text())
                 if normalized is None:
+                    _set_entry_validation(entry, "Use #RRGGBB")
                     return
+                _set_entry_validation(entry, None)
                 data_provider = working_payload["providers"].get(pid)
                 if not isinstance(data_provider, dict):
                     return
@@ -4511,6 +4582,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 hex_color = _rgba_to_hex(button.get_rgba())
                 data_colors[key] = hex_color
                 entry.set_text(hex_color)
+                _set_entry_validation(entry, None)
                 _apply_preview()
 
             color_items = sorted(colors_map.keys())
@@ -4525,6 +4597,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 value_entry = Gtk.Entry()
                 value_entry.set_width_chars(10)
                 value_entry.set_text(value)
+                color_entry_map[(provider_id, key)] = value_entry
                 color_button = Gtk.ColorButton()
                 color_buttons[key] = color_button
                 parsed_rgba = _hex_to_rgba(value)
@@ -4745,20 +4818,14 @@ class ClaudeCodeWindow(Gtk.Window):
             if response != Gtk.ResponseType.OK:
                 break
 
-            if not _normalize_payload():
-                msg = Gtk.MessageDialog(
-                    transient_for=self,
-                    modal=True,
-                    message_type=Gtk.MessageType.ERROR,
-                    buttons=Gtk.ButtonsType.CLOSE,
-                    text="Invalid settings values",
-                )
-                msg.format_secondary_text(
-                    "Invalid hex / rgb fields detected. Use #RRGGBB and 0-255 for colors.",
-                )
-                msg.run()
-                msg.destroy()
+            valid_payload, validation_error, invalid_entry = _normalize_payload()
+            if not valid_payload:
+                validation_label.set_text(validation_error or "Invalid settings values.")
+                validation_label.set_visible(True)
+                if invalid_entry is not None:
+                    invalid_entry.grab_focus()
                 continue
+            validation_label.set_visible(False)
 
             try:
                 save_settings(working_payload)
@@ -4831,23 +4898,11 @@ class ClaudeCodeWindow(Gtk.Window):
                     continue
 
                 process.stop()
-                deadline = time.monotonic() + 2.5
-                while process.is_running() and time.monotonic() < deadline:
-                    while Gtk.events_pending():
-                        Gtk.main_iteration_do(False)
-                    time.sleep(0.03)
-
                 if process.is_running():
                     process.stop(force=True)
-                    force_deadline = time.monotonic() + 1.0
-                    while process.is_running() and time.monotonic() < force_deadline:
-                        while Gtk.events_pending():
-                            Gtk.main_iteration_do(False)
-                        time.sleep(0.03)
-
                 if process.is_running():
                     all_stopped = False
-                    logger.warning("Pane %s did not stop before provider switch.", pane_id)
+                    logger.warning("Pane %s still reports running during provider switch; continuing.", pane_id)
 
         return all_stopped
 
@@ -5253,6 +5308,8 @@ class ClaudeCodeWindow(Gtk.Window):
     ) -> None:
         if load_event != WebKit.LoadEvent.FINISHED:
             return
+        if pane_id not in self._pane_registry:
+            return
 
         with self._pane_context(pane_id):
             self._webview_ready = True
@@ -5286,7 +5343,8 @@ class ClaudeCodeWindow(Gtk.Window):
         _webview: WebKit.WebView,
         _event: Gdk.EventFocus,
     ) -> bool:
-        self._set_active_pane(pane_id)
+        if not self._activate_existing_pane(pane_id):
+            return False
         if self._chat_shell is not None:
             self._chat_shell.get_style_context().add_class("chat-focused")
         return False
@@ -5297,7 +5355,8 @@ class ClaudeCodeWindow(Gtk.Window):
         _webview: WebKit.WebView,
         _event: Gdk.EventFocus,
     ) -> bool:
-        self._set_active_pane(pane_id)
+        if not self._activate_existing_pane(pane_id):
+            return False
         if self._chat_shell is not None:
             self._chat_shell.get_style_context().remove_class("chat-focused")
         return False
@@ -5308,8 +5367,12 @@ class ClaudeCodeWindow(Gtk.Window):
         _manager: WebKit.UserContentManager,
         js_result: WebKit.JavascriptResult,
     ) -> None:
-        self._set_active_pane(pane_id)
-        raw_value = self._extract_message_from_js_result(js_result)
+        if not self._activate_existing_pane(pane_id):
+            return
+        raw_value = self._extract_message_from_js_result(
+            js_result,
+            max_chars=_MAX_JS_OPTION_PAYLOAD_CHARS,
+        )
         model_value = normalize_model_value(raw_value, provider=self._active_provider_id)
         self._apply_session_option("model", self._model_index_from_value(model_value))
 
@@ -5319,8 +5382,12 @@ class ClaudeCodeWindow(Gtk.Window):
         _manager: WebKit.UserContentManager,
         js_result: WebKit.JavascriptResult,
     ) -> None:
-        self._set_active_pane(pane_id)
-        raw_value = self._extract_message_from_js_result(js_result)
+        if not self._activate_existing_pane(pane_id):
+            return
+        raw_value = self._extract_message_from_js_result(
+            js_result,
+            max_chars=_MAX_JS_OPTION_PAYLOAD_CHARS,
+        )
         permission_value = normalize_permission_value(raw_value, provider=self._active_provider_id)
         self._apply_session_option("permission", self._permission_index_from_value(permission_value))
 
@@ -5330,7 +5397,8 @@ class ClaudeCodeWindow(Gtk.Window):
         _manager: WebKit.UserContentManager,
         js_result: WebKit.JavascriptResult,
     ) -> None:
-        self._set_active_pane(pane_id)
+        if not self._activate_existing_pane(pane_id):
+            return
         if not self._active_provider.supports_reasoning:
             self._set_status_message(
                 f"Reasoning level is ignored in {self._active_provider.name} mode.",
@@ -5339,7 +5407,10 @@ class ClaudeCodeWindow(Gtk.Window):
             self._call_js("setReasoningVisible", False)
             return
 
-        value = self._extract_message_from_js_result(js_result)
+        value = self._extract_message_from_js_result(
+            js_result,
+            max_chars=_MAX_JS_OPTION_PAYLOAD_CHARS,
+        )
         index = self._reasoning_index_from_value(value)
         if index == self._selected_reasoning_index:
             return
@@ -5364,9 +5435,15 @@ class ClaudeCodeWindow(Gtk.Window):
         self,
         pane_id: str,
         _manager: WebKit.UserContentManager,
-        _js_result: WebKit.JavascriptResult,
+        js_result: WebKit.JavascriptResult,
     ) -> None:
-        self._set_active_pane(pane_id)
+        if not self._activate_existing_pane(pane_id):
+            return
+        if self._extract_action_from_js_result(
+            js_result,
+            allowed_actions={"refresh"},
+        ) is None:
+            return
         self._refresh_slash_commands()
 
     def _on_js_toggle_agent_mode(
@@ -5375,8 +5452,12 @@ class ClaudeCodeWindow(Gtk.Window):
         _manager: WebKit.UserContentManager,
         js_result: WebKit.JavascriptResult,
     ) -> None:
-        self._set_active_pane(pane_id)
-        raw_value = self._extract_message_from_js_result(js_result).strip().lower()
+        if not self._activate_existing_pane(pane_id):
+            return
+        raw_value = self._extract_message_from_js_result(
+            js_result,
+            max_chars=_MAX_JS_OPTION_PAYLOAD_CHARS,
+        ).strip().lower()
         if raw_value == "on":
             next_enabled = True
         elif raw_value == "off":
@@ -5403,9 +5484,77 @@ class ClaudeCodeWindow(Gtk.Window):
         self,
         pane_id: str,
         _manager: WebKit.UserContentManager,
-        _js_result: WebKit.JavascriptResult,
+        js_result: WebKit.JavascriptResult,
     ) -> None:
-        self._set_active_pane(pane_id)
+        if not self._activate_existing_pane(pane_id):
+            return
+        if self._extract_action_from_js_result(
+            js_result,
+            allowed_actions={"open", "attach"},
+        ) is None:
+            return
+        added_count = 0
+        skipped_count = 0
+        added_bytes = 0
+
+        def _add_selected_file(selected: str) -> bool:
+            nonlocal added_count, skipped_count, added_bytes
+
+            if added_count >= MAX_ATTACHMENTS_PER_MESSAGE:
+                skipped_count += 1
+                return False
+
+            if not os.path.isfile(selected):
+                skipped_count += 1
+                return False
+
+            try:
+                file_size = os.path.getsize(selected)
+            except OSError as error:
+                skipped_count += 1
+                self._set_status_message(f"Could not read file: {error}", STATUS_WARNING)
+                return False
+
+            if file_size > ATTACHMENT_MAX_BYTES:
+                skipped_count += 1
+                self._set_status_message(
+                    f"Attachment exceeds {ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit: {os.path.basename(selected)}",
+                    STATUS_WARNING,
+                )
+                self._add_system_message("One or more attachments exceeded size limit.")
+                return False
+            if added_bytes + file_size > MAX_ATTACHMENT_TOTAL_BYTES:
+                skipped_count += 1
+                self._set_status_message(
+                    "Attachment selection exceeds total size limit for one message.",
+                    STATUS_WARNING,
+                )
+                self._add_system_message("Attachment total size limit reached.")
+                return False
+
+            try:
+                with open(selected, "rb") as handle:
+                    raw_bytes = handle.read()
+            except OSError as error:
+                skipped_count += 1
+                self._set_status_message(f"Could not read file: {error}", STATUS_WARNING)
+                return False
+
+            mime_type, _ = mimetypes.guess_type(selected)
+            if not mime_type:
+                mime_type = "application/octet-stream"
+
+            payload = {
+                "name": os.path.basename(selected),
+                "path": selected,
+                "type": mime_type,
+                "data": f"data:{mime_type};base64,{base64.b64encode(raw_bytes).decode('ascii')}",
+            }
+            self._call_js("addHostAttachment", payload)
+            added_count += 1
+            added_bytes += file_size
+            return True
+
         dialog = Gtk.FileChooserDialog(
             title="Attach file",
             parent=self,
@@ -5421,6 +5570,7 @@ class ClaudeCodeWindow(Gtk.Window):
         dialog.set_modal(True)
         if os.path.isdir(self._project_folder):
             dialog.set_current_folder(self._project_folder)
+        dialog.set_select_multiple(True)
 
         image_filter = Gtk.FileFilter()
         image_filter.set_name("Images")
@@ -5449,48 +5599,38 @@ class ClaudeCodeWindow(Gtk.Window):
         dialog.add_filter(all_filter)
 
         response = dialog.run()
-        selected = dialog.get_filename() if response == Gtk.ResponseType.OK else None
+        selected_paths = dialog.get_filenames() if response == Gtk.ResponseType.OK else []
         dialog.destroy()
 
-        if not selected:
+        if not selected_paths:
             return
 
-        try:
-            file_size = os.path.getsize(selected)
-        except OSError as error:
-            self._set_status_message(f"Could not read file: {error}", STATUS_WARNING)
-            return
+        for selected in selected_paths:
+            _add_selected_file(selected)
 
-        if file_size > ATTACHMENT_MAX_BYTES:
-            self._set_status_message("Attachment is too large", STATUS_WARNING)
-            self._add_system_message("Attachment exceeds 12 MB limit.")
+        if added_count == 0 and skipped_count == 0:
             return
-
-        try:
-            with open(selected, "rb") as handle:
-                raw_bytes = handle.read()
-        except OSError as error:
-            self._set_status_message(f"Could not read file: {error}", STATUS_WARNING)
-            return
-
-        mime_type, _ = mimetypes.guess_type(selected)
-        if not mime_type:
-            mime_type = "application/octet-stream"
-        payload = {
-            "name": os.path.basename(selected),
-            "path": selected,
-            "type": mime_type,
-            "data": f"data:{mime_type};base64,{base64.b64encode(raw_bytes).decode('ascii')}",
-        }
-        self._call_js("addHostAttachment", payload)
+        if skipped_count:
+            self._set_status_message(
+                f"{added_count} attached, {skipped_count} skipped.",
+                STATUS_WARNING if skipped_count > 0 else STATUS_INFO,
+            )
+        else:
+            self._set_status_message(f"{added_count} file(s) attached.", STATUS_INFO)
 
     def _on_js_stop_process(
         self,
         pane_id: str,
         _manager: WebKit.UserContentManager,
-        _js_result: WebKit.JavascriptResult,
+        js_result: WebKit.JavascriptResult,
     ) -> None:
-        self._set_active_pane(pane_id)
+        if not self._activate_existing_pane(pane_id):
+            return
+        if self._extract_action_from_js_result(
+            js_result,
+            allowed_actions={"stop"},
+        ) is None:
+            return
         if self._claude_process.is_running():
             self._claude_process.stop()
             self._set_status_message("Process stopped by user", STATUS_WARNING)
@@ -5502,26 +5642,68 @@ class ClaudeCodeWindow(Gtk.Window):
         _manager: WebKit.UserContentManager,
         js_result: WebKit.JavascriptResult,
     ) -> None:
-        self._set_active_pane(pane_id)
-        raw_payload = self._extract_message_from_js_result(js_result)
+        if not self._activate_existing_pane(pane_id):
+            return
+        raw_payload = self._extract_message_from_js_result(
+            js_result,
+            max_chars=_MAX_JS_PERMISSION_PAYLOAD_CHARS + 1,
+        )
         if not raw_payload:
+            return
+        if len(raw_payload) > _MAX_JS_PERMISSION_PAYLOAD_CHARS:
+            self._set_status_message("Permission payload too large", STATUS_WARNING)
+            logger.warning(
+                "pane=%s provider=%s permission_payload_rejected reason=too_large",
+                pane_id,
+                self._active_provider_id,
+            )
             return
 
         try:
             parsed_payload = json.loads(raw_payload)
         except json.JSONDecodeError:
+            logger.warning(
+                "pane=%s provider=%s permission_payload_rejected reason=invalid_json",
+                pane_id,
+                self._active_provider_id,
+            )
             return
 
         if not isinstance(parsed_payload, dict):
+            logger.warning(
+                "pane=%s provider=%s permission_payload_rejected reason=not_object",
+                pane_id,
+                self._active_provider_id,
+            )
+            return
+        allowed_keys = {
+            "action",
+            "toolName",
+            "comment",
+            "requestId",
+            "isDenialCard",
+        }
+        if any(not isinstance(key, str) or key not in allowed_keys for key in parsed_payload.keys()):
+            logger.warning(
+                "pane=%s provider=%s permission_payload_rejected reason=unknown_keys",
+                pane_id,
+                self._active_provider_id,
+            )
             return
 
         action = str(parsed_payload.get("action") or "").strip().lower()
         if action not in {"allow", "deny", "comment", "always_allow"}:
+            logger.warning(
+                "pane=%s provider=%s permission_payload_rejected reason=invalid_action action=%s",
+                pane_id,
+                self._active_provider_id,
+                action,
+            )
             return
 
-        tool_name = str(parsed_payload.get("toolName") or "").strip()
-        comment = str(parsed_payload.get("comment") or "")
-        request_id = str(parsed_payload.get("requestId") or "")
+        tool_name = str(parsed_payload.get("toolName") or "").strip()[:120]
+        comment = str(parsed_payload.get("comment") or "")[:4000]
+        request_id = str(parsed_payload.get("requestId") or "").strip()[:160]
         is_denial_card = bool(parsed_payload.get("isDenialCard"))
 
         if action == "always_allow" and tool_name:
@@ -5577,10 +5759,24 @@ class ClaudeCodeWindow(Gtk.Window):
         _manager: WebKit.UserContentManager,
         js_result: WebKit.JavascriptResult,
     ) -> None:
-        self._set_active_pane(pane_id)
-        raw_text = self._extract_message_from_js_result(js_result)
+        if not self._activate_existing_pane(pane_id):
+            return
+        raw_text = self._extract_message_from_js_result(
+            js_result,
+            max_chars=_MAX_JS_SEND_PAYLOAD_CHARS + 1,
+        )
+        if len(raw_text) > _MAX_JS_SEND_PAYLOAD_CHARS:
+            self._set_status_message("Message payload too large", STATUS_WARNING)
+            return
         message, attachments = parse_send_payload(raw_text)
         if not message and not attachments:
+            if raw_text.strip():
+                self._set_status_message("Invalid message payload", STATUS_WARNING)
+                logger.warning(
+                    "pane=%s provider=%s send_payload_rejected reason=invalid_schema",
+                    pane_id,
+                    self._active_provider_id,
+                )
             return
         if message and self._handle_agent_command(pane_id, message):
             if attachments:
@@ -5661,6 +5857,13 @@ class ClaudeCodeWindow(Gtk.Window):
         request_token = str(uuid.uuid4())
         previous_request_token = self._active_request_token
         self._active_request_token = request_token
+        logger.info(
+            "pane=%s request=%s provider=%s session=%s send_start",
+            pane_id,
+            request_token,
+            self._active_provider_id,
+            active_session.id,
+        )
         config = ClaudeRunConfig(
             binary_path=self._binary_path,
             message=composed_message,
@@ -5692,12 +5895,22 @@ class ClaudeCodeWindow(Gtk.Window):
             self._set_typing(False)
             self._refresh_connection_state()
             self._set_status_message("A request is already running", STATUS_WARNING)
+            logger.warning(
+                "pane=%s request=%s provider=%s send_rejected_already_running",
+                pane_id,
+                request_token,
+                self._active_provider_id,
+            )
             return
 
         self._request_temp_files[request_token] = attachment_paths
 
     @staticmethod
-    def _extract_message_from_js_result(js_result: Any) -> str:
+    def _extract_message_from_js_result(
+        js_result: Any,
+        *,
+        max_chars: int | None = None,
+    ) -> str:
         try:
             raw_obj = js_result
             if hasattr(js_result, "get_js_value"):
@@ -5725,16 +5938,46 @@ class ClaudeCodeWindow(Gtk.Window):
             try:
                 parsed = json.loads(text)
                 if isinstance(parsed, str):
-                    return parsed
+                    text = parsed
             except json.JSONDecodeError:
-                return text[1:-1]
+                text = text[1:-1]
+
+        if isinstance(max_chars, int) and max_chars > 0 and len(text) > max_chars:
+            return text[:max_chars]
 
         return text
 
+    @staticmethod
+    def _extract_action_from_js_result(
+        js_result: Any,
+        *,
+        allowed_actions: set[str],
+        max_chars: int = _MAX_JS_OPTION_PAYLOAD_CHARS,
+    ) -> str | None:
+        raw_value = ClaudeCodeWindow._extract_message_from_js_result(
+            js_result,
+            max_chars=max_chars,
+        ).strip().lower()
+        if not raw_value:
+            return None
+        if raw_value not in allowed_actions:
+            return None
+        return raw_value
+
     def _on_process_running_changed(self, pane_id: str, request_token: str, running: bool) -> None:
+        if pane_id not in self._pane_registry:
+            return
         with self._pane_context(pane_id):
             if not self._is_current_request(request_token):
                 return
+
+            logger.info(
+                "pane=%s request=%s provider=%s running=%s",
+                pane_id,
+                request_token,
+                self._active_provider_id,
+                running,
+            )
 
             self._call_js("setProcessing", running)
 
@@ -5743,6 +5986,8 @@ class ClaudeCodeWindow(Gtk.Window):
                 self._set_status_message(f"{self._active_provider.name} is responding...", STATUS_INFO)
 
     def _on_process_assistant_chunk(self, pane_id: str, request_token: str, chunk: str) -> None:
+        if pane_id not in self._pane_registry:
+            return
         with self._pane_context(pane_id):
             if not self._is_current_request(request_token):
                 return
@@ -5754,6 +5999,8 @@ class ClaudeCodeWindow(Gtk.Window):
             self._append_assistant_chunk(chunk)
 
     def _on_process_system_message(self, pane_id: str, request_token: str, message: str) -> None:
+        if pane_id not in self._pane_registry:
+            return
         with self._pane_context(pane_id):
             if not self._is_current_request(request_token):
                 return
@@ -5774,11 +6021,21 @@ class ClaudeCodeWindow(Gtk.Window):
         request_token: str,
         payload: dict[str, Any],
     ) -> None:
+        if pane_id not in self._pane_registry:
+            return
         with self._pane_context(pane_id):
             if not self._is_current_request(request_token):
                 return
             if not payload:
                 return
+
+            logger.info(
+                "pane=%s request=%s provider=%s permission_request tool=%s",
+                pane_id,
+                request_token,
+                self._active_provider_id,
+                str(payload.get("toolName") or ""),
+            )
 
             self._set_typing(False)
             self._call_js("addPermissionRequest", payload)
@@ -5793,6 +6050,8 @@ class ClaudeCodeWindow(Gtk.Window):
                 )
 
     def _on_process_complete(self, pane_id: str, request_token: str, result: ClaudeRunResult) -> None:
+        if pane_id not in self._pane_registry:
+            return
         with self._pane_context(pane_id):
             temp_paths = self._request_temp_files.pop(request_token, [])
             cleanup_temp_paths(temp_paths)
@@ -5820,6 +6079,12 @@ class ClaudeCodeWindow(Gtk.Window):
             self._update_usage_display()
 
             if result.success:
+                logger.info(
+                    "pane=%s request=%s provider=%s complete success=1",
+                    pane_id,
+                    request_token,
+                    self._active_provider_id,
+                )
                 self._last_request_failed = False
                 if self._is_active_pane(pane_id):
                     self._refresh_connection_state()
@@ -5836,6 +6101,13 @@ class ClaudeCodeWindow(Gtk.Window):
                 return
 
             error_message = result.error_message or f"{self._active_provider.name} request failed"
+            logger.warning(
+                "pane=%s request=%s provider=%s complete success=0 error=%s",
+                pane_id,
+                request_token,
+                self._active_provider_id,
+                error_message,
+            )
             self._last_request_failed = True
             if self._is_active_pane(pane_id):
                 self._refresh_connection_state()

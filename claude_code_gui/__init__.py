@@ -1,10 +1,5 @@
-"""Claude Code GUI — GTK3 wrapper for Claude Code CLI."""
+"""Claude Code GUI package."""
 
-import gi
+from claude_code_gui.gi_runtime import Gdk, Gio, GLib, Gtk, Pango, WebKit, GTK4, WEBKIT6
 
-gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")
-try:
-    gi.require_version("WebKit2", "4.1")
-except ValueError:
-    gi.require_version("WebKit2", "4.0")
+__all__ = ["Gtk", "Gdk", "Gio", "GLib", "Pango", "WebKit", "GTK4", "WEBKIT6"]

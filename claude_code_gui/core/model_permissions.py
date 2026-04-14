@@ -35,7 +35,9 @@ def normalize_model_value(raw_value: str | None, provider: str = "claude") -> st
     candidate = legacy_aliases.get(candidate, candidate)
     if candidate in {value for _, value in model_options}:
         return candidate
-    return model_options[0][1]
+    if model_options:
+        return model_options[0][1]
+    return candidate
 
 
 def normalize_permission_value(raw_value: str | None, provider: str = "claude") -> str:

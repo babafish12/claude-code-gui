@@ -32,7 +32,25 @@ class CodexDialectArgvTests(unittest.TestCase):
         self.assertIn("--json", argv)
         self.assertNotIn("--color", argv)
         self.assertNotIn("-C", argv)
+        self.assertNotIn("--skip-git-repo-check", argv)
         self.assertEqual(argv[-2:], ["thread-123", "resume prompt"])
+
+    def test_fresh_argv_still_includes_cwd_skip_check(self) -> None:
+        argv = self.dialect.build_argv("hello", self.config)
+        self.assertIn("-C", argv)
+        self.assertIn("--skip-git-repo-check", argv)
+
+    def test_resume_argv_without_cwd_does_not_add_cwd_flags(self) -> None:
+        no_cwd_config = CliRunConfig(
+            binary_path="/usr/bin/codex",
+            cwd="",
+            model="gpt-5",
+            permission_mode="auto",
+            disable_color=True,
+        )
+        argv = self.dialect.build_resume_argv("thread-123", "resume prompt", no_cwd_config)
+        self.assertNotIn("-C", argv)
+        self.assertNotIn("--skip-git-repo-check", argv)
 
     def test_parse_line_turn_failed_emits_error_event(self) -> None:
         events = self.dialect.parse_line('{"type":"turn.failed","message":"Model rejected request"}')

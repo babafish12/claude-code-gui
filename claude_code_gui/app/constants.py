@@ -50,12 +50,6 @@ def get_permission_options(provider: str = DEFAULT_PROVIDER_ID) -> list[tuple[st
 
 PERMISSION_OPTIONS: list[tuple[str, str, bool]] = get_permission_options()
 
-REASONING_LEVEL_OPTIONS: list[tuple[str, str]] = [
-    ("Low (Fast)", "low"),
-    ("Medium (Balanced)", "medium"),
-    ("High (Deep)", "high"),
-]
-
 LEGACY_PERMISSION_ALIASES: dict[str, str] = {
     "ask": "auto",
     "default": "auto",

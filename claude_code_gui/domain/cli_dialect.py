@@ -3,8 +3,51 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+_SAFE_CLI_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:/+\-@]{1,160}$")
+_SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,160}$")
+_SAFE_REASONING_LEVELS = {"low", "medium", "high", "xhigh", "minimal"}
+
+
+def _sanitize_cli_token(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("-"):
+        return ""
+    if _SAFE_CLI_TOKEN_RE.fullmatch(text) is None:
+        return ""
+    return text
+
+
+def _sanitize_session_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("-"):
+        return ""
+    if _SAFE_SESSION_ID_RE.fullmatch(text) is None:
+        return ""
+    return text
+
+
+def _sanitize_reasoning_level(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in _SAFE_REASONING_LEVELS:
+        return text
+    return "medium"
+
+
+def _sanitize_path_arg(value: Any) -> str:
+    text = str(value or "")
+    if not text.strip():
+        return ""
+    if any(ch in text for ch in ("\x00", "\n", "\r")):
+        return ""
+    return text
 
 
 @dataclass(slots=True)
@@ -70,21 +113,24 @@ class ClaudeDialect:
         if output_mode == "stream-json" and config.supports_include_partial_messages:
             argv.append("--include-partial-messages")
 
-        if config.supports_model_flag and config.model:
-            argv.extend(["--model", config.model])
+        model_value = _sanitize_cli_token(config.model)
+        if config.supports_model_flag and model_value:
+            argv.extend(["--model", model_value])
 
-        if config.supports_permission_flag and config.permission_mode:
-            argv.extend(["--permission-mode", config.permission_mode])
+        permission_value = _sanitize_cli_token(config.permission_mode)
+        if config.supports_permission_flag and permission_value:
+            argv.extend(["--permission-mode", permission_value])
 
-        if config.supports_reasoning_flag and config.reasoning_level:
-            argv.extend(["--effort", config.reasoning_level])
+        if config.supports_reasoning_flag:
+            argv.extend(["--effort", _sanitize_reasoning_level(config.reasoning_level)])
 
         return argv
 
     def build_resume_argv(self, session_id: str, prompt: str, config: CliRunConfig) -> list[str]:
         argv = self.build_argv(prompt, config)
-        if session_id:
-            argv.extend(["--resume", session_id])
+        safe_session_id = _sanitize_session_id(session_id)
+        if safe_session_id:
+            argv.extend(["--resume", safe_session_id])
         return argv
 
     def parse_line(self, line: str) -> list[ParsedEvent]:
@@ -558,6 +604,9 @@ class CodexDialect:
         return argv
 
     def build_resume_argv(self, session_id: str, prompt: str, config: CliRunConfig) -> list[str]:
+        safe_session_id = _sanitize_session_id(session_id)
+        if not safe_session_id:
+            return self.build_argv(prompt, config)
         argv = [config.binary_path, "exec", "resume"]
         argv.extend(
             self._build_exec_flags(
@@ -566,7 +615,7 @@ class CodexDialect:
                 include_cwd=False,
             )
         )
-        argv.extend([session_id, prompt])
+        argv.extend([safe_session_id, prompt])
         return argv
 
     def parse_line(self, line: str) -> list[ParsedEvent]:
@@ -574,43 +623,62 @@ class CodexDialect:
         if event is None:
             return []
 
-        event_type = str(event.get("type") or "").strip().lower()
+        return self._parse_codex_event(event)
+
+    def _parse_codex_event(self, event: dict[str, Any]) -> list[ParsedEvent]:
         parsed_events: list[ParsedEvent] = []
+        event_type = str(event.get("type") or "").strip().lower()
+
+        if event_type == "stream_event":
+            nested = event.get("event")
+            if isinstance(nested, dict):
+                return self._parse_codex_event(nested)
 
         if event_type == "thread.started":
-            thread_id = event.get("thread_id")
-            if isinstance(thread_id, str) and thread_id.strip():
-                parsed_events.append(ParsedEvent(session_id=thread_id.strip(), raw_type=event_type))
+            thread_id = self._coerce_event_value(event.get("thread_id") or event.get("id"))
+            if thread_id:
+                parsed_events.append(ParsedEvent(session_id=thread_id, raw_type=event_type))
             return parsed_events
 
-        if event_type in {"item.started", "item.completed"}:
+        if event_type in {"thread.finished", "thread.ended"}:
+            thread_id = self._coerce_event_value(event.get("thread_id") or event.get("id"))
+            if thread_id:
+                parsed_events.append(ParsedEvent(session_id=thread_id, raw_type=event_type))
+            return parsed_events
+
+        if event_type in {"item.started", "item.completed", "item.error", "item.failed"}:
             item = event.get("item")
             if not isinstance(item, dict):
                 return parsed_events
-            item_type = str(item.get("type") or "").strip().lower()
-
-            if item_type == "agent_message" and event_type == "item.completed":
-                text = item.get("text")
-                if isinstance(text, str) and text:
-                    parsed_events.append(ParsedEvent(text=text, raw_type=event_type))
-                return parsed_events
-
-            if item_type == "command_execution":
-                tool_payload: dict[str, Any] = {
-                    "type": item_type,
-                    "id": item.get("id"),
-                    "command": item.get("command"),
-                    "output": item.get("aggregated_output"),
-                    "exit_code": item.get("exit_code"),
-                    "status": item.get("status"),
-                    "phase": "started" if event_type == "item.started" else "completed",
-                }
-                parsed_events.append(ParsedEvent(tool=tool_payload, raw_type=event_type))
-                return parsed_events
-
+            parsed_events.extend(self._parse_codex_item_payload(item, event_type))
             return parsed_events
 
-        if event_type == "turn.completed":
+        if event_type in {"assistant", "assistant_message", "agent_message", "message"}:
+            parsed_events.extend(self._parse_codex_item_payload(event, event_type))
+            return parsed_events
+
+        item_payload = event.get("item")
+        if isinstance(item_payload, dict):
+            parsed_events.extend(self._parse_codex_item_payload(item_payload, event_type or "item"))
+            if parsed_events:
+                return parsed_events
+
+            nested_item_text = self._extract_text_payload(item_payload)
+            if nested_item_text:
+                parsed_events.append(ParsedEvent(text=nested_item_text, raw_type=event_type or "event"))
+                return parsed_events
+
+        items_payload = event.get("items")
+        if isinstance(items_payload, list):
+            for item in items_payload:
+                if not isinstance(item, dict):
+                    continue
+                parsed_events.extend(self._parse_codex_item_payload(item, event_type or "event"))
+
+            if parsed_events:
+                return parsed_events
+
+        if event_type in {"turn.completed", "turn.error", "turn.failed", "turn.started", "result", "fatal", "error"}:
             usage = event.get("usage")
             if isinstance(usage, dict):
                 usage_payload = {
@@ -619,17 +687,182 @@ class CodexDialect:
                     "output_tokens": int(usage.get("output_tokens") or 0),
                 }
                 parsed_events.append(ParsedEvent(usage=usage_payload, raw_type=event_type))
+
+            raw_cost = event.get("total_cost_usd")
+            if isinstance(raw_cost, (int, float)):
+                if not parsed_events or not isinstance(parsed_events[-1].usage, dict):
+                    parsed_events.append(
+                        ParsedEvent(usage={"total_cost_usd": float(raw_cost)}, raw_type=event_type)
+                    )
+                else:
+                    parsed_events[-1].usage["total_cost_usd"] = float(raw_cost)
+
+            raw_result = self._extract_text_payload(
+                event.get("result")
+                or event.get("message")
+                or event.get("output")
+                or event.get("text")
+                or event.get("content")
+                or event.get("response")
+            )
+            if raw_result:
+                is_error_event = event_type in {"error", "turn.error", "turn.failed", "fatal"}
+                if is_error_event or bool(event.get("is_error")) and event_type not in {
+                    "turn.completed",
+                    "result",
+                    "assistant",
+                    "assistant_message",
+                    "agent_message",
+                }:
+                    parsed_events.append(ParsedEvent(error=raw_result, raw_type=event_type))
+                else:
+                    parsed_events.append(ParsedEvent(text=raw_result, raw_type=event_type))
+
+            if event_type in {"error", "turn.error", "turn.failed", "fatal"} and not raw_result:
+                message = self._coerce_event_value(event.get("message") or event.get("error"))
+                if message:
+                    parsed_events.append(ParsedEvent(error=message, raw_type=event_type))
+                else:
+                    parsed_events.append(ParsedEvent(error="Codex returned an error event.", raw_type=event_type))
+
             return parsed_events
 
-        if event_type in {"error", "turn.error", "turn.failed", "fatal"} or bool(event.get("is_error")):
-            message = event.get("error") or event.get("message") or event.get("result")
-            if isinstance(message, str) and message.strip():
-                parsed_events.append(ParsedEvent(error=message.strip(), raw_type=event_type or "error"))
-            else:
-                parsed_events.append(ParsedEvent(error="Codex returned an error event.", raw_type=event_type or "error"))
-            return parsed_events
+        for nested_key in ("payload", "data", "body", "details"):
+            payload = event.get(nested_key)
+            if isinstance(payload, dict):
+                parsed_events.extend(self._parse_codex_event(payload))
+                if parsed_events:
+                    return parsed_events
+            if isinstance(payload, list):
+                for entry in payload:
+                    if not isinstance(entry, dict):
+                        continue
+                    parsed_events.extend(self._parse_codex_event(entry))
+                    if parsed_events:
+                        return parsed_events
+
+        message = self._extract_text_payload(event)
+        if message:
+            parsed_events.append(ParsedEvent(text=message, raw_type=event_type or "event"))
 
         return parsed_events
+
+    def _parse_codex_item_payload(self, item: dict[str, Any], phase: str) -> list[ParsedEvent]:
+        parsed_events: list[ParsedEvent] = []
+        if not isinstance(item, dict):
+            return parsed_events
+
+        item_type = str(item.get("type") or "").strip().lower()
+
+        if item_type in {"agent_message", "assistant", "assistant_message", "message"}:
+            text = self._extract_text_payload(
+                item.get("text")
+                or item.get("content")
+                or item.get("message")
+                or item.get("delta")
+            )
+            if text:
+                parsed_events.append(ParsedEvent(text=text, raw_type=phase))
+            return parsed_events
+
+        if item_type in {"command_execution", "command"}:
+            command_payload: dict[str, Any] = {
+                "type": item_type,
+                "id": item.get("id"),
+                "command": self._coerce_event_value(item.get("command") or item.get("command_text")),
+                "output": self._coerce_event_value(
+                    item.get("aggregated_output") or item.get("stdout") or item.get("output") or item.get("result")
+                ),
+                "exit_code": item.get("exit_code"),
+                "status": item.get("status"),
+                "phase": "started" if phase == "item.started" else "completed",
+            }
+            parsed_events.append(ParsedEvent(tool=command_payload, raw_type=phase))
+            return parsed_events
+
+        if item_type == "tool_result":
+            output = self._coerce_event_value(item.get("output") or item.get("result") or item.get("text"))
+            if output:
+                tool_payload: dict[str, Any] = {
+                    "type": "tool_result",
+                    "toolUseId": self._coerce_event_value(item.get("tool_use_id") or item.get("toolUseId") or item.get("id")),
+                    "output": output,
+                }
+                parsed_events.append(ParsedEvent(tool=tool_payload, raw_type=phase))
+            return parsed_events
+
+        fallback_text = self._extract_text_payload(item)
+        if fallback_text:
+            parsed_events.append(ParsedEvent(text=fallback_text, raw_type=phase))
+        return parsed_events
+
+    @staticmethod
+    def _coerce_event_value(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, list):
+            for candidate in value:
+                found = CodexDialect._coerce_event_value(candidate)
+                if found:
+                    return found
+            return ""
+        if isinstance(value, dict):
+            for key in ("text", "content", "result", "output", "message", "summary", "delta"):
+                found = CodexDialect._coerce_event_value(value.get(key))
+                if found:
+                    return found
+        return ""
+
+    def _extract_text_payload(self, value: Any) -> str:
+        chunks: list[str] = []
+
+        def _collect(value_inner: Any) -> None:
+            if isinstance(value_inner, str):
+                text = value_inner.strip()
+                if text:
+                    chunks.append(text)
+                return
+
+            if isinstance(value_inner, list):
+                for item in value_inner:
+                    _collect(item)
+                return
+
+            if not isinstance(value_inner, dict):
+                return
+
+            for key in (
+                "text",
+                "content",
+                "output",
+                "result",
+                "message",
+                "summary",
+                "reasoning",
+                "response",
+                "delta",
+            ):
+                if key in value_inner:
+                    _collect(value_inner.get(key))
+                    if chunks:
+                        return
+
+        _collect(value)
+        if not chunks:
+            return ""
+
+        deduped: list[str] = []
+        for chunk in chunks:
+            if deduped and deduped[-1] == chunk:
+                continue
+            deduped.append(chunk)
+
+        return "".join(deduped)
 
     def _build_exec_flags(
         self,
@@ -638,19 +871,30 @@ class CodexDialect:
         include_color: bool,
         include_cwd: bool,
     ) -> list[str]:
-        argv: list[str] = ["--json"]
+        argv: list[str] = []
+        output_format = str(config.output_format or "").strip().lower()
+        if output_format in {"stream-json", "json"}:
+            argv.append("--json")
 
         if include_color and config.disable_color:
             argv.extend(["--color", "never"])
 
-        if config.model:
-            argv.extend(["-m", config.model])
+        model_value = _sanitize_cli_token(config.model)
+        if model_value:
+            argv.extend(["-m", model_value])
 
         permission_flags = self._permission_flags(config.permission_mode)
         argv.extend(permission_flags)
 
-        if include_cwd and config.cwd:
-            argv.extend(["-C", config.cwd])
+        if config.supports_reasoning_flag:
+            argv.extend(["-c", f"model_reasoning_effort={_sanitize_reasoning_level(config.reasoning_level)}"])
+
+        safe_cwd = _sanitize_path_arg(config.cwd)
+        if include_cwd and safe_cwd:
+            argv.extend(["-C", safe_cwd])
+
+        if include_cwd and safe_cwd:
+            argv.append("--skip-git-repo-check")
 
         return argv
 
