@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import json
 import logging
 import math
@@ -84,6 +85,33 @@ from claude_code_gui.storage.sessions_store import load_sessions, save_sessions
 logger = logging.getLogger(__name__)
 
 
+class PaneController:
+    """Encapsulates one pane's WebView, process and request state."""
+
+    def __init__(self, pane_id: str) -> None:
+        self.pane_id = pane_id
+        self._container: Gtk.Box | None = None
+        self._close_button: Gtk.Button | None = None
+        self._title_label: Gtk.Label | None = None
+        self._session_label: Gtk.Label | None = None
+        self._webview: WebKit2.WebView | None = None
+        self._webview_user_content_manager: WebKit2.UserContentManager | None = None
+        self._webview_ready = False
+        self._pending_webview_scripts: list[str] = []
+        self._chat_shell: Gtk.EventBox | None = None
+
+        self._claude_process: ClaudeProcess | None = None
+        self._active_session_id: str | None = None
+        self._conversation_id: str | None = None
+        self._active_request_token: str | None = None
+        self._active_assistant_message = ""
+        self._request_temp_files: dict[str, list[str]] = {}
+        self._permission_request_pending = False
+        self._allowed_tools: set[str] = set()
+        self._has_messages = False
+        self._last_request_failed = False
+
+
 class ClaudeCodeWindow(Gtk.Window):
     """Single-window Claude Code shell with WebKit2 chat UI and session context."""
 
@@ -98,11 +126,13 @@ class ClaudeCodeWindow(Gtk.Window):
         self.set_default_size(APP_DEFAULT_WIDTH, APP_DEFAULT_HEIGHT)
         self.set_size_request(APP_MIN_WIDTH, APP_MIN_HEIGHT)
 
-        self._webview: WebKit2.WebView | None = None
-        self._webview_user_content_manager: WebKit2.UserContentManager | None = None
-        self._webview_ready = False
-        self._pending_webview_scripts: list[str] = []
-        self._chat_shell: Gtk.EventBox | None = None
+        self._active_pane_id: str | None = None
+        self._pane_registry: dict[str, PaneController] = {}
+        self._workspace_container: Gtk.Widget | None = None
+        self._workspace_host: Gtk.Box | None = None
+        self._pane_context_id: str | None = None
+        self._pane_id_counter = 0
+        self._max_panes = 4
 
         self._sidebar_container: Gtk.Box | None = None
         self._sidebar_toggle_button: Gtk.Button | None = None
@@ -139,9 +169,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._session_filter = "all"
         self._session_search_query = ""
         self._window_has_focus = True
-        self._permission_request_pending = False
         self._notification_counter = 0
-        self._allowed_tools: set[str] = set()
 
         self._connection_dot: Gtk.Label | None = None
         self._connection_label: Gtk.Label | None = None
@@ -155,8 +183,6 @@ class ClaudeCodeWindow(Gtk.Window):
         self._context_char_count = 0
         self._session_cost_usd = 0.0
         self._session_tokens = 0
-
-        self._request_temp_files: dict[str, list[str]] = {}
 
         self._model_options: list[tuple[str, str]] = list(self._active_provider.model_options)
         self._permission_options: list[tuple[str, str, bool]] = list(self._active_provider.permission_options)
@@ -177,24 +203,9 @@ class ClaudeCodeWindow(Gtk.Window):
         self._supports_include_partial_messages = False
         self._stream_json_requires_verbose = True
 
-        self._claude_process = ClaudeProcess(
-            on_running_changed=self._on_process_running_changed,
-            on_assistant_chunk=self._on_process_assistant_chunk,
-            on_system_message=self._on_process_system_message,
-            on_permission_request=self._on_process_permission_request,
-            on_complete=self._on_process_complete,
-        )
-
-        self._conversation_id: str | None = None
-        self._active_request_token: str | None = None
-        self._has_messages = False
-        self._last_request_failed = False
-        self._active_assistant_message = ""
-
         self._session_started_us = GLib.get_monotonic_time()
         self._session_timer_id: int | None = None
         self._sessions: list[SessionRecord] = []
-        self._active_session_id: str | None = None
 
         self._set_dark_theme_preference()
         self._install_css()
@@ -209,6 +220,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self.connect("map-event", self._on_map_event)
         self.connect("focus-in-event", self._on_window_focus_in)
         self.connect("focus-out-event", self._on_window_focus_out)
+        self.connect("key-press-event", self._on_window_key_press)
 
         if self._binary_path is None:
             self._set_connection_state(CONNECTION_DISCONNECTED)
@@ -250,6 +262,207 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _provider_window_title(self, provider_id: str | None = None) -> str:
         return f"{self._provider_display_name(provider_id)} Code"
+
+    def _new_pane_id(self) -> str:
+        self._pane_id_counter += 1
+        return f"pane-{self._pane_id_counter}"
+
+    def _pane_by_id(self, pane_id: str | None) -> PaneController | None:
+        if pane_id is None:
+            return None
+        return self._pane_registry.get(pane_id)
+
+    def _is_active_pane(self, pane_id: str) -> bool:
+        return pane_id == self._active_pane_id
+
+    def _state_pane(self) -> PaneController | None:
+        if self._pane_context_id is not None:
+            pane = self._pane_by_id(self._pane_context_id)
+            if pane is not None:
+                return pane
+        return self._pane_by_id(self._active_pane_id)
+
+    def _state_pane_or_raise(self) -> PaneController:
+        pane = self._state_pane()
+        if pane is None:
+            raise RuntimeError("No active pane is available.")
+        return pane
+
+    @contextmanager
+    def _pane_context(self, pane_id: str):
+        previous = self._pane_context_id
+        self._pane_context_id = pane_id
+        try:
+            yield
+        finally:
+            self._pane_context_id = previous
+
+    @property
+    def _webview(self) -> WebKit2.WebView | None:
+        pane = self._state_pane()
+        return pane._webview if pane is not None else None
+
+    @_webview.setter
+    def _webview(self, value: WebKit2.WebView | None) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._webview = value
+
+    @property
+    def _webview_user_content_manager(self) -> WebKit2.UserContentManager | None:
+        pane = self._state_pane()
+        return pane._webview_user_content_manager if pane is not None else None
+
+    @_webview_user_content_manager.setter
+    def _webview_user_content_manager(self, value: WebKit2.UserContentManager | None) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._webview_user_content_manager = value
+
+    @property
+    def _webview_ready(self) -> bool:
+        pane = self._state_pane()
+        return bool(pane._webview_ready) if pane is not None else False
+
+    @_webview_ready.setter
+    def _webview_ready(self, value: bool) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._webview_ready = bool(value)
+
+    @property
+    def _pending_webview_scripts(self) -> list[str]:
+        pane = self._state_pane()
+        return pane._pending_webview_scripts if pane is not None else []
+
+    @_pending_webview_scripts.setter
+    def _pending_webview_scripts(self, value: list[str]) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._pending_webview_scripts = value
+
+    @property
+    def _chat_shell(self) -> Gtk.EventBox | None:
+        pane = self._state_pane()
+        return pane._chat_shell if pane is not None else None
+
+    @_chat_shell.setter
+    def _chat_shell(self, value: Gtk.EventBox | None) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._chat_shell = value
+
+    @property
+    def _claude_process(self) -> ClaudeProcess:
+        pane = self._state_pane_or_raise()
+        if pane._claude_process is None:
+            raise RuntimeError("Pane process is not initialized.")
+        return pane._claude_process
+
+    @_claude_process.setter
+    def _claude_process(self, value: ClaudeProcess) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._claude_process = value
+
+    @property
+    def _conversation_id(self) -> str | None:
+        pane = self._state_pane()
+        return pane._conversation_id if pane is not None else None
+
+    @_conversation_id.setter
+    def _conversation_id(self, value: str | None) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._conversation_id = value
+
+    @property
+    def _active_request_token(self) -> str | None:
+        pane = self._state_pane()
+        return pane._active_request_token if pane is not None else None
+
+    @_active_request_token.setter
+    def _active_request_token(self, value: str | None) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._active_request_token = value
+
+    @property
+    def _active_assistant_message(self) -> str:
+        pane = self._state_pane()
+        return pane._active_assistant_message if pane is not None else ""
+
+    @_active_assistant_message.setter
+    def _active_assistant_message(self, value: str) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._active_assistant_message = value
+
+    @property
+    def _request_temp_files(self) -> dict[str, list[str]]:
+        pane = self._state_pane()
+        return pane._request_temp_files if pane is not None else {}
+
+    @_request_temp_files.setter
+    def _request_temp_files(self, value: dict[str, list[str]]) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._request_temp_files = value
+
+    @property
+    def _permission_request_pending(self) -> bool:
+        pane = self._state_pane()
+        return bool(pane._permission_request_pending) if pane is not None else False
+
+    @_permission_request_pending.setter
+    def _permission_request_pending(self, value: bool) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._permission_request_pending = bool(value)
+
+    @property
+    def _allowed_tools(self) -> set[str]:
+        pane = self._state_pane()
+        return pane._allowed_tools if pane is not None else set()
+
+    @_allowed_tools.setter
+    def _allowed_tools(self, value: set[str]) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._allowed_tools = value
+
+    @property
+    def _has_messages(self) -> bool:
+        pane = self._state_pane()
+        return bool(pane._has_messages) if pane is not None else False
+
+    @_has_messages.setter
+    def _has_messages(self, value: bool) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._has_messages = bool(value)
+
+    @property
+    def _last_request_failed(self) -> bool:
+        pane = self._state_pane()
+        return bool(pane._last_request_failed) if pane is not None else False
+
+    @_last_request_failed.setter
+    def _last_request_failed(self, value: bool) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._last_request_failed = bool(value)
+
+    @property
+    def _active_session_id(self) -> str | None:
+        pane = self._state_pane()
+        return pane._active_session_id if pane is not None else None
+
+    @_active_session_id.setter
+    def _active_session_id(self, value: str | None) -> None:
+        pane = self._state_pane()
+        if pane is not None:
+            pane._active_session_id = value
 
     def _install_css(self) -> None:
         provider = self._active_provider
@@ -294,8 +507,8 @@ class ClaudeCodeWindow(Gtk.Window):
         sidebar = self._build_sidebar()
         content.pack_start(sidebar, False, False, 0)
 
-        chat_panel = self._build_chat_panel()
-        content.pack_start(chat_panel, True, True, 0)
+        workspace_panel = self._build_workspace_panel()
+        content.pack_start(workspace_panel, True, True, 0)
 
         status_bar = self._build_status_bar()
         root.pack_end(status_bar, False, False, 0)
@@ -306,6 +519,416 @@ class ClaudeCodeWindow(Gtk.Window):
         self._start_chat_reveal_in()
 
         self._session_timer_id = GLib.timeout_add_seconds(1, self._update_session_timer)
+
+    def _build_workspace_panel(self) -> Gtk.Box:
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        panel.set_hexpand(True)
+        panel.set_vexpand(True)
+
+        wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        wrap.get_style_context().add_class("chat-wrap")
+        wrap.set_hexpand(True)
+        wrap.set_vexpand(True)
+        panel.pack_start(wrap, True, True, 0)
+
+        workspace_host = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        workspace_host.set_hexpand(True)
+        workspace_host.set_vexpand(True)
+        wrap.pack_start(workspace_host, True, True, 0)
+        self._workspace_host = workspace_host
+
+        initial_pane_id = self._new_pane_id()
+        initial_pane = self._create_pane_controller(initial_pane_id)
+        initial_view = self.build_pane_chat_view(initial_pane_id)
+        initial_pane._container = initial_view
+        initial_view._pane_id = initial_pane_id
+        workspace_host.pack_start(initial_view, True, True, 0)
+        self._workspace_container = initial_view
+        self._active_pane_id = initial_pane_id
+        self._update_pane_close_buttons()
+        self._update_all_pane_headers()
+        self._set_active_pane(initial_pane_id)
+
+        project_path_bar = self._build_project_path_bar()
+        wrap.pack_start(project_path_bar, False, False, 8)
+        return panel
+
+    def _create_pane_controller(self, pane_id: str) -> PaneController:
+        pane = PaneController(pane_id)
+        pane._claude_process = ClaudeProcess(
+            on_running_changed=lambda request_token, running, pid=pane_id: self._on_process_running_changed(
+                pid,
+                request_token,
+                running,
+            ),
+            on_assistant_chunk=lambda request_token, chunk, pid=pane_id: self._on_process_assistant_chunk(
+                pid,
+                request_token,
+                chunk,
+            ),
+            on_system_message=lambda request_token, message, pid=pane_id: self._on_process_system_message(
+                pid,
+                request_token,
+                message,
+            ),
+            on_permission_request=lambda request_token, payload, pid=pane_id: self._on_process_permission_request(
+                pid,
+                request_token,
+                payload,
+            ),
+            on_complete=lambda request_token, result, pid=pane_id: self._on_process_complete(
+                pid,
+                request_token,
+                result,
+            ),
+        )
+        self._pane_registry[pane_id] = pane
+        return pane
+
+    def build_pane_chat_view(self, pane_id: str) -> Gtk.Box:
+        pane = self._pane_registry[pane_id]
+
+        pane_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        pane_box.set_hexpand(True)
+        pane_box.set_vexpand(True)
+        pane_box.get_style_context().add_class("pane-root")
+        pane_box._pane_id = pane_id
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        header.set_hexpand(True)
+        header.get_style_context().add_class("pane-header")
+        pane_box.pack_start(header, False, False, 0)
+
+        title_label = Gtk.Label(label="Pane")
+        title_label.set_xalign(0.0)
+        title_label.get_style_context().add_class("pane-title")
+        header.pack_start(title_label, True, True, 0)
+        pane._title_label = title_label
+
+        session_label = Gtk.Label(label="No session")
+        session_label.set_xalign(1.0)
+        session_label.get_style_context().add_class("pane-session-label")
+        header.pack_start(session_label, False, False, 0)
+        pane._session_label = session_label
+
+        close_button = Gtk.Button(label="×")
+        close_button.set_relief(Gtk.ReliefStyle.NONE)
+        close_button.get_style_context().add_class("pane-close-button")
+        close_button.connect("clicked", lambda _button, pid=pane_id: self._close_pane(pid))
+        header.pack_end(close_button, False, False, 0)
+        pane._close_button = close_button
+
+        overlay = Gtk.Overlay()
+        overlay.set_hexpand(True)
+        overlay.set_vexpand(True)
+        pane_box.pack_start(overlay, True, True, 0)
+
+        shell = Gtk.EventBox()
+        shell.set_visible_window(True)
+        shell.set_hexpand(True)
+        shell.set_vexpand(True)
+        shell.get_style_context().add_class("chat-shell")
+        overlay.add(shell)
+        pane._chat_shell = shell
+        self._chat_reveal_widgets.append((shell, 60.0))
+        shell.set_opacity(0.0)
+
+        manager = WebKit2.UserContentManager()
+        for handler_name in (
+            "sendMessage",
+            "changeModel",
+            "changePermission",
+            "changeReasoning",
+            "changeFolder",
+            "attachFile",
+            "permissionResponse",
+            "stopProcess",
+            "refreshSlashCommands",
+        ):
+            manager.register_script_message_handler(handler_name)
+        manager.connect(
+            "script-message-received::sendMessage",
+            lambda manager, result, pid=pane_id: self._on_js_send_message(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::changeModel",
+            lambda manager, result, pid=pane_id: self._on_js_change_model(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::changePermission",
+            lambda manager, result, pid=pane_id: self._on_js_change_permission(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::changeReasoning",
+            lambda manager, result, pid=pane_id: self._on_js_change_reasoning(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::changeFolder",
+            lambda manager, result, pid=pane_id: self._on_js_change_folder(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::attachFile",
+            lambda manager, result, pid=pane_id: self._on_js_attach_file(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::permissionResponse",
+            lambda manager, result, pid=pane_id: self._on_js_permission_response(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::stopProcess",
+            lambda manager, result, pid=pane_id: self._on_js_stop_process(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::refreshSlashCommands",
+            lambda manager, result, pid=pane_id: self._on_js_refresh_slash_commands(pid, manager, result),
+        )
+        pane._webview_user_content_manager = manager
+
+        webview = WebKit2.WebView.new_with_user_content_manager(manager)
+        webview.set_hexpand(True)
+        webview.set_vexpand(True)
+        webview.connect(
+            "load-changed",
+            lambda webview, load_event, pid=pane_id: self._on_webview_load_changed(pid, webview, load_event),
+        )
+        webview.connect(
+            "focus-in-event",
+            lambda webview, event, pid=pane_id: self._on_webview_focus_in(pid, webview, event),
+        )
+        webview.connect(
+            "focus-out-event",
+            lambda webview, event, pid=pane_id: self._on_webview_focus_out(pid, webview, event),
+        )
+
+        settings = webview.get_settings()
+        if settings is not None:
+            settings.set_enable_write_console_messages_to_stdout(False)
+            settings.set_enable_developer_extras(False)
+            settings.set_enable_javascript(True)
+
+        webview.load_html(CHAT_WEBVIEW_HTML, "")
+        shell.add(webview)
+        pane._webview = webview
+
+        pane_box.show_all()
+        return pane_box
+
+    def _ordered_pane_ids(self) -> list[str]:
+        ordered: list[str] = []
+
+        def walk(widget: Gtk.Widget | None) -> None:
+            if widget is None:
+                return
+            if isinstance(widget, Gtk.Paned):
+                walk(widget.get_child1())
+                walk(widget.get_child2())
+                return
+            pane_id = getattr(widget, "_pane_id", None)
+            if isinstance(pane_id, str) and pane_id in self._pane_registry:
+                ordered.append(pane_id)
+
+        walk(self._workspace_container)
+        return ordered
+
+    def _sync_window_chrome_for_active_pane(self) -> None:
+        pane = self._pane_by_id(self._active_pane_id)
+        if pane is None:
+            return
+        active_session = self._find_session(pane._active_session_id)
+        if active_session is not None and active_session.project_path:
+            self._project_folder = normalize_folder(active_session.project_path)
+            self._set_project_path_entry_text(self._project_folder)
+        self._update_project_folder_labels()
+        self._update_status_model_and_permission()
+        self._refresh_connection_state()
+        self._refresh_session_list()
+        self._update_all_pane_headers()
+
+    def _set_active_pane(self, pane_id: str, *, grab_focus: bool = False) -> None:
+        if pane_id not in self._pane_registry:
+            return
+        self._active_pane_id = pane_id
+        for current_id, pane in self._pane_registry.items():
+            if pane._container is None:
+                continue
+            context = pane._container.get_style_context()
+            if current_id == pane_id:
+                context.add_class("pane-active")
+            else:
+                context.remove_class("pane-active")
+        self._sync_window_chrome_for_active_pane()
+        if grab_focus:
+            pane = self._pane_registry[pane_id]
+            if pane._webview is not None:
+                pane._webview.grab_focus()
+
+    def _update_pane_header(self, pane_id: str) -> None:
+        pane = self._pane_by_id(pane_id)
+        if pane is None:
+            return
+        if pane._title_label is not None:
+            pane._title_label.set_text(f"Pane {pane_id.split('-')[-1]}")
+        if pane._session_label is not None:
+            session = self._find_session(pane._active_session_id)
+            if session is None:
+                pane._session_label.set_text("No session")
+            else:
+                pane._session_label.set_text(self._truncate_text(session.title or "Session", 24))
+
+    def _update_all_pane_headers(self) -> None:
+        for pane_id in self._pane_registry:
+            self._update_pane_header(pane_id)
+
+    def _update_pane_close_buttons(self) -> None:
+        closable = len(self._pane_registry) > 1
+        for pane in self._pane_registry.values():
+            if pane._close_button is not None:
+                pane._close_button.set_sensitive(closable)
+
+    def _split_active_pane(self, orientation: Gtk.Orientation) -> None:
+        if self._active_pane_id is None:
+            return
+        if len(self._pane_registry) >= self._max_panes:
+            self._add_system_message("Pane limit reached (max 4). Close one pane before splitting again.")
+            self._set_status_message("Pane limit reached (4)", STATUS_WARNING)
+            return
+        current = self._pane_by_id(self._active_pane_id)
+        if current is None or current._container is None:
+            return
+
+        new_pane_id = self._new_pane_id()
+        new_pane = self._create_pane_controller(new_pane_id)
+        new_view = self.build_pane_chat_view(new_pane_id)
+        new_pane._container = new_view
+        new_view._pane_id = new_pane_id
+
+        old_parent = current._container.get_parent()
+        split = Gtk.Paned(orientation=orientation)
+        split.set_wide_handle(True)
+        if isinstance(old_parent, Gtk.Paned):
+            current_is_first = old_parent.get_child1() == current._container
+            old_parent.remove(current._container)
+            split.pack1(current._container, True, False)
+            split.pack2(new_view, True, False)
+            if current_is_first:
+                old_parent.pack1(split, True, False)
+            else:
+                old_parent.pack2(split, True, False)
+        elif isinstance(old_parent, Gtk.Box):
+            old_parent.remove(current._container)
+            split.pack1(current._container, True, False)
+            split.pack2(new_view, True, False)
+            old_parent.pack_start(split, True, True, 0)
+            self._workspace_container = split
+        else:
+            split.pack1(current._container, True, False)
+            split.pack2(new_view, True, False)
+            if self._workspace_host is not None:
+                self._workspace_host.pack_start(split, True, True, 0)
+                self._workspace_container = split
+
+        with self._pane_context(new_pane_id):
+            if os.path.isdir(self._project_folder):
+                self._start_new_session(self._project_folder)
+
+        split.show_all()
+        self._update_pane_close_buttons()
+        self._update_all_pane_headers()
+        self._set_active_pane(new_pane_id, grab_focus=True)
+
+    def _cycle_pane_focus(self, *, forward: bool) -> None:
+        ordered = self._ordered_pane_ids()
+        if not ordered:
+            return
+        if self._active_pane_id not in ordered:
+            target = ordered[0]
+            self._set_active_pane(target, grab_focus=True)
+            return
+        index = ordered.index(self._active_pane_id)
+        if forward:
+            target = ordered[(index + 1) % len(ordered)]
+        else:
+            target = ordered[(index - 1) % len(ordered)]
+        self._set_active_pane(target, grab_focus=True)
+
+    def _close_active_pane(self) -> None:
+        if self._active_pane_id is None:
+            return
+        self._close_pane(self._active_pane_id)
+
+    def _close_pane(self, pane_id: str) -> None:
+        if pane_id not in self._pane_registry:
+            return
+        if len(self._pane_registry) <= 1:
+            self._set_status_message("Cannot close the last pane.", STATUS_WARNING)
+            return
+
+        pane = self._pane_registry[pane_id]
+        if pane._container is None:
+            return
+
+        with self._pane_context(pane_id):
+            if pane._claude_process is not None:
+                pane._claude_process.stop()
+            for paths in pane._request_temp_files.values():
+                cleanup_temp_paths(paths)
+            pane._request_temp_files.clear()
+
+        parent = pane._container.get_parent()
+        sibling: Gtk.Widget | None = None
+        if isinstance(parent, Gtk.Paned):
+            sibling = parent.get_child2() if parent.get_child1() == pane._container else parent.get_child1()
+        if sibling is None:
+            return
+
+        if isinstance(parent, Gtk.Paned):
+            parent.remove(pane._container)
+            parent.remove(sibling)
+            grandparent = parent.get_parent()
+            if isinstance(grandparent, Gtk.Paned):
+                if grandparent.get_child1() == parent:
+                    grandparent.remove(parent)
+                    grandparent.pack1(sibling, True, False)
+                else:
+                    grandparent.remove(parent)
+                    grandparent.pack2(sibling, True, False)
+            elif isinstance(grandparent, Gtk.Box):
+                grandparent.remove(parent)
+                grandparent.pack_start(sibling, True, True, 0)
+                self._workspace_container = sibling
+
+        del self._pane_registry[pane_id]
+        self._update_pane_close_buttons()
+        self._update_all_pane_headers()
+
+        ordered = self._ordered_pane_ids()
+        if not ordered:
+            self._active_pane_id = None
+            return
+        self._set_active_pane(ordered[0], grab_focus=True)
+
+    def _on_window_key_press(self, _widget: Gtk.Widget, event: Gdk.EventKey) -> bool:
+        keyval = event.keyval
+        state = event.state
+        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+
+        if ctrl and shift and keyval in (Gdk.KEY_D, Gdk.KEY_d):
+            self._split_active_pane(Gtk.Orientation.HORIZONTAL)
+            return True
+        if ctrl and shift and keyval in (Gdk.KEY_E, Gdk.KEY_e):
+            self._split_active_pane(Gtk.Orientation.VERTICAL)
+            return True
+        if ctrl and keyval == Gdk.KEY_w:
+            self._close_active_pane()
+            return True
+        if ctrl and shift and keyval in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab):
+            self._cycle_pane_focus(forward=False)
+            return True
+        if ctrl and keyval == Gdk.KEY_Tab:
+            self._cycle_pane_focus(forward=True)
+            return True
+        return False
 
     def _window_is_focused(self) -> bool:
         return bool(self.is_active() or self._window_has_focus)
@@ -465,79 +1088,6 @@ class ClaudeCodeWindow(Gtk.Window):
         self._set_sidebar_content_visibility(self._sidebar_expanded)
 
         return sidebar
-
-    def _build_chat_panel(self) -> Gtk.Box:
-        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        panel.set_hexpand(True)
-        panel.set_vexpand(True)
-
-        wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        wrap.get_style_context().add_class("chat-wrap")
-        wrap.set_hexpand(True)
-        wrap.set_vexpand(True)
-        panel.pack_start(wrap, True, True, 0)
-
-        overlay = Gtk.Overlay()
-        overlay.set_hexpand(True)
-        overlay.set_vexpand(True)
-        wrap.pack_start(overlay, True, True, 0)
-
-        shell = Gtk.EventBox()
-        shell.set_visible_window(True)
-        shell.set_hexpand(True)
-        shell.set_vexpand(True)
-        shell.get_style_context().add_class("chat-shell")
-        overlay.add(shell)
-        self._chat_shell = shell
-        self._chat_reveal_widgets = [(shell, 60.0)]
-        for widget, _ in self._chat_reveal_widgets:
-            widget.set_opacity(0.0)
-
-        manager = WebKit2.UserContentManager()
-        manager.register_script_message_handler("sendMessage")
-        manager.register_script_message_handler("changeModel")
-        manager.register_script_message_handler("changePermission")
-        manager.register_script_message_handler("changeReasoning")
-        manager.register_script_message_handler("changeFolder")
-        manager.register_script_message_handler("attachFile")
-        manager.register_script_message_handler("permissionResponse")
-        manager.connect("script-message-received::sendMessage", self._on_js_send_message)
-        manager.connect("script-message-received::changeModel", self._on_js_change_model)
-        manager.connect("script-message-received::changePermission", self._on_js_change_permission)
-        manager.connect("script-message-received::changeReasoning", self._on_js_change_reasoning)
-        manager.connect("script-message-received::changeFolder", self._on_js_change_folder)
-        manager.connect("script-message-received::attachFile", self._on_js_attach_file)
-        manager.connect("script-message-received::permissionResponse", self._on_js_permission_response)
-        manager.register_script_message_handler("stopProcess")
-        manager.connect("script-message-received::stopProcess", self._on_js_stop_process)
-        manager.register_script_message_handler("refreshSlashCommands")
-        manager.connect(
-            "script-message-received::refreshSlashCommands",
-            self._on_js_refresh_slash_commands,
-        )
-        self._webview_user_content_manager = manager
-
-        webview = WebKit2.WebView.new_with_user_content_manager(manager)
-        webview.set_hexpand(True)
-        webview.set_vexpand(True)
-        webview.connect("load-changed", self._on_webview_load_changed)
-        webview.connect("focus-in-event", self._on_webview_focus_in)
-        webview.connect("focus-out-event", self._on_webview_focus_out)
-
-        settings = webview.get_settings()
-        if settings is not None:
-            settings.set_enable_write_console_messages_to_stdout(False)
-            settings.set_enable_developer_extras(False)
-            settings.set_enable_javascript(True)
-
-        webview.load_html(CHAT_WEBVIEW_HTML, "")
-        shell.add(webview)
-        self._webview = webview
-
-        project_path_bar = self._build_project_path_bar()
-        wrap.pack_start(project_path_bar, False, False, 8)
-
-        return panel
 
     def _build_project_path_bar(self) -> Gtk.Box:
         path_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -1264,6 +1814,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 )
             self._session_list_box.pack_start(self._session_empty_label, False, False, 0)
             self._session_empty_label.show()
+            self._update_all_pane_headers()
             return
 
         grouped: dict[str, list[SessionRecord]] = {
@@ -1291,6 +1842,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 self._session_list_box.pack_start(row, False, False, 0)
 
         self._session_list_box.show_all()
+        self._update_all_pane_headers()
 
     def _refresh_session_list_idle(self) -> bool:
         self._refresh_session_list()
@@ -1423,7 +1975,9 @@ class ClaudeCodeWindow(Gtk.Window):
 
         self._refresh_connection_state()
         self._set_status_message("New session ready", STATUS_INFO)
-        GLib.timeout_add(100, lambda: self._call_js("focusInput") or False)
+        pane_id = self._active_pane_id
+        if pane_id is not None:
+            GLib.timeout_add(100, lambda pid=pane_id: self._call_js_in_pane(pid, "focusInput"))
 
     def _set_project_path_entry_text(self, path_value: str) -> None:
         if self._project_path_entry is None:
@@ -1938,10 +2492,13 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _on_js_change_folder(
         self,
+        pane_id: str,
         _manager: WebKit2.UserContentManager,
         _js_result: WebKit2.JavascriptResult,
     ) -> None:
-        self._prompt_for_project_folder()
+        self._set_active_pane(pane_id)
+        with self._pane_context(pane_id):
+            self._prompt_for_project_folder()
 
     def _apply_session_option(self, kind: str, index: int) -> None:
         if kind == "model":
@@ -2160,25 +2717,30 @@ class ClaudeCodeWindow(Gtk.Window):
             )
         return payload
 
-    def _sync_provider_state_to_webview(self) -> None:
+    def _sync_provider_state_to_webview(self, *, pane_id: str | None = None) -> None:
         provider = self._active_provider
-        self._call_js("applyProviderTheme", self._provider_theme_variables(provider))
-        self._call_js("setModelOptions", self._provider_model_option_payload(provider))
-        self._call_js("setPermissionOptions", self._provider_permission_option_payload(provider))
-        self._call_js(
-            "setProviderBranding",
-            {
-                "id": provider.id,
-                "name": provider.name,
-                "icon": provider.icon,
-                "welcomeTitle": f"{provider.name} is ready",
-            },
-        )
-        self._call_js("setReasoningVisible", provider.supports_reasoning)
-        self._update_status_model_and_permission()
-        if provider.supports_reasoning:
-            _, reasoning_value = REASONING_LEVEL_OPTIONS[self._selected_reasoning_index]
-            self._call_js("updateReasoningLevel", reasoning_value)
+        target_panes = [pane_id] if pane_id is not None else list(self._pane_registry.keys())
+        for target in target_panes:
+            if target not in self._pane_registry:
+                continue
+            with self._pane_context(target):
+                self._call_js("applyProviderTheme", self._provider_theme_variables(provider))
+                self._call_js("setModelOptions", self._provider_model_option_payload(provider))
+                self._call_js("setPermissionOptions", self._provider_permission_option_payload(provider))
+                self._call_js(
+                    "setProviderBranding",
+                    {
+                        "id": provider.id,
+                        "name": provider.name,
+                        "icon": provider.icon,
+                        "welcomeTitle": f"{provider.name} is ready",
+                    },
+                )
+                self._call_js("setReasoningVisible", provider.supports_reasoning)
+                self._update_status_model_and_permission()
+                if provider.supports_reasoning:
+                    _, reasoning_value = REASONING_LEVEL_OPTIONS[self._selected_reasoning_index]
+                    self._call_js("updateReasoningLevel", reasoning_value)
 
     def _apply_provider_branding(self) -> None:
         self.set_title(self._provider_window_title())
@@ -2217,27 +2779,35 @@ class ClaudeCodeWindow(Gtk.Window):
             self._selected_reasoning_index = self._reasoning_index_from_value("medium")
 
     def _stop_running_request_for_provider_switch(self) -> bool:
-        self._invalidate_active_request()
-        self._permission_request_pending = False
-        if not self._claude_process.is_running():
-            return True
+        all_stopped = True
+        for pane_id, pane in self._pane_registry.items():
+            with self._pane_context(pane_id):
+                self._invalidate_active_request()
+                self._permission_request_pending = False
+                process = pane._claude_process
+                if process is None or not process.is_running():
+                    continue
 
-        self._claude_process.stop()
-        deadline = time.monotonic() + 2.5
-        while self._claude_process.is_running() and time.monotonic() < deadline:
-            while Gtk.events_pending():
-                Gtk.main_iteration_do(False)
-            time.sleep(0.03)
+                process.stop()
+                deadline = time.monotonic() + 2.5
+                while process.is_running() and time.monotonic() < deadline:
+                    while Gtk.events_pending():
+                        Gtk.main_iteration_do(False)
+                    time.sleep(0.03)
 
-        if self._claude_process.is_running():
-            self._claude_process.stop(force=True)
-            force_deadline = time.monotonic() + 1.0
-            while self._claude_process.is_running() and time.monotonic() < force_deadline:
-                while Gtk.events_pending():
-                    Gtk.main_iteration_do(False)
-                time.sleep(0.03)
+                if process.is_running():
+                    process.stop(force=True)
+                    force_deadline = time.monotonic() + 1.0
+                    while process.is_running() and time.monotonic() < force_deadline:
+                        while Gtk.events_pending():
+                            Gtk.main_iteration_do(False)
+                        time.sleep(0.03)
 
-        return not self._claude_process.is_running()
+                if process.is_running():
+                    all_stopped = False
+                    logger.warning("Pane %s did not stop before provider switch.", pane_id)
+
+        return all_stopped
 
     def _ensure_active_session_for_provider(self, *, reset_conversation: bool) -> None:
         active_sessions = [
@@ -2320,14 +2890,16 @@ class ClaudeCodeWindow(Gtk.Window):
                 old_active_session.status = SESSION_STATUS_ENDED
                 old_active_session.last_used_at = current_timestamp()
 
-            self._conversation_id = None
-            self._allowed_tools = set()
-            self._clear_messages()
-            self._show_welcome()
-            self._set_typing(False)
-            self._has_messages = False
-            self._last_request_failed = False
-            self._active_assistant_message = ""
+            for pane_id in list(self._pane_registry.keys()):
+                with self._pane_context(pane_id):
+                    self._conversation_id = None
+                    self._allowed_tools = set()
+                    self._clear_messages()
+                    self._show_welcome()
+                    self._set_typing(False)
+                    self._has_messages = False
+                    self._last_request_failed = False
+                    self._active_assistant_message = ""
 
             self._apply_provider_branding()
             self._refresh_session_list()
@@ -2621,55 +3193,79 @@ class ClaudeCodeWindow(Gtk.Window):
                 display = f"{tokens} tokens"
             self._weekly_limit_label.set_text(display)
 
-    def _on_webview_load_changed(self, _webview: WebKit2.WebView, load_event: WebKit2.LoadEvent) -> None:
+    def _on_webview_load_changed(
+        self,
+        pane_id: str,
+        _webview: WebKit2.WebView,
+        load_event: WebKit2.LoadEvent,
+    ) -> None:
         if load_event != WebKit2.LoadEvent.FINISHED:
             return
 
-        self._webview_ready = True
-        queued = list(self._pending_webview_scripts)
-        self._pending_webview_scripts.clear()
+        with self._pane_context(pane_id):
+            self._webview_ready = True
+            queued = list(self._pending_webview_scripts)
+            self._pending_webview_scripts.clear()
 
-        for script in queued:
-            self._run_javascript(script)
+            for script in queued:
+                self._run_javascript(script)
 
-        self._sync_provider_state_to_webview()
-        self._show_welcome()
-        self._refresh_slash_commands()
-        GLib.timeout_add(100, lambda: self._call_js("focusInput") or False)
+            self._sync_provider_state_to_webview(pane_id=pane_id)
+            self._show_welcome()
+            self._refresh_slash_commands()
+            GLib.timeout_add(100, lambda pid=pane_id: self._call_js_in_pane(pid, "focusInput"))
 
-    def _on_webview_focus_in(self, _webview: WebKit2.WebView, _event: Gdk.EventFocus) -> bool:
+    def _on_webview_focus_in(
+        self,
+        pane_id: str,
+        _webview: WebKit2.WebView,
+        _event: Gdk.EventFocus,
+    ) -> bool:
+        self._set_active_pane(pane_id)
         if self._chat_shell is not None:
             self._chat_shell.get_style_context().add_class("chat-focused")
         return False
 
-    def _on_webview_focus_out(self, _webview: WebKit2.WebView, _event: Gdk.EventFocus) -> bool:
+    def _on_webview_focus_out(
+        self,
+        pane_id: str,
+        _webview: WebKit2.WebView,
+        _event: Gdk.EventFocus,
+    ) -> bool:
+        self._set_active_pane(pane_id)
         if self._chat_shell is not None:
             self._chat_shell.get_style_context().remove_class("chat-focused")
         return False
 
     def _on_js_change_model(
         self,
+        pane_id: str,
         _manager: WebKit2.UserContentManager,
         js_result: WebKit2.JavascriptResult,
     ) -> None:
+        self._set_active_pane(pane_id)
         raw_value = self._extract_message_from_js_result(js_result)
         model_value = normalize_model_value(raw_value, provider=self._active_provider_id)
         self._apply_session_option("model", self._model_index_from_value(model_value))
 
     def _on_js_change_permission(
         self,
+        pane_id: str,
         _manager: WebKit2.UserContentManager,
         js_result: WebKit2.JavascriptResult,
     ) -> None:
+        self._set_active_pane(pane_id)
         raw_value = self._extract_message_from_js_result(js_result)
         permission_value = normalize_permission_value(raw_value, provider=self._active_provider_id)
         self._apply_session_option("permission", self._permission_index_from_value(permission_value))
 
     def _on_js_change_reasoning(
         self,
+        pane_id: str,
         _manager: WebKit2.UserContentManager,
         js_result: WebKit2.JavascriptResult,
     ) -> None:
+        self._set_active_pane(pane_id)
         if not self._active_provider.supports_reasoning:
             self._set_status_message(
                 f"Reasoning level is ignored in {self._active_provider.name} mode.",
@@ -2695,16 +3291,20 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _on_js_refresh_slash_commands(
         self,
+        pane_id: str,
         _manager: WebKit2.UserContentManager,
         _js_result: WebKit2.JavascriptResult,
     ) -> None:
+        self._set_active_pane(pane_id)
         self._refresh_slash_commands()
 
     def _on_js_attach_file(
         self,
+        pane_id: str,
         _manager: WebKit2.UserContentManager,
         _js_result: WebKit2.JavascriptResult,
     ) -> None:
+        self._set_active_pane(pane_id)
         dialog = Gtk.FileChooserDialog(
             title="Attach file",
             parent=self,
@@ -2784,9 +3384,11 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _on_js_stop_process(
         self,
+        pane_id: str,
         _manager: WebKit2.UserContentManager,
         _js_result: WebKit2.JavascriptResult,
     ) -> None:
+        self._set_active_pane(pane_id)
         if self._claude_process.is_running():
             self._claude_process.stop()
             self._set_status_message("Process stopped by user", STATUS_WARNING)
@@ -2794,9 +3396,11 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _on_js_permission_response(
         self,
+        pane_id: str,
         _manager: WebKit2.UserContentManager,
         js_result: WebKit2.JavascriptResult,
     ) -> None:
+        self._set_active_pane(pane_id)
         raw_payload = self._extract_message_from_js_result(js_result)
         if not raw_payload:
             return
@@ -2867,9 +3471,11 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _on_js_send_message(
         self,
+        pane_id: str,
         _manager: WebKit2.UserContentManager,
         js_result: WebKit2.JavascriptResult,
     ) -> None:
+        self._set_active_pane(pane_id)
         raw_text = self._extract_message_from_js_result(js_result)
         message, attachments = parse_send_payload(raw_text)
         if not message and not attachments:
@@ -3002,102 +3608,115 @@ class ClaudeCodeWindow(Gtk.Window):
 
         return text
 
-    def _on_process_running_changed(self, request_token: str, running: bool) -> None:
-        if not self._is_current_request(request_token):
-            return
+    def _on_process_running_changed(self, pane_id: str, request_token: str, running: bool) -> None:
+        with self._pane_context(pane_id):
+            if not self._is_current_request(request_token):
+                return
 
-        self._call_js("setProcessing", running)
+            self._call_js("setProcessing", running)
 
-        if running:
-            self._set_connection_state(CONNECTION_STARTING)
-            self._set_status_message(f"{self._active_provider.name} is responding...", STATUS_INFO)
+            if running and self._is_active_pane(pane_id):
+                self._set_connection_state(CONNECTION_STARTING)
+                self._set_status_message(f"{self._active_provider.name} is responding...", STATUS_INFO)
 
-    def _on_process_assistant_chunk(self, request_token: str, chunk: str) -> None:
-        if not self._is_current_request(request_token):
-            return
-        if not chunk:
-            return
-        self._set_typing(False)
-        self._context_char_count += len(chunk)
-        self._update_context_indicator()
-        self._append_assistant_chunk(chunk)
+    def _on_process_assistant_chunk(self, pane_id: str, request_token: str, chunk: str) -> None:
+        with self._pane_context(pane_id):
+            if not self._is_current_request(request_token):
+                return
+            if not chunk:
+                return
+            self._set_typing(False)
+            self._context_char_count += len(chunk)
+            self._update_context_indicator()
+            self._append_assistant_chunk(chunk)
 
-    def _on_process_system_message(self, request_token: str, message: str) -> None:
-        if not self._is_current_request(request_token):
-            return
-        if not message:
-            return
-        self._add_system_message(message)
-        if not self._permission_request_pending and self._is_permission_request_message(message):
-            self._permission_request_pending = True
-            self.send_notification(
-                f"{self._active_provider.name} needs permission",
-                "A tool permission request is waiting for your input.",
-                urgency="critical",
-            )
-
-    def _on_process_permission_request(self, request_token: str, payload: dict[str, Any]) -> None:
-        if not self._is_current_request(request_token):
-            return
-        if not payload:
-            return
-
-        self._set_typing(False)
-        self._call_js("addPermissionRequest", payload)
-        self._set_status_message("Waiting for tool confirmation", STATUS_WARNING)
-        if not self._permission_request_pending:
-            self._permission_request_pending = True
-            self.send_notification(
-                f"{self._active_provider.name} needs permission",
-                "A tool permission request is waiting for your input.",
-                urgency="critical",
-            )
-
-    def _on_process_complete(self, request_token: str, result: ClaudeRunResult) -> None:
-        temp_paths = self._request_temp_files.pop(request_token, [])
-        cleanup_temp_paths(temp_paths)
-
-        if not self._is_current_request(request_token):
-            return
-
-        self._invalidate_active_request()
-        self._set_typing(False)
-        had_assistant_output = bool(self._active_assistant_message.strip())
-        self._finish_assistant_message()
-        self._permission_request_pending = False
-
-        if result.success and result.conversation_id:
-            self._conversation_id = result.conversation_id
-            active = self._get_active_session()
-            if active is not None:
-                active.conversation_id = result.conversation_id
-
-        if result.cost_usd > 0:
-            self._session_cost_usd += result.cost_usd
-        if result.input_tokens > 0 or result.output_tokens > 0:
-            self._session_tokens += result.input_tokens + result.output_tokens
-        self._update_usage_display()
-
-        if result.success:
-            self._last_request_failed = False
-            self._refresh_connection_state()
-            self._set_status_message(f"{self._active_provider.name} response received", STATUS_MUTED)
-            self._set_active_session_status(SESSION_STATUS_ACTIVE)
-            self._save_sessions_safe("Could not save sessions")
-            if had_assistant_output:
+    def _on_process_system_message(self, pane_id: str, request_token: str, message: str) -> None:
+        with self._pane_context(pane_id):
+            if not self._is_current_request(request_token):
+                return
+            if not message:
+                return
+            self._add_system_message(message)
+            if not self._permission_request_pending and self._is_permission_request_message(message):
+                self._permission_request_pending = True
                 self.send_notification(
-                    f"{self._active_provider.name} response complete",
-                    f"{self._active_provider.name} finished responding.",
+                    f"{self._active_provider.name} needs permission",
+                    "A tool permission request is waiting for your input.",
+                    urgency="critical",
                 )
-            return
 
-        error_message = result.error_message or f"{self._active_provider.name} request failed"
-        self._last_request_failed = True
-        self._refresh_connection_state()
-        self._set_status_message(error_message, STATUS_ERROR)
-        self._set_active_session_status(SESSION_STATUS_ERROR)
-        self._add_system_message(error_message)
-        self.send_notification(f"{self._active_provider.name} error", error_message, urgency="critical")
+    def _on_process_permission_request(
+        self,
+        pane_id: str,
+        request_token: str,
+        payload: dict[str, Any],
+    ) -> None:
+        with self._pane_context(pane_id):
+            if not self._is_current_request(request_token):
+                return
+            if not payload:
+                return
+
+            self._set_typing(False)
+            self._call_js("addPermissionRequest", payload)
+            if self._is_active_pane(pane_id):
+                self._set_status_message("Waiting for tool confirmation", STATUS_WARNING)
+            if not self._permission_request_pending:
+                self._permission_request_pending = True
+                self.send_notification(
+                    f"{self._active_provider.name} needs permission",
+                    "A tool permission request is waiting for your input.",
+                    urgency="critical",
+                )
+
+    def _on_process_complete(self, pane_id: str, request_token: str, result: ClaudeRunResult) -> None:
+        with self._pane_context(pane_id):
+            temp_paths = self._request_temp_files.pop(request_token, [])
+            cleanup_temp_paths(temp_paths)
+
+            if not self._is_current_request(request_token):
+                return
+
+            self._invalidate_active_request()
+            self._set_typing(False)
+            had_assistant_output = bool(self._active_assistant_message.strip())
+            self._finish_assistant_message()
+            self._permission_request_pending = False
+
+            if result.success and result.conversation_id:
+                self._conversation_id = result.conversation_id
+                active = self._get_active_session()
+                if active is not None:
+                    active.conversation_id = result.conversation_id
+
+            if result.cost_usd > 0:
+                self._session_cost_usd += result.cost_usd
+            if result.input_tokens > 0 or result.output_tokens > 0:
+                self._session_tokens += result.input_tokens + result.output_tokens
+            self._update_usage_display()
+
+            if result.success:
+                self._last_request_failed = False
+                if self._is_active_pane(pane_id):
+                    self._refresh_connection_state()
+                    self._set_status_message(f"{self._active_provider.name} response received", STATUS_MUTED)
+                self._set_active_session_status(SESSION_STATUS_ACTIVE)
+                self._save_sessions_safe("Could not save sessions")
+                if had_assistant_output:
+                    self.send_notification(
+                        f"{self._active_provider.name} response complete",
+                        f"{self._active_provider.name} finished responding.",
+                    )
+                return
+
+            error_message = result.error_message or f"{self._active_provider.name} request failed"
+            self._last_request_failed = True
+            if self._is_active_pane(pane_id):
+                self._refresh_connection_state()
+                self._set_status_message(error_message, STATUS_ERROR)
+            self._set_active_session_status(SESSION_STATUS_ERROR)
+            self._add_system_message(error_message)
+            self.send_notification(f"{self._active_provider.name} error", error_message, urgency="critical")
 
     def _enqueue_javascript(self, script: str) -> None:
         if not script:
@@ -3137,6 +3756,13 @@ class ClaudeCodeWindow(Gtk.Window):
             script = f"if (typeof {function_name} === 'function') {{ {function_name}(); }}"
         self._enqueue_javascript(script)
 
+    def _call_js_in_pane(self, pane_id: str, function_name: str, *args: Any) -> bool:
+        if pane_id not in self._pane_registry:
+            return False
+        with self._pane_context(pane_id):
+            self._call_js(function_name, *args)
+        return False
+
     def _start_assistant_message(self) -> None:
         self._active_assistant_message = ""
         self._call_js("startAssistantMessage")
@@ -3168,10 +3794,13 @@ class ClaudeCodeWindow(Gtk.Window):
         self._call_js("showWelcome")
 
     def _on_destroy(self, _widget: Gtk.Window) -> None:
-        self._claude_process.stop()
-        for paths in self._request_temp_files.values():
-            cleanup_temp_paths(paths)
-        self._request_temp_files.clear()
+        for pane_id, pane in self._pane_registry.items():
+            with self._pane_context(pane_id):
+                if pane._claude_process is not None:
+                    pane._claude_process.stop()
+                for paths in pane._request_temp_files.values():
+                    cleanup_temp_paths(paths)
+                pane._request_temp_files.clear()
 
         if self._css_provider is not None:
             screen = Gdk.Screen.get_default()

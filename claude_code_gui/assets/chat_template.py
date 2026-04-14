@@ -1,24 +1,36 @@
 """WebView HTML/CSS/JS payload for the chat UI."""
 
 from __future__ import annotations
+from pathlib import Path
 
-CHAT_WEBVIEW_HTML = r"""
+VENDOR_DIR = Path(__file__).parent / "vendor"
+HIGHLIGHT_JS = (VENDOR_DIR / "highlight.min.js").read_text(encoding="utf-8").replace("</script>", "<\\/script>")
+HIGHLIGHT_CSS = (VENDOR_DIR / "highlight-dracula.min.css").read_text(encoding="utf-8").replace("</style>", "<\\/style>")
+
+CHAT_WEBVIEW_HTML = (
+r"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/atom-one-dark.min.css" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+<style>
+__INLINE_HIGHLIGHT_CSS__
+</style>
+<script>
+__INLINE_HIGHLIGHT_JS__
+</script>
 <style>
 :root {
     --bg: #2f2f2a;
+    --bg-elevated: rgba(58, 58, 52, 0.94);
     --sidebar: #292923;
     --input-bg: #3a3a34;
     --input-border: #4a4a43;
     --input-focus: #5a5a50;
     --user-bubble: #3a3a35;
     --text: #d4d4c8;
+    --fg: #d4d4c8;
     --muted: #8a8a7a;
     --accent: #d97757;
     --motion-fast: 120ms;
@@ -55,6 +67,7 @@ CHAT_WEBVIEW_HTML = r"""
     --inline-code-bg: #3a3a34;
     --inline-code-color: #e06c75;
     --table-border: #4a4a43;
+    --border: #4a4a43;
     --code-block-bg: #1e1e1e;
     --code-head-muted: #8a8a8a;
     --artifacts-panel-bg: #2a2a25;
@@ -158,6 +171,22 @@ button:disabled {
     font-size: 12px;
     font-weight: 700;
     padding: 5px 10px;
+}
+
+.welcome-onboarding {
+    width: 100%;
+    max-width: 740px;
+    border-radius: 14px;
+    border: 1px solid var(--chip-border);
+    background: var(--surface-card-soft);
+    padding: 14px;
+}
+
+.welcome-onboarding-title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
 }
 
 .composer-card {
@@ -589,6 +618,72 @@ button:disabled {
     cursor: pointer;
 }
 
+.onboarding-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.onboarding-step {
+    display: flex;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--muted);
+}
+
+.onboarding-step-number {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.example-prompts-title {
+    margin-top: 14px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-soft);
+}
+
+.example-prompts {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.example-prompt {
+    padding: 8px 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-soft);
+    transition: all var(--motion-fast);
+}
+
+.example-prompt:hover {
+    border-color: var(--accent);
+}
+
+.keyboard-hints {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 24px;
+    opacity: 0.7;
+    flex-wrap: wrap;
+}
+
+.keyboard-hint kbd {
+    background: var(--border);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 10px;
+}
+
 #chatView {
     display: none;
     position: relative;
@@ -612,6 +707,79 @@ button:disabled {
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+.chat-search-bar {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    z-index: 100;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.chat-search-bar input {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--fg);
+    font-size: 13px;
+    min-width: 200px;
+}
+
+#chatSearchInput:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+.chat-search-bar button {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: all var(--motion-fast);
+}
+
+.chat-search-bar button:hover {
+    background: var(--border);
+    color: var(--fg);
+}
+
+.chat-search-count {
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.chat-search-limit-note {
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.chat-search-bar.no-results {
+    border-color: rgba(138, 138, 122, 0.7);
+}
+
+.chat-search-bar.no-results input {
+    border-bottom: 1px solid rgba(138, 138, 122, 0.7);
+}
+
+.search-highlight {
+    background: rgba(255, 235, 59, 0.4);
+    border-radius: 2px;
+}
+
+.search-highlight.current-match {
+    background: rgba(255, 193, 7, 0.8);
+    color: #000;
 }
 
 #artifactsToggleBtn {
@@ -776,8 +944,17 @@ button:disabled {
     justify-content: flex-end;
 }
 
-.user-bubble {
+.user-bubble-wrap {
     max-width: min(90%, 640px);
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    position: relative;
+}
+
+.user-bubble {
+    width: 100%;
     border-radius: 18px;
     background: var(--user-bubble);
     padding: 12px 18px;
@@ -843,6 +1020,7 @@ button:disabled {
 
 .assistant-content-wrap {
     min-width: 0;
+    position: relative;
 }
 
 .assistant-message {
@@ -913,7 +1091,23 @@ button:disabled {
     pointer-events: none;
 }
 
+.user-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
+    pointer-events: none;
+}
+
 .message-row.assistant:hover .assistant-actions {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+.message-row.user:hover .user-actions {
     opacity: 1;
     transform: translateY(0);
     pointer-events: auto;
@@ -930,9 +1124,37 @@ button:disabled {
     justify-content: center;
 }
 
+.assistant-action.copy-md-action,
+.user-action.copy-md-action {
+    width: auto;
+    min-width: 56px;
+    padding: 0 8px;
+    font-size: 11px;
+}
+
 .assistant-action.active {
     border-color: rgba(var(--accent-rgb), 0.9);
     color: var(--text-accent-soft);
+}
+
+.copy-success-badge {
+    position: absolute;
+    top: -8px;
+    right: 8px;
+    background: var(--accent);
+    color: #ffffff;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1px;
+    opacity: 0;
+    transition: opacity var(--motion-fast);
+    pointer-events: none;
+}
+
+.copy-success-badge.visible {
+    opacity: 1;
 }
 
 .message-row.system .message-inner {
@@ -2306,6 +2528,12 @@ button:disabled {
     gap: 8px;
 }
 
+.thinking-shell {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+}
+
 .thinking-indicator {
     display: flex;
     align-items: center;
@@ -2337,6 +2565,16 @@ button:disabled {
     transform: translateY(-4px);
     transition: opacity var(--motion-fast) var(--ease-exit), transform var(--motion-fast) var(--ease-exit);
 }
+
+.wait-status-text {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 4px;
+    opacity: 0;
+    transition: opacity var(--motion-normal) var(--ease-standard);
+}
+
+.wait-status-text.visible { opacity: 1; }
 
 #chatComposer {
     position: absolute;
@@ -2421,6 +2659,10 @@ button:disabled {
         font-size: 25px;
     }
 
+    .example-prompts {
+        grid-template-columns: 1fr 1fr;
+    }
+
     .composer-card {
         border-radius: 20px;
         padding: 11px;
@@ -2450,12 +2692,18 @@ button:disabled {
         width: min(92vw, 280px);
     }
 }
+
+@media (max-width: 640px) {
+    .example-prompts {
+        grid-template-columns: 1fr;
+    }
+}
 </style>
 </head>
 <body>
 <div id="app">
     <section id="welcomeView">
-        <div class="welcome-shell">
+        <div id="welcomeScreen" class="welcome-shell">
             <div id="welcomeIcon" class="welcome-icon" aria-hidden="true">
                 <svg width="42" height="42" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <g transform="translate(50,50)">
@@ -2475,12 +2723,31 @@ button:disabled {
                 </svg>
             </div>
             <h1 id="welcomeTitle" class="welcome-title">Back at it</h1>
+            <section class="welcome-onboarding" aria-label="Getting started">
+                <h2 class="welcome-onboarding-title">Getting started</h2>
+                <div class="onboarding-steps">
+                    <div class="onboarding-step">
+                        <span class="onboarding-step-number">1.</span>
+                        <span>Select a project folder in the sidebar</span>
+                    </div>
+                    <div class="onboarding-step">
+                        <span class="onboarding-step-number">2.</span>
+                        <span>Choose a model and permission mode</span>
+                    </div>
+                    <div class="onboarding-step">
+                        <span class="onboarding-step-number">3.</span>
+                        <span>Type your first prompt below (try /help)</span>
+                    </div>
+                </div>
+                <div id="examplePromptsTitle" class="example-prompts-title">Example prompts for Claude</div>
+                <div id="welcomeExamplePrompts" class="example-prompts" role="list"></div>
+            </section>
             <div id="welcomeProviderBadge" class="welcome-provider-badge">✺ Claude</div>
 
             <div class="composer-card" style="position:relative;">
                 <div id="welcomeSlashDropdown" class="slash-dropdown" role="listbox" aria-label="Skills"></div>
                 <div id="welcomeAttachments" class="attachment-strip"></div>
-                <textarea id="welcomeInput" class="composer-input" rows="1" placeholder="Type / for skills"></textarea>
+                <textarea id="welcomeInput" class="composer-input" rows="1" placeholder="Type / for skills" title="Enter to send, Shift+Enter for newline, / for slash commands"></textarea>
                 <div class="control-row">
                     <button class="plus-btn" type="button" aria-label="Add">+</button>
                     <div class="control-right">
@@ -2523,11 +2790,25 @@ button:disabled {
                 <button class="chip quick-chip" type="button" data-value="Write concise release notes for the latest changes.">✏ Write</button>
                 <button class="chip quick-chip" type="button" data-value="Help me sort out everyday logistics and planning.">☕ Life stuff</button>
             </div>
+            <div class="keyboard-hints" aria-label="Keyboard hints">
+                <span class="keyboard-hint"><kbd>Enter</kbd> Send</span>
+                <span class="keyboard-hint"><kbd>Shift+Enter</kbd> Newline</span>
+                <span class="keyboard-hint"><kbd>Esc</kbd> Stop</span>
+                <span class="keyboard-hint"><kbd>/</kbd> Slash commands</span>
+            </div>
         </div>
     </section>
 
     <section id="chatView">
         <div id="dropOverlay">Drop file here</div>
+        <div id="chatSearchBar" class="chat-search-bar" style="display:none;">
+            <input type="text" id="chatSearchInput" placeholder="Search messages..." aria-label="Search messages" />
+            <span class="chat-search-count" role="status" aria-live="polite"><span id="chatSearchCurrent">0</span> / <span id="chatSearchTotal">0</span></span>
+            <span id="chatSearchLimitNote" class="chat-search-limit-note"></span>
+            <button id="chatSearchPrev" type="button" title="Previous (Shift+Enter)" aria-label="Previous match">↑</button>
+            <button id="chatSearchNext" type="button" title="Next (Enter)" aria-label="Next match">↓</button>
+            <button id="chatSearchClose" type="button" title="Close (Esc)" aria-label="Close search">✕</button>
+        </div>
         <div id="chatToolbar">
             <button id="artifactsToggleBtn" type="button" title="Open artifacts panel">📦 Artifacts</button>
         </div>
@@ -2573,12 +2854,12 @@ button:disabled {
 
         <div id="chatComposer">
             <div class="stop-process-slot">
-                <button id="stopBtn" class="stop-process-btn" type="button">Stop generating</button>
+                <button id="stopBtn" class="stop-process-btn" type="button" title="Stop generating (Esc)">Stop generating</button>
             </div>
             <div class="composer-card" style="position:relative;">
                 <div id="chatSlashDropdown" class="slash-dropdown" role="listbox" aria-label="Skills"></div>
                 <div id="chatAttachments" class="attachment-strip"></div>
-                <textarea id="chatInput" class="composer-input" rows="1" placeholder="Reply..."></textarea>
+                <textarea id="chatInput" class="composer-input" rows="1" placeholder="Reply..." title="Enter to send, Shift+Enter for newline, / for slash commands"></textarea>
                 <div class="control-row">
                     <button class="plus-btn" type="button" aria-label="Add">+</button>
                     <div class="control-right">
@@ -2698,12 +2979,26 @@ button:disabled {
         { name: "/terminal-setup", icon: "\u2328", description: "Install Shift+Enter key binding", providers: ["claude"] },
         { name: "/vim", icon: "V", description: "Toggle vim mode for input", providers: ["claude"] },
     ];
+    const EXAMPLE_PROMPTS_BY_PROVIDER = Object.freeze({
+        claude: [
+            "Refactor this function",
+            "Explain this codebase",
+            "Write tests for X",
+        ],
+        codex: [
+            "Implement feature Y",
+            "Debug this error",
+            "Run the test suite",
+        ],
+    });
     var HOST_SLASH_COMMANDS = [];
 
     const appEl = document.getElementById("app");
     const welcomeViewEl = document.getElementById("welcomeView");
     const welcomeTitleEl = document.getElementById("welcomeTitle");
     const welcomeProviderBadgeEl = document.getElementById("welcomeProviderBadge");
+    const examplePromptsTitleEl = document.getElementById("examplePromptsTitle");
+    const welcomeExamplePromptsEl = document.getElementById("welcomeExamplePrompts");
     const chatViewEl = document.getElementById("chatView");
     const messagesEl = document.getElementById("messages");
     const scrollToBottomBtnEl = document.getElementById("scroll-to-bottom-btn");
@@ -2718,6 +3013,14 @@ button:disabled {
     const imageLightboxEl = document.getElementById("imageLightbox");
     const lightboxImageEl = document.getElementById("lightboxImage");
     const lightboxCloseBtnEl = document.getElementById("lightboxCloseBtn");
+    const chatSearchBarEl = document.getElementById("chatSearchBar");
+    const chatSearchInputEl = document.getElementById("chatSearchInput");
+    const chatSearchCurrentEl = document.getElementById("chatSearchCurrent");
+    const chatSearchTotalEl = document.getElementById("chatSearchTotal");
+    const chatSearchLimitNoteEl = document.getElementById("chatSearchLimitNote");
+    const chatSearchPrevEl = document.getElementById("chatSearchPrev");
+    const chatSearchNextEl = document.getElementById("chatSearchNext");
+    const chatSearchCloseEl = document.getElementById("chatSearchClose");
     const artifactsToggleBtnEl = document.getElementById("artifactsToggleBtn");
     const artifactsPanelEl = document.getElementById("artifactsPanel");
     const artifactsCloseBtnEl = document.getElementById("artifactsCloseBtn");
@@ -2751,6 +3054,19 @@ button:disabled {
     const DIFF_AUTO_EXPAND_MAX_LINES = 180;
     const MOTION_FAST_MS = 120;
     const STREAM_RENDER_THROTTLE_MS = 80;
+    const WAIT_INACTIVITY_MS = 5000;
+    const WAIT_ROTATE_MS = 4000;
+    const WAIT_STATUS_MIN_INTERVAL_MS = 1000;
+    const WAIT_STATUS_FADE_MS = 180;
+    const WAIT_STATUS_MAX_COMMAND_LENGTH = 40;
+    const WAIT_FALLBACK_MESSAGES = Object.freeze([
+        "Thinking...",
+        "Still working...",
+        "Reviewing context...",
+        "Almost there...",
+    ]);
+    const CHAT_SEARCH_DEBOUNCE_MS = 150;
+    const CHAT_SEARCH_MAX_MATCHES = 500;
     const ASSISTANT_PHASE = Object.freeze({
         IDLE: "idle",
         SENDING: "sending",
@@ -2771,6 +3087,18 @@ button:disabled {
     let renderQueued = false;
     let renderTimerId = null;
     let lastAssistantRenderAt = 0;
+    let waitStatusVisible = false;
+    let waitStatusText = "";
+    let waitInactivityTimer = null;
+    let waitRotateTimer = null;
+    let lastActivityTs = 0;
+    let waitStatusLastChangeTs = 0;
+    let waitStatusPendingTimer = null;
+    let waitStatusTransitionTimer = null;
+    let waitStatusPendingText = "";
+    let waitFallbackIndex = 0;
+    let waitStatusSource = "";
+    let processingActive = false;
     let userScrolledUp = false;
     let selectedModel = "opus";
     let selectedReasoning = "medium";
@@ -2785,6 +3113,10 @@ button:disabled {
     let attachments = [];
     let attachmentCounter = 0;
     let dragDepth = 0;
+    let chatSearchOpen = false;
+    let chatSearchDebounceId = null;
+    let chatSearchMatches = [];
+    let chatSearchCurrentIndex = -1;
     let permissionRequestCounter = 0;
     let toolCardCounter = 0;
     let activeToolTurn = null;
@@ -4868,6 +5200,7 @@ button:disabled {
         welcomeViewEl.style.display = "flex";
         chatViewEl.classList.remove("active");
         appEl.classList.remove("chat-state");
+        closeChatSearch({ focusInput: false });
         userScrolledUp = false;
         updateScrollButtonVisibility();
         setTimeout(function () { welcomeInputEl.focus(); }, 50);
@@ -4885,6 +5218,292 @@ button:disabled {
                 || assistantPhase === ASSISTANT_PHASE.STREAMING;
             stopBtnEl.classList.toggle("is-visible", showStopButton);
         }
+    }
+
+    function normalizeWaitStatusText(value) {
+        return String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+    }
+
+    function truncateWaitStatusText(value, maxLength) {
+        const raw = String(value || "");
+        if (!maxLength || raw.length <= maxLength) {
+            return raw;
+        }
+        return raw.slice(0, Math.max(0, maxLength - 1)).trimEnd() + "\u2026";
+    }
+
+    function sanitizeWaitStatusText(value, maxLength) {
+        const normalized = normalizeWaitStatusText(value);
+        const truncated = truncateWaitStatusText(normalized, maxLength || 0);
+        return escapeHtml(truncated);
+    }
+
+    function waitStatusBasename(pathValue) {
+        const raw = String(pathValue || "").trim();
+        if (!raw) {
+            return "";
+        }
+        const clean = raw.replace(/[?#].*$/, "");
+        const parts = clean.split(/[\\/]/);
+        return parts[parts.length - 1] || clean;
+    }
+
+    function getCurrentWaitStatusElement() {
+        const candidates = [thinkingIndicatorRow, typingRow];
+        for (let index = 0; index < candidates.length; index += 1) {
+            const row = candidates[index];
+            if (!row || !row.isConnected) {
+                continue;
+            }
+            const el = row.querySelector(".wait-status-text");
+            if (el) {
+                return el;
+            }
+        }
+        return null;
+    }
+
+    function stopWaitRotateTimer() {
+        if (waitRotateTimer) {
+            window.clearInterval(waitRotateTimer);
+            waitRotateTimer = null;
+        }
+    }
+
+    function stopWaitInactivityTimer() {
+        if (waitInactivityTimer) {
+            window.clearTimeout(waitInactivityTimer);
+            waitInactivityTimer = null;
+        }
+    }
+
+    function stopWaitStatusPendingTimer() {
+        if (waitStatusPendingTimer) {
+            window.clearTimeout(waitStatusPendingTimer);
+            waitStatusPendingTimer = null;
+        }
+    }
+
+    function stopWaitStatusTransitionTimer() {
+        if (waitStatusTransitionTimer) {
+            window.clearTimeout(waitStatusTransitionTimer);
+            waitStatusTransitionTimer = null;
+        }
+    }
+
+    function renderWaitStatus(immediate) {
+        const statusEl = getCurrentWaitStatusElement();
+        if (!statusEl) {
+            return;
+        }
+
+        stopWaitStatusTransitionTimer();
+
+        const applyTextAndVisibility = function () {
+            if (!statusEl.isConnected) {
+                return;
+            }
+            statusEl.innerHTML = waitStatusVisible
+                ? sanitizeWaitStatusText(waitStatusText, 180)
+                : "";
+            statusEl.setAttribute("data-wait-status", waitStatusText);
+            statusEl.classList.toggle("visible", waitStatusVisible && !!waitStatusText);
+        };
+
+        const currentText = statusEl.getAttribute("data-wait-status") || "";
+        if (immediate || !currentText || !statusEl.classList.contains("visible") || currentText === waitStatusText || !waitStatusVisible) {
+            applyTextAndVisibility();
+            return;
+        }
+
+        statusEl.classList.remove("visible");
+        waitStatusTransitionTimer = window.setTimeout(function () {
+            applyTextAndVisibility();
+        }, WAIT_STATUS_FADE_MS);
+    }
+
+    function clearLongWaitStatusInternal(options) {
+        const opts = options || {};
+        waitStatusVisible = false;
+        waitStatusText = "";
+        waitStatusSource = "";
+        waitStatusPendingText = "";
+        stopWaitRotateTimer();
+        stopWaitStatusPendingTimer();
+        renderWaitStatus(!!opts.immediate);
+    }
+
+    function applyLongWaitStatus(text, options) {
+        const opts = options || {};
+        const normalized = normalizeWaitStatusText(text);
+        const immediate = !!opts.immediate;
+        const force = !!opts.force;
+        const source = String(opts.source || "").trim();
+        if (!normalized) {
+            clearLongWaitStatusInternal({ immediate: immediate });
+            return;
+        }
+
+        if (normalized === waitStatusText && waitStatusVisible) {
+            waitStatusSource = source || waitStatusSource;
+            renderWaitStatus(immediate);
+            return;
+        }
+
+        const now = Date.now();
+        const elapsed = now - waitStatusLastChangeTs;
+        if (!force && waitStatusLastChangeTs && elapsed < WAIT_STATUS_MIN_INTERVAL_MS) {
+            waitStatusPendingText = normalized;
+            stopWaitStatusPendingTimer();
+            waitStatusPendingTimer = window.setTimeout(function () {
+                const pendingText = waitStatusPendingText;
+                waitStatusPendingText = "";
+                applyLongWaitStatus(pendingText, {
+                    immediate: false,
+                    force: true,
+                    source: source,
+                });
+            }, WAIT_STATUS_MIN_INTERVAL_MS - elapsed);
+            return;
+        }
+
+        stopWaitStatusPendingTimer();
+        waitStatusText = normalized;
+        waitStatusVisible = true;
+        waitStatusLastChangeTs = now;
+        waitStatusSource = source;
+        renderWaitStatus(immediate);
+    }
+
+    function startFallbackRotation() {
+        if (!processingActive || waitStatusText) {
+            return;
+        }
+        stopWaitRotateTimer();
+        waitFallbackIndex = waitFallbackIndex % WAIT_FALLBACK_MESSAGES.length;
+        applyLongWaitStatus(WAIT_FALLBACK_MESSAGES[waitFallbackIndex], {
+            immediate: false,
+            source: "fallback",
+        });
+        waitFallbackIndex = (waitFallbackIndex + 1) % WAIT_FALLBACK_MESSAGES.length;
+        waitRotateTimer = window.setInterval(function () {
+            if (!processingActive || waitStatusSource !== "fallback") {
+                stopWaitRotateTimer();
+                return;
+            }
+            applyLongWaitStatus(WAIT_FALLBACK_MESSAGES[waitFallbackIndex], {
+                immediate: false,
+                source: "fallback",
+            });
+            waitFallbackIndex = (waitFallbackIndex + 1) % WAIT_FALLBACK_MESSAGES.length;
+        }, WAIT_ROTATE_MS);
+    }
+
+    function scheduleWaitInactivityTimer() {
+        stopWaitInactivityTimer();
+        if (!processingActive) {
+            return;
+        }
+        waitInactivityTimer = window.setTimeout(function () {
+            waitInactivityTimer = null;
+            if (!processingActive) {
+                return;
+            }
+            const elapsed = Date.now() - lastActivityTs;
+            if (elapsed < WAIT_INACTIVITY_MS) {
+                scheduleWaitInactivityTimer();
+                return;
+            }
+            if (waitStatusText) {
+                return;
+            }
+            startFallbackRotation();
+        }, WAIT_INACTIVITY_MS);
+    }
+
+    function noteWaitActivity() {
+        lastActivityTs = Date.now();
+    }
+
+    function resetLongWaitStatusTimers() {
+        noteWaitActivity();
+        stopWaitRotateTimer();
+        scheduleWaitInactivityTimer();
+    }
+
+    function deriveWaitStatusFromTool(data) {
+        if (!data || typeof data !== "object") {
+            return "";
+        }
+        const rawName = String(data.name || "tool").trim() || "tool";
+        const toolName = rawName.toLowerCase();
+        const phase = String(data.phase || "").trim().toLowerCase();
+        const output = normalizeWaitStatusText(data.output || "");
+        const toolUseId = String(data.toolUseId || data.id || "").trim();
+        const isToolResult = (
+            toolName === "tool_result"
+            || phase === "completed"
+            || (toolUseId && !!seenToolUseIds[toolUseId] && !!output)
+        );
+        if (isToolResult) {
+            return "Processing results...";
+        }
+
+        const command = normalizeWaitStatusText(data.command || "");
+        if (command) {
+            return "Running: " + truncateWaitStatusText(command, WAIT_STATUS_MAX_COMMAND_LENGTH);
+        }
+
+        const path = normalizeWaitStatusText(data.path || data.file_path || "");
+        if (path) {
+            const fileName = waitStatusBasename(path);
+            const safeName = truncateWaitStatusText(fileName, 80);
+            if (toolName === "read" || toolName === "grep" || toolName === "glob") {
+                return "Reading " + safeName;
+            }
+            if (toolName === "edit" || toolName === "write" || toolName === "multiedit") {
+                return "Editing " + safeName;
+            }
+        }
+
+        return "Using " + rawName;
+    }
+
+    function updateLongWaitStatusFromTool(data) {
+        const nextText = deriveWaitStatusFromTool(data);
+        if (!nextText) {
+            return;
+        }
+        noteWaitActivity();
+        stopWaitRotateTimer();
+        scheduleWaitInactivityTimer();
+        applyLongWaitStatus(nextText, {
+            immediate: false,
+            source: "tool",
+        });
+    }
+
+    function clearLongWaitStatusAndTimers(immediate) {
+        stopWaitInactivityTimer();
+        stopWaitRotateTimer();
+        stopWaitStatusPendingTimer();
+        clearLongWaitStatusInternal({ immediate: !!immediate });
+    }
+
+    function createThinkingShellElement() {
+        const shell = document.createElement("div");
+        shell.className = "thinking-shell";
+
+        const indicator = document.createElement("div");
+        indicator.className = "thinking-indicator";
+        indicator.innerHTML = "<span></span><span></span><span></span>";
+        shell.appendChild(indicator);
+
+        const waitStatusEl = document.createElement("div");
+        waitStatusEl.className = "wait-status-text";
+        shell.appendChild(waitStatusEl);
+
+        return shell;
     }
 
     function normalizeAttachment(payload) {
@@ -5036,6 +5655,45 @@ button:disabled {
         return hasMessages ? chatInputEl : welcomeInputEl;
     }
 
+    function setComposerPromptValue(value) {
+        const text = String(value || "");
+        const inputEl = activeInput();
+        if (!inputEl) {
+            return;
+        }
+        inputEl.value = text;
+        autoResizeInput(inputEl);
+        inputEl.focus();
+    }
+
+    function getExamplePromptsForProvider(providerId) {
+        const normalized = String(providerId || "").trim().toLowerCase();
+        return EXAMPLE_PROMPTS_BY_PROVIDER[normalized] || EXAMPLE_PROMPTS_BY_PROVIDER.claude;
+    }
+
+    function renderExamplePrompts() {
+        if (!welcomeExamplePromptsEl) {
+            return;
+        }
+        const prompts = getExamplePromptsForProvider(activeProviderId);
+        welcomeExamplePromptsEl.innerHTML = "";
+        prompts.forEach(function (promptText) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "example-prompt";
+            button.textContent = promptText;
+            button.setAttribute("role", "listitem");
+            button.title = "Insert this prompt";
+            button.addEventListener("click", function () {
+                setComposerPromptValue(promptText);
+            });
+            welcomeExamplePromptsEl.appendChild(button);
+        });
+        if (examplePromptsTitleEl) {
+            examplePromptsTitleEl.textContent = "Example prompts for " + activeProviderName;
+        }
+    }
+
     function sendPayload(payload) {
         const text = String(payload && payload.text ? payload.text : "").trim();
         const outgoingAttachments = cloneAttachmentList(payload ? payload.attachments : []);
@@ -5095,6 +5753,276 @@ button:disabled {
         updateScrollButtonVisibility();
     }
 
+    function clearChatSearchHighlights() {
+        if (!messagesEl) {
+            return;
+        }
+        const highlights = Array.from(messagesEl.querySelectorAll("mark.search-highlight"));
+        highlights.forEach(function (markEl) {
+            const parent = markEl.parentNode;
+            if (!parent) {
+                return;
+            }
+            parent.replaceChild(document.createTextNode(markEl.textContent || ""), markEl);
+            if (typeof parent.normalize === "function") {
+                parent.normalize();
+            }
+        });
+        chatSearchMatches = [];
+        chatSearchCurrentIndex = -1;
+    }
+
+    function updateChatSearchCounter(limitReached) {
+        const total = chatSearchMatches.length;
+        const current = total > 0 && chatSearchCurrentIndex >= 0 ? (chatSearchCurrentIndex + 1) : 0;
+        if (chatSearchCurrentEl) {
+            chatSearchCurrentEl.textContent = String(current);
+        }
+        if (chatSearchTotalEl) {
+            chatSearchTotalEl.textContent = String(total);
+        }
+        if (chatSearchLimitNoteEl) {
+            chatSearchLimitNoteEl.textContent = limitReached ? "... showing first 500" : "";
+        }
+        if (chatSearchBarEl) {
+            const hasQuery = chatSearchInputEl && String(chatSearchInputEl.value || "").trim().length > 0;
+            chatSearchBarEl.classList.toggle("no-results", hasQuery && total === 0);
+        }
+    }
+
+    function setCurrentChatSearchMatch(nextIndex, shouldScroll) {
+        if (!chatSearchMatches.length) {
+            chatSearchCurrentIndex = -1;
+            updateChatSearchCounter(false);
+            return;
+        }
+
+        if (chatSearchCurrentIndex >= 0 && chatSearchCurrentIndex < chatSearchMatches.length) {
+            chatSearchMatches[chatSearchCurrentIndex].classList.remove("current-match");
+        }
+
+        const normalizedIndex = ((nextIndex % chatSearchMatches.length) + chatSearchMatches.length) % chatSearchMatches.length;
+        chatSearchCurrentIndex = normalizedIndex;
+        const currentMatch = chatSearchMatches[chatSearchCurrentIndex];
+        currentMatch.classList.add("current-match");
+        if (shouldScroll) {
+            currentMatch.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+        }
+        updateChatSearchCounter(false);
+    }
+
+    function escapeRegExp(value) {
+        return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    function buildChatSearchHighlights(query) {
+        const matches = [];
+        let limitReached = false;
+        const escapedQuery = escapeRegExp(query);
+        if (!escapedQuery) {
+            return { matches: matches, limitReached: false };
+        }
+
+        const matcher = new RegExp(escapedQuery, "giu");
+        const messageRows = Array.from(messagesEl.querySelectorAll(".message-row"));
+        let stop = false;
+
+        messageRows.some(function (row) {
+            const walker = document.createTreeWalker(
+                row,
+                NodeFilter.SHOW_TEXT,
+                {
+                    acceptNode: function (node) {
+                        if (!node || !node.nodeValue || !node.nodeValue.trim()) {
+                            return NodeFilter.FILTER_REJECT;
+                        }
+                        const parent = node.parentElement;
+                        if (!parent) {
+                            return NodeFilter.FILTER_REJECT;
+                        }
+                        const tag = parent.tagName;
+                        if (
+                            tag === "SCRIPT"
+                            || tag === "STYLE"
+                            || tag === "TEXTAREA"
+                            || tag === "INPUT"
+                            || tag === "SELECT"
+                            || tag === "OPTION"
+                            || tag === "BUTTON"
+                            || tag === "MARK"
+                        ) {
+                            return NodeFilter.FILTER_REJECT;
+                        }
+                        return NodeFilter.FILTER_ACCEPT;
+                    },
+                }
+            );
+            const textNodes = [];
+            let node = walker.nextNode();
+            while (node) {
+                textNodes.push(node);
+                node = walker.nextNode();
+            }
+
+            textNodes.forEach(function (textNode) {
+                if (stop) {
+                    return;
+                }
+                const textValue = textNode.nodeValue || "";
+                matcher.lastIndex = 0;
+                let match = matcher.exec(textValue);
+                if (!match) {
+                    return;
+                }
+
+                let lastIndex = 0;
+                const fragment = document.createDocumentFragment();
+
+                while (match) {
+                    if (matches.length >= CHAT_SEARCH_MAX_MATCHES) {
+                        limitReached = true;
+                        stop = true;
+                        break;
+                    }
+                    const start = match.index;
+                    const matchedValue = match[0];
+                    if (start > lastIndex) {
+                        fragment.appendChild(document.createTextNode(textValue.slice(lastIndex, start)));
+                    }
+                    const mark = document.createElement("mark");
+                    mark.className = "search-highlight";
+                    mark.textContent = matchedValue;
+                    fragment.appendChild(mark);
+                    matches.push(mark);
+                    lastIndex = start + matchedValue.length;
+                    match = matcher.exec(textValue);
+                }
+
+                if (lastIndex < textValue.length) {
+                    fragment.appendChild(document.createTextNode(textValue.slice(lastIndex)));
+                }
+
+                if (textNode.parentNode) {
+                    textNode.parentNode.replaceChild(fragment, textNode);
+                }
+            });
+
+            return stop;
+        });
+
+        return { matches: matches, limitReached: limitReached };
+    }
+
+    function runChatSearch(queryValue) {
+        const query = String(queryValue || "").trim();
+        if (!query) {
+            closeChatSearch();
+            return;
+        }
+        clearChatSearchHighlights();
+        const result = buildChatSearchHighlights(query);
+        chatSearchMatches = result.matches;
+        if (chatSearchMatches.length) {
+            setCurrentChatSearchMatch(0, true);
+        } else {
+            chatSearchCurrentIndex = -1;
+        }
+        updateChatSearchCounter(result.limitReached);
+    }
+
+    function scheduleChatSearch() {
+        if (!chatSearchInputEl) {
+            return;
+        }
+        if (chatSearchDebounceId) {
+            window.clearTimeout(chatSearchDebounceId);
+        }
+        chatSearchDebounceId = window.setTimeout(function () {
+            chatSearchDebounceId = null;
+            runChatSearch(chatSearchInputEl.value);
+        }, CHAT_SEARCH_DEBOUNCE_MS);
+    }
+
+    function refreshChatSearchIfActive() {
+        if (!chatSearchOpen || !chatSearchInputEl) {
+            return;
+        }
+        const query = String(chatSearchInputEl.value || "").trim();
+        if (!query) {
+            return;
+        }
+        runChatSearch(query);
+    }
+
+    function focusPrimaryInput() {
+        if (hasMessages) {
+            chatInputEl.focus();
+        } else {
+            welcomeInputEl.focus();
+        }
+    }
+
+    function openChatSearch() {
+        if (!chatSearchBarEl || !chatSearchInputEl || !hasMessages) {
+            return;
+        }
+        chatSearchOpen = true;
+        chatSearchBarEl.style.display = "flex";
+        chatSearchInputEl.focus();
+        chatSearchInputEl.select();
+        const query = String(chatSearchInputEl.value || "").trim();
+        if (query) {
+            scheduleChatSearch();
+            return;
+        }
+        clearChatSearchHighlights();
+        updateChatSearchCounter(false);
+    }
+
+    function closeChatSearch(options) {
+        const config = options && typeof options === "object" ? options : {};
+        const shouldFocusInput = config.focusInput !== false;
+        chatSearchOpen = false;
+        if (chatSearchDebounceId) {
+            window.clearTimeout(chatSearchDebounceId);
+            chatSearchDebounceId = null;
+        }
+        if (chatSearchInputEl) {
+            chatSearchInputEl.value = "";
+        }
+        if (chatSearchBarEl) {
+            chatSearchBarEl.style.display = "none";
+            chatSearchBarEl.classList.remove("no-results");
+        }
+        clearChatSearchHighlights();
+        updateChatSearchCounter(false);
+        if (shouldFocusInput) {
+            focusPrimaryInput();
+        }
+    }
+
+    function toggleChatSearch() {
+        if (chatSearchOpen) {
+            closeChatSearch();
+            return;
+        }
+        openChatSearch();
+    }
+
+    function goToNextChatSearchMatch() {
+        if (!chatSearchMatches.length) {
+            return;
+        }
+        setCurrentChatSearchMatch(chatSearchCurrentIndex + 1, true);
+    }
+
+    function goToPreviousChatSearchMatch() {
+        if (!chatSearchMatches.length) {
+            return;
+        }
+        setCurrentChatSearchMatch(chatSearchCurrentIndex - 1, true);
+    }
+
     function openImageLightbox(src, alt) {
         if (!imageLightboxEl || !lightboxImageEl) {
             return;
@@ -5132,6 +6060,11 @@ button:disabled {
         } else {
             messagesEl.appendChild(row);
         }
+        if (chatSearchOpen) {
+            window.setTimeout(function () {
+                refreshChatSearchIfActive();
+            }, 0);
+        }
 
         return { row: row, inner: inner };
     }
@@ -5141,10 +6074,13 @@ button:disabled {
         resetToolTurnState();
 
         const rowObj = createMessageRow("user");
+        const bubbleWrap = document.createElement("div");
+        bubbleWrap.className = "user-bubble-wrap";
         const bubble = document.createElement("div");
         bubble.className = "user-bubble";
         const safeText = String(text || "");
         const outgoingAttachments = cloneAttachmentList(attachmentList);
+        bubble.dataset.rawMarkdown = safeText;
 
         if (outgoingAttachments.length) {
             const gallery = document.createElement("div");
@@ -5173,7 +6109,21 @@ button:disabled {
             bubble.appendChild(textBlock);
         }
 
-        rowObj.inner.appendChild(bubble);
+        const badge = document.createElement("div");
+        badge.className = "copy-success-badge";
+        badge.textContent = "Copied!";
+
+        const actions = document.createElement("div");
+        actions.className = "user-actions";
+        actions.innerHTML = [
+            '<button class="assistant-action user-action" data-action="copy" type="button" title="Copy">📋</button>',
+            '<button class="assistant-action user-action copy-md-action" data-action="copy-md" type="button" title="Copy as Markdown">📋 MD</button>',
+        ].join("");
+
+        bubbleWrap.appendChild(bubble);
+        bubbleWrap.appendChild(actions);
+        bubbleWrap.appendChild(badge);
+        rowObj.inner.appendChild(bubbleWrap);
         scrollToBottom(true);
     }
 
@@ -5659,6 +6609,7 @@ button:disabled {
                 return;
             }
             if (parsed && parsed.__tool__) {
+                updateLongWaitStatusFromTool(parsed);
                 addToolMessage(parsed);
                 return;
             }
@@ -5916,6 +6867,13 @@ button:disabled {
 
     function addPermissionRequest(data) {
         setChatState(true);
+        noteWaitActivity();
+        stopWaitRotateTimer();
+        scheduleWaitInactivityTimer();
+        applyLongWaitStatus("Waiting for your approval...", {
+            immediate: false,
+            source: "permission",
+        });
 
         const toolName = String(data.name || "Tool");
         const isDenialCard = !!data.__permission_denied__;
@@ -6259,11 +7217,9 @@ button:disabled {
         }
 
         const rowObj = createMessageRow("assistant");
-        const indicator = document.createElement("div");
-        indicator.className = "thinking-indicator";
-        indicator.innerHTML = "<span></span><span></span><span></span>";
-        rowObj.inner.appendChild(indicator);
+        rowObj.inner.appendChild(createThinkingShellElement());
         thinkingIndicatorRow = rowObj.row;
+        renderWaitStatus(true);
         if (!userScrolledUp) {
             scrollToBottom(true);
         } else {
@@ -6314,10 +7270,15 @@ button:disabled {
         const body = document.createElement("div");
         body.className = "assistant-message markdown-body";
 
+        const badge = document.createElement("div");
+        badge.className = "copy-success-badge";
+        badge.textContent = "Copied!";
+
         const actions = document.createElement("div");
         actions.className = "assistant-actions";
         actions.innerHTML = [
             '<button class="assistant-action" data-action="copy" type="button" title="Copy">📋</button>',
+            '<button class="assistant-action copy-md-action" data-action="copy-md" type="button" title="Copy as Markdown">📋 MD</button>',
             '<button class="assistant-action" data-action="up" type="button" title="Thumbs up">👍</button>',
             '<button class="assistant-action" data-action="down" type="button" title="Thumbs down">👎</button>',
             '<button class="assistant-action" data-action="retry" type="button" title="Retry">🔄</button>',
@@ -6325,6 +7286,7 @@ button:disabled {
 
         wrap.appendChild(body);
         wrap.appendChild(actions);
+        wrap.appendChild(badge);
 
         block.appendChild(wrap);
         rowObj.inner.appendChild(block);
@@ -6356,6 +7318,7 @@ button:disabled {
         }
         currentAssistantBody.innerHTML = markdownToHtml(currentAssistantRaw);
         currentAssistantBody.dataset.raw = currentAssistantRaw;
+        currentAssistantBody.dataset.rawMarkdown = currentAssistantRaw;
         if (showCursor) {
             const cursor = document.createElement("span");
             cursor.className = "streaming-cursor";
@@ -6424,6 +7387,9 @@ button:disabled {
             startAssistantMessage();
         }
 
+        clearLongWaitStatusInternal({ immediate: true });
+        resetLongWaitStatusTimers();
+
         if (!assistantHasFirstChunk) {
             assistantHasFirstChunk = true;
             ensureAssistantMessageRow();
@@ -6436,6 +7402,8 @@ button:disabled {
     }
 
     function finishAssistantMessage() {
+        processingActive = false;
+        clearLongWaitStatusAndTimers(true);
         hideThinkingIndicator(true);
         if (renderTimerId) {
             window.clearTimeout(renderTimerId);
@@ -6472,6 +7440,7 @@ button:disabled {
         currentAssistantRow = null;
         currentAssistantRaw = "";
         assistantHasFirstChunk = false;
+        refreshChatSearchIfActive();
         setAssistantPhase(ASSISTANT_PHASE.DONE);
         if (!userScrolledUp) {
             scrollToBottom(true);
@@ -6488,14 +7457,10 @@ button:disabled {
             const rowObj = createMessageRow("assistant");
             const shell = document.createElement("div");
             shell.className = "typing-shell";
-
-            const indicator = document.createElement("div");
-            indicator.className = "thinking-indicator";
-            indicator.innerHTML = "<span></span><span></span><span></span>";
-
-            shell.appendChild(indicator);
+            shell.appendChild(createThinkingShellElement());
             rowObj.inner.appendChild(shell);
             typingRow = rowObj.row;
+            renderWaitStatus(true);
             if (!userScrolledUp) {
                 scrollToBottom(true);
             }
@@ -6518,6 +7483,8 @@ button:disabled {
             window.clearTimeout(renderTimerId);
             renderTimerId = null;
         }
+        processingActive = false;
+        clearLongWaitStatusAndTimers(true);
         lastAssistantRenderAt = 0;
         currentAssistantRaw = "";
         currentAssistantBody = null;
@@ -6563,7 +7530,11 @@ button:disabled {
         }
 
         if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(onDone).catch(function () {});
+            navigator.clipboard.writeText(text).then(function () {
+                if (typeof onDone === "function") {
+                    onDone();
+                }
+            }).catch(function () {});
             return;
         }
 
@@ -6573,11 +7544,53 @@ button:disabled {
         temp.select();
         try {
             document.execCommand("copy");
-            onDone();
+            if (typeof onDone === "function") {
+                onDone();
+            }
         } catch (_error) {
         } finally {
             temp.remove();
         }
+    }
+
+    function copyMarkdownText(rawMarkdown, onDone) {
+        const text = String(rawMarkdown || "");
+        if (!text) {
+            return;
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () {
+                if (typeof onDone === "function") {
+                    onDone();
+                }
+            }).catch(function () {
+                copyText(text, onDone);
+            });
+            return;
+        }
+        copyText(text, onDone);
+    }
+
+    function showCopySuccessBadge(button) {
+        if (!button) {
+            return;
+        }
+        const container = button.closest(".assistant-content-wrap, .user-bubble-wrap");
+        if (!container) {
+            return;
+        }
+        const badge = container.querySelector(".copy-success-badge");
+        if (!badge) {
+            return;
+        }
+        if (badge._hideTimer) {
+            window.clearTimeout(badge._hideTimer);
+        }
+        badge.classList.add("visible");
+        badge._hideTimer = window.setTimeout(function () {
+            badge.classList.remove("visible");
+            badge._hideTimer = null;
+        }, 1200);
     }
 
     function showCopiedFeedback(button) {
@@ -6996,9 +8009,7 @@ button:disabled {
     quickChips.forEach(function (chip) {
         chip.addEventListener("click", function () {
             const value = chip.getAttribute("data-value") || "";
-            welcomeInputEl.value = value;
-            autoResizeInput(welcomeInputEl);
-            welcomeInputEl.focus();
+            setComposerPromptValue(value);
         });
     });
 
@@ -7084,6 +8095,53 @@ button:disabled {
         });
     }
 
+    if (chatSearchInputEl) {
+        chatSearchInputEl.addEventListener("input", function () {
+            const query = String(chatSearchInputEl.value || "").trim();
+            if (!query) {
+                closeChatSearch();
+                return;
+            }
+            scheduleChatSearch();
+        });
+
+        chatSearchInputEl.addEventListener("keydown", function (event) {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                closeChatSearch();
+                return;
+            }
+            if (event.key === "Enter") {
+                event.preventDefault();
+                event.stopPropagation();
+                if (event.shiftKey) {
+                    goToPreviousChatSearchMatch();
+                } else {
+                    goToNextChatSearchMatch();
+                }
+            }
+        });
+    }
+
+    if (chatSearchPrevEl) {
+        chatSearchPrevEl.addEventListener("click", function () {
+            goToPreviousChatSearchMatch();
+        });
+    }
+
+    if (chatSearchNextEl) {
+        chatSearchNextEl.addEventListener("click", function () {
+            goToNextChatSearchMatch();
+        });
+    }
+
+    if (chatSearchCloseEl) {
+        chatSearchCloseEl.addEventListener("click", function () {
+            closeChatSearch();
+        });
+    }
+
     document.addEventListener("dragenter", function (event) {
         const hasFiles = event.dataTransfer && Array.from(event.dataTransfer.types || []).indexOf("Files") >= 0;
         if (!hasFiles) {
@@ -7133,6 +8191,13 @@ button:disabled {
     });
 
     document.addEventListener("click", function (event) {
+        const searchAction = event.target.closest('[data-action="search-chat"]');
+        if (searchAction) {
+            event.preventDefault();
+            openChatSearch();
+            return;
+        }
+
         const imageEl = event.target.closest(".chat-image, .message-attachment-image");
         if (imageEl) {
             const safeSrc = sanitizeImageUrl(imageEl.getAttribute("src"));
@@ -7211,6 +8276,31 @@ button:disabled {
             return;
         }
 
+        const userActionButton = event.target.closest(".user-action");
+        if (userActionButton) {
+            const action = userActionButton.getAttribute("data-action");
+            const bubble = userActionButton.closest(".user-bubble-wrap")
+                ? userActionButton.closest(".user-bubble-wrap").querySelector(".user-bubble")
+                : null;
+            const rawMarkdown = bubble
+                ? (bubble.dataset.rawMarkdown || bubble.textContent || "")
+                : "";
+
+            if (action === "copy-md") {
+                copyMarkdownText(rawMarkdown, function () {
+                    showCopySuccessBadge(userActionButton);
+                });
+                return;
+            }
+
+            if (action === "copy") {
+                copyText(rawMarkdown, function () {
+                    markActionPressed(userActionButton);
+                });
+                return;
+            }
+        }
+
         const actionButton = event.target.closest(".assistant-action");
         if (actionButton) {
             const action = actionButton.getAttribute("data-action");
@@ -7218,10 +8308,20 @@ button:disabled {
                 ? actionButton.closest(".assistant-content-wrap").querySelector(".assistant-message")
                 : null;
             const raw = messageBody ? (messageBody.dataset.raw || messageBody.textContent || "") : "";
+            const rawMarkdown = messageBody
+                ? (messageBody.dataset.rawMarkdown || messageBody.dataset.raw || messageBody.textContent || "")
+                : "";
 
             if (action === "copy") {
                 copyText(raw, function () {
                     markActionPressed(actionButton);
+                });
+                return;
+            }
+
+            if (action === "copy-md") {
+                copyMarkdownText(rawMarkdown, function () {
+                    showCopySuccessBadge(actionButton);
                 });
                 return;
             }
@@ -7247,7 +8347,18 @@ button:disabled {
     });
 
     document.addEventListener("keydown", function (event) {
+        const findShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && String(event.key || "").toLowerCase() === "f";
+        if (findShortcut && hasMessages) {
+            event.preventDefault();
+            toggleChatSearch();
+            return;
+        }
+
         if (event.key === "Escape") {
+            if (chatSearchOpen) {
+                closeChatSearch();
+                return;
+            }
             if (slashDropdownOpen) {
                 closeSlashDropdown();
                 return;
@@ -7288,6 +8399,8 @@ button:disabled {
             selectArtifact(artifactId, version || 0);
         }
     };
+    window.openChatSearch = openChatSearch;
+    window.closeChatSearch = closeChatSearch;
 
     window.applyProviderTheme = function (colorsJson) {
         const colors = parseHostPayload(colorsJson);
@@ -7340,6 +8453,7 @@ button:disabled {
         Array.from(document.querySelectorAll(".ci-fix-btn")).forEach(function (button) {
             button.textContent = activeProviderName + " can try to fix this";
         });
+        renderExamplePrompts();
         if (slashDropdownOpen && activeSlashInput) {
             updateSlashDropdown(activeSlashInput);
         }
@@ -7364,14 +8478,32 @@ button:disabled {
     };
     window.setProcessing = function (isProcessing) {
         if (isProcessing) {
+            processingActive = true;
+            clearLongWaitStatusInternal({ immediate: true });
+            resetLongWaitStatusTimers();
             if (assistantPhase === ASSISTANT_PHASE.IDLE || assistantPhase === ASSISTANT_PHASE.DONE || assistantPhase === ASSISTANT_PHASE.ERROR) {
                 setAssistantPhase(ASSISTANT_PHASE.SENDING);
             }
             return;
         }
+        processingActive = false;
+        clearLongWaitStatusAndTimers(true);
         if (assistantPhase !== ASSISTANT_PHASE.STREAMING) {
             setAssistantPhase(ASSISTANT_PHASE.DONE);
         }
+    };
+    window.updateLongWaitStatus = function (text) {
+        noteWaitActivity();
+        stopWaitRotateTimer();
+        scheduleWaitInactivityTimer();
+        applyLongWaitStatus(text, {
+            immediate: false,
+            source: "external",
+        });
+    };
+    window.clearLongWaitStatus = function () {
+        clearLongWaitStatusInternal({ immediate: true });
+        scheduleWaitInactivityTimer();
     };
     window.focusInput = function () {
         if (hasMessages) {
@@ -7389,6 +8521,7 @@ button:disabled {
     setReasoningVisible(true);
     renderSelectorLabels();
     updateFolderDisplay("~");
+    renderExamplePrompts();
     renderAttachments();
     renderArtifactsList();
     renderArtifactDetail();
@@ -7399,3 +8532,6 @@ button:disabled {
 </body>
 </html>
 """
+    .replace("__INLINE_HIGHLIGHT_CSS__", HIGHLIGHT_CSS)
+    .replace("__INLINE_HIGHLIGHT_JS__", HIGHLIGHT_JS)
+)
