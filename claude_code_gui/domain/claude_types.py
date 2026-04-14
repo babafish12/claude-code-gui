@@ -34,3 +34,5 @@ class ClaudeRunConfig:
     stream_json_requires_verbose: bool
     reasoning_level: str = "medium"
     supports_reasoning_flag: bool = False
+    allowed_tools: list[str] | None = None
+    provider_id: str = "claude"

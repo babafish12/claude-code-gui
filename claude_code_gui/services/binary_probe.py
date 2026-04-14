@@ -1,4 +1,4 @@
-"""Claude CLI discovery and capability probing."""
+"""Provider CLI discovery and capability probing."""
 
 from __future__ import annotations
 
@@ -20,30 +20,47 @@ class CliCapabilities:
     supports_include_partial_messages: bool = False
 
 
-def find_claude_binary() -> str | None:
-    for executable in ("claude", "claude-code"):
+def find_provider_binary(binary_names: list[str]) -> str | None:
+    normalized_names: list[str] = []
+    for binary_name in binary_names:
+        candidate_name = str(binary_name or "").strip()
+        if not candidate_name:
+            continue
+        if candidate_name not in normalized_names:
+            normalized_names.append(candidate_name)
+
+    if not normalized_names:
+        return None
+
+    for executable in normalized_names:
         found = shutil.which(executable)
         if found:
             return found
 
-    config_root = Path.home() / ".config" / "Claude" / "claude-code"
-    candidates = (
-        config_root / "claude",
-        config_root / "claude-code",
-        config_root / "bin" / "claude",
-        config_root / "bin" / "claude-code",
-    )
-    for candidate in candidates:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+    # Keep existing Claude-specific fallback probing for backwards compatibility.
+    if any(name in {"claude", "claude-code"} for name in normalized_names):
+        config_root = Path.home() / ".config" / "Claude" / "claude-code"
+        candidates = (
+            config_root / "claude",
+            config_root / "claude-code",
+            config_root / "bin" / "claude",
+            config_root / "bin" / "claude-code",
+        )
+        for candidate in candidates:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
 
-    if config_root.is_dir():
-        for binary_name in ("claude", "claude-code"):
-            for candidate in config_root.rglob(binary_name):
-                if candidate.is_file() and os.access(candidate, os.X_OK):
-                    return str(candidate)
+        if config_root.is_dir():
+            for binary_name in ("claude", "claude-code"):
+                for candidate in config_root.rglob(binary_name):
+                    if candidate.is_file() and os.access(candidate, os.X_OK):
+                        return str(candidate)
 
     return None
+
+
+def find_claude_binary() -> str | None:
+    return find_provider_binary(["claude", "claude-code"])
 
 
 def binary_exists(path: str | None) -> bool:
@@ -74,3 +91,25 @@ def detect_cli_flag_support(binary_path: str) -> CliCapabilities:
     caps.supports_json = '"json"' in output or "json" in output
     caps.supports_include_partial_messages = "--include-partial-messages" in output
     return caps
+
+
+def is_codex_authenticated() -> bool:
+    codex_binary = find_provider_binary(["codex"])
+    if not codex_binary:
+        return False
+
+    try:
+        result = subprocess.run(
+            [codex_binary, "login", "status"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    output = f"{result.stdout}\n{result.stderr}".strip().lower()
+    if "not logged in" in output or "logged out" in output:
+        return False
+    return "logged in" in output

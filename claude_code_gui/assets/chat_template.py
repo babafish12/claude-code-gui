@@ -21,9 +21,42 @@ CHAT_WEBVIEW_HTML = r"""
     --text: #d4d4c8;
     --muted: #8a8a7a;
     --accent: #d97757;
-    --accent-soft: rgba(217, 119, 87, 0.18);
+    --motion-fast: 120ms;
+    --motion-normal: 220ms;
+    --motion-slow: 400ms;
+    --motion-loop: 1200ms;
+    --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-enter: cubic-bezier(0, 0, 0.2, 1);
+    --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+    --accent-soft: rgba(var(--accent-rgb), 0.18);
+    --accent-rgb: 217, 119, 87;
+    --accent-rgba-012: rgba(var(--accent-rgb), 0.12);
+    --accent-rgba-072: rgba(var(--accent-rgb), 0.72);
+    --accent-rgba-055: rgba(var(--accent-rgb), 0.55);
     --chip-border: #4a4a43;
     --code-bg: #1a1a16;
+    --surface-panel: #3a3a34;
+    --surface-card: rgba(58, 58, 52, 0.92);
+    --surface-card-soft: rgba(58, 58, 52, 0.9);
+    --surface-muted: rgba(58, 58, 52, 0.7);
+    --surface-muted-strong: rgba(58, 58, 52, 0.8);
+    --surface-chip: rgba(58, 58, 52, 0.66);
+    --surface-overlay: rgba(255, 255, 255, 0.06);
+    --surface-overlay-soft: rgba(255, 255, 255, 0.04);
+    --surface-overlay-border: rgba(255, 255, 255, 0.12);
+    --text-soft: #b7b29a;
+    --text-accent-soft: #f0c1a6;
+    --permission-border: rgba(217, 131, 64, 0.75);
+    --permission-gradient-start: rgba(72, 56, 36, 0.66);
+    --permission-gradient-end: rgba(47, 47, 42, 0.96);
+    --permission-shadow-soft: rgba(217, 131, 64, 0.16);
+    --permission-shadow-strong: rgba(217, 131, 64, 0.34);
+    --permission-glow: rgba(217, 131, 64, 0.2);
+    --inline-code-bg: #3a3a34;
+    --inline-code-color: #e06c75;
+    --table-border: #4a4a43;
+    --code-block-bg: #1e1e1e;
+    --code-head-muted: #8a8a8a;
     --artifacts-panel-bg: #2a2a25;
     --artifacts-panel-width: 360px;
     --shadow: 0 12px 36px rgba(0, 0, 0, 0.34);
@@ -42,23 +75,37 @@ body {
     margin: 0;
     padding: 0;
     background:
-        radial-gradient(circle at 14% 4%, rgba(212, 132, 90, 0.12), transparent 30%),
-        radial-gradient(circle at 85% 96%, rgba(212, 132, 90, 0.08), transparent 26%),
+        radial-gradient(circle at 14% 4%, rgba(var(--accent-rgb), 0.12), transparent 30%),
+        radial-gradient(circle at 85% 96%, rgba(var(--accent-rgb), 0.08), transparent 26%),
         var(--bg);
     color: var(--text);
     font-family: var(--font-stack);
-    font-variant-emoji: emoji;
+    font-variant-emoji: text;
+    font-kerning: normal;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
     overflow: hidden;
 }
 
 a {
-    color: #D97757;
+    color: var(--accent);
     text-decoration: none;
-    transition: all 0.15s ease;
+    transition: color var(--motion-fast) var(--ease-standard), text-decoration-color var(--motion-fast) var(--ease-standard);
 }
 
 a:hover {
     text-decoration: underline;
+}
+
+button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    filter: saturate(0.75);
 }
 
 #app {
@@ -103,12 +150,22 @@ a:hover {
     letter-spacing: 0.1px;
 }
 
+.welcome-provider-badge {
+    border-radius: 999px;
+    border: 1px solid var(--chip-border);
+    background: var(--accent-rgba-012);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 700;
+    padding: 5px 10px;
+}
+
 .composer-card {
     width: 100%;
     max-width: 740px;
     border-radius: 24px;
     border: 1px solid var(--input-border);
-    background: rgba(58, 58, 52, 0.92);
+    background: var(--surface-card);
     box-shadow: var(--shadow);
     padding: 14px;
 }
@@ -127,7 +184,7 @@ a:hover {
     font: inherit;
     font-size: 16px;
     line-height: 1.42;
-    transition: all 0.15s ease;
+    transition: border-color var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard);
 }
 
 .composer-input::placeholder {
@@ -138,6 +195,11 @@ a:hover {
     outline: none !important;
     border-color: transparent !important;
     box-shadow: none !important;
+}
+
+.composer-input:focus-visible {
+    outline: 2px solid var(--accent) !important;
+    outline-offset: 2px;
 }
 
 .control-row {
@@ -159,7 +221,7 @@ a:hover {
     width: 100%;
     border: none;
     background: transparent;
-    color: #8a8a7a;
+    color: var(--muted);
     border-radius: 10px;
     padding: 4px 6px;
     cursor: pointer;
@@ -167,12 +229,12 @@ a:hover {
     align-items: center;
     gap: 6px;
     font-size: 12px;
-    transition: all 0.15s ease;
+    transition: background-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
 }
 
 .folder-path-btn:hover {
-    background: rgba(255, 255, 255, 0.06);
-    color: #b7b29a;
+    background: var(--surface-overlay);
+    color: var(--text-soft);
 }
 
 .folder-path-icon {
@@ -203,15 +265,15 @@ a:hover {
     gap: 8px;
     border-radius: 999px;
     border: 1px solid var(--chip-border);
-    background: rgba(58, 58, 52, 0.9);
+    background: var(--surface-card-soft);
     padding: 3px 10px 3px 5px;
     font-size: 12px;
     max-width: 280px;
-    transition: all 0.15s ease;
+    transition: border-color var(--motion-fast) var(--ease-standard);
 }
 
 .attachment-chip:hover {
-    border-color: rgba(212, 132, 90, 0.72);
+    border-color: var(--accent-rgba-072);
 }
 
 .attachment-thumb {
@@ -237,11 +299,11 @@ a:hover {
     font-size: 14px;
     line-height: 1;
     padding: 0;
-    transition: all 0.15s ease;
+    transition: color var(--motion-fast) var(--ease-standard);
 }
 
 .attachment-remove:hover {
-    color: #f0c1a6;
+    color: var(--text-accent-soft);
 }
 
 .plus-btn,
@@ -253,7 +315,10 @@ a:hover {
     border: 1px solid var(--chip-border);
     background: transparent;
     color: var(--text);
-    transition: all 0.15s ease;
+    transition:
+        border-color var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard),
+        color var(--motion-fast) var(--ease-standard);
 }
 
 .plus-btn {
@@ -271,8 +336,8 @@ a:hover {
 .chip:hover,
 .assistant-action:hover,
 .action-btn:hover {
-    background-color: rgba(212, 132, 90, 0.12);
-    border-color: rgba(212, 132, 90, 0.72);
+    background-color: var(--accent-rgba-012);
+    border-color: var(--accent-rgba-072);
 }
 
 .selector-group {
@@ -319,13 +384,13 @@ a:hover {
     width: 280px;
     border-radius: 16px;
     border: 1px solid var(--input-border);
-    background: #3a3a34;
+    background: var(--surface-panel);
     box-shadow: 0 18px 34px rgba(0, 0, 0, 0.34);
     padding: 6px;
     opacity: 0;
     transform: translateY(10px);
     pointer-events: none;
-    transition: all 0.15s ease;
+    transition: opacity var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
     z-index: 40;
 }
 
@@ -339,7 +404,7 @@ a:hover {
     opacity: 0;
     transform: translateY(10px);
     pointer-events: none;
-    transition: all 0.15s ease;
+    transition: opacity var(--motion-fast) var(--ease-exit), transform var(--motion-fast) var(--ease-exit);
 }
 
 .popup-option {
@@ -351,7 +416,10 @@ a:hover {
     text-align: left;
     padding: 10px 10px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition:
+        border-color var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard),
+        color var(--motion-fast) var(--ease-standard);
 }
 
 .popup-option + .popup-option {
@@ -359,12 +427,12 @@ a:hover {
 }
 
 .popup-option:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--surface-overlay);
 }
 
 .popup-option.active {
-    background: rgba(212, 132, 90, 0.13);
-    border-color: rgba(212, 132, 90, 0.55);
+    background: rgba(var(--accent-rgb), 0.13);
+    border-color: var(--accent-rgba-055);
 }
 
 .popup-title {
@@ -379,6 +447,130 @@ a:hover {
     color: var(--muted);
     font-size: 12px;
     line-height: 1.35;
+}
+
+.slash-dropdown {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 100%;
+    margin-bottom: 6px;
+    max-height: 320px;
+    overflow-y: auto;
+    border-radius: 16px;
+    border: 1px solid var(--input-border);
+    background: var(--surface-panel);
+    box-shadow: 0 -12px 36px rgba(0, 0, 0, 0.34);
+    padding: 6px;
+    opacity: 0;
+    transform: translateY(8px);
+    pointer-events: none;
+    transition: opacity var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
+    z-index: 50;
+}
+
+.slash-dropdown.open {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+.slash-dropdown-header {
+    padding: 8px 10px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.slash-dropdown-item {
+    width: 100%;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    padding: 8px 10px;
+    cursor: pointer;
+    transition:
+        border-color var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard),
+        color var(--motion-fast) var(--ease-standard);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.slash-dropdown-item + .slash-dropdown-item {
+    margin-top: 2px;
+}
+
+.slash-dropdown-item:hover,
+.slash-dropdown-item.selected {
+    background: var(--surface-overlay);
+}
+
+.slash-dropdown-item.selected {
+    background: rgba(var(--accent-rgb), 0.13);
+    border-color: var(--accent-rgba-055);
+}
+
+.slash-dropdown-icon {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    background: var(--accent-rgba-012);
+    font-size: 14px;
+}
+
+.slash-dropdown-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.slash-dropdown-name {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.slash-dropdown-desc {
+    display: block;
+    margin-top: 1px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.slash-dropdown-empty {
+    padding: 12px 10px;
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+}
+
+.slash-dropdown::-webkit-scrollbar {
+    width: 6px;
+}
+
+.slash-dropdown::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.slash-dropdown::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 3px;
 }
 
 .quick-chips {
@@ -424,7 +616,7 @@ a:hover {
 
 #artifactsToggleBtn {
     border: 1px solid var(--chip-border);
-    background: rgba(42, 42, 37, 0.9);
+    background: var(--surface-card-soft);
     color: var(--text);
     border-radius: 999px;
     min-height: 30px;
@@ -434,22 +626,25 @@ a:hover {
     align-items: center;
     gap: 6px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition:
+        border-color var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard),
+        color var(--motion-fast) var(--ease-standard);
 }
 
 #artifactsToggleBtn:hover,
 #artifactsToggleBtn.active {
-    border-color: rgba(212, 132, 90, 0.72);
-    background: rgba(212, 132, 90, 0.14);
+    border-color: var(--accent-rgba-072);
+    background: rgba(var(--accent-rgb), 0.14);
 }
 
 #dropOverlay {
     position: absolute;
     inset: 18px 14px 118px;
     border-radius: 18px;
-    border: 2px dashed rgba(217, 119, 87, 0.75);
-    background: rgba(26, 26, 22, 0.78);
-    color: #f0c1a6;
+    border: 2px dashed rgba(var(--accent-rgb), 0.75);
+    background: rgba(var(--accent-rgb), 0.16);
+    color: var(--text-accent-soft);
     display: none;
     align-items: center;
     justify-content: center;
@@ -457,7 +652,7 @@ a:hover {
     font-weight: 600;
     z-index: 55;
     pointer-events: none;
-    transition: all 0.15s ease;
+    transition: opacity var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
 }
 
 #dropOverlay.active {
@@ -471,7 +666,42 @@ a:hover {
     overflow-x: hidden;
     padding: 52px 14px 220px;
     scroll-behavior: smooth;
-    transition: padding-right 250ms ease;
+    transition: padding-right var(--motion-normal) var(--ease-standard);
+}
+
+#scroll-to-bottom-btn {
+    position: fixed;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--surface-card-soft);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--surface-overlay-border);
+    color: var(--text-soft);
+    font-size: 16px;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--motion-normal) var(--ease-standard), transform var(--motion-normal) var(--ease-standard);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+
+#scroll-to-bottom-btn.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+#scroll-to-bottom-btn:hover {
+    background: rgba(60, 60, 55, 0.95);
+    color: #e0e0e0;
 }
 
 #messages::-webkit-scrollbar {
@@ -492,17 +722,47 @@ a:hover {
     display: flex;
     justify-content: center;
     margin-bottom: 16px;
-    animation: messageReveal 300ms ease-out;
+    animation: messageEnter var(--motion-normal) var(--ease-enter) both;
 }
 
-@keyframes messageReveal {
+@keyframes messageEnter {
     from {
         opacity: 0;
-        transform: translateY(10px);
+        transform: translateY(12px) scale(0.98);
     }
     to {
         opacity: 1;
-        transform: translateY(0);
+        transform: translateY(0) scale(1);
+    }
+}
+
+.message-row.user {
+    animation: slideInRight var(--motion-normal) var(--ease-enter) both;
+}
+
+@keyframes slideInRight {
+    from {
+        opacity: 0;
+        transform: translateX(16px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+.message-row.assistant {
+    animation: slideInLeft var(--motion-normal) var(--ease-enter) both;
+}
+
+@keyframes slideInLeft {
+    from {
+        opacity: 0;
+        transform: translateX(-12px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
     }
 }
 
@@ -545,12 +805,12 @@ a:hover {
     width: auto;
     height: auto;
     border-radius: 10px;
-    border: 1px solid #4a4a43;
+    border: 1px solid var(--table-border);
     object-fit: contain;
-    background: rgba(26, 26, 22, 0.5);
+    background: var(--surface-muted);
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.26);
     cursor: pointer;
-    transition: transform 0.15s ease, filter 0.15s ease;
+    transition: transform var(--motion-fast) var(--ease-standard), filter var(--motion-fast) var(--ease-standard);
 }
 
 .message-attachment-image {
@@ -571,8 +831,8 @@ a:hover {
 
 .message-attachment-file {
     border-radius: 10px;
-    border: 1px solid #4a4a43;
-    background: rgba(26, 26, 22, 0.65);
+    border: 1px solid var(--table-border);
+    background: var(--surface-muted-strong);
     padding: 6px 9px;
     font-size: 12px;
 }
@@ -585,19 +845,33 @@ a:hover {
     min-width: 0;
 }
 
-.sparkle-small {
-    width: 20px;
-    height: 20px;
-    color: var(--accent);
-    margin: 0 0 8px;
-    display: block;
-}
-
 .assistant-message {
     color: var(--text);
-    line-height: 1.5;
+    line-height: 1.65;
     word-break: break-word;
-    font-size: 1rem;
+    font-size: 15px;
+}
+
+.streaming-cursor {
+    display: inline-block;
+    width: 2px;
+    height: 1.1em;
+    background: var(--accent);
+    animation: cursorBlink calc(var(--motion-loop) / 2) step-end infinite;
+    vertical-align: text-bottom;
+    margin-left: 2px;
+    border-radius: 1px;
+    opacity: 0;
+    transition: opacity var(--motion-fast) var(--ease-enter);
+}
+
+.streaming-cursor.is-visible {
+    opacity: 1;
+}
+
+@keyframes cursorBlink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
 }
 
 .user-bubble,
@@ -605,7 +879,7 @@ a:hover {
 .system-pill,
 .composer-input {
     font-family: var(--font-stack);
-    font-variant-emoji: emoji;
+    font-variant-emoji: text;
 }
 
 .user-bubble-text,
@@ -614,16 +888,35 @@ a:hover {
     font-family: var(--font-stack), var(--emoji-font-stack);
 }
 
+.assistant-message,
+.assistant-message p,
+.assistant-message li,
+.assistant-message blockquote,
+.assistant-message td,
+.assistant-message th,
+.user-bubble,
+.system-pill {
+    font-variant-numeric: lining-nums proportional-nums;
+    letter-spacing: normal;
+    word-spacing: normal;
+    font-feature-settings: "kern" 1, "liga" 1, "tnum" 0;
+}
+
 .assistant-actions {
     margin-top: 8px;
     display: inline-flex;
     align-items: center;
     gap: 6px;
     opacity: 0;
+    transform: translateY(4px);
+    transition: opacity var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
+    pointer-events: none;
 }
 
 .message-row.assistant:hover .assistant-actions {
     opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
 }
 
 .assistant-action {
@@ -638,8 +931,8 @@ a:hover {
 }
 
 .assistant-action.active {
-    border-color: rgba(212, 132, 90, 0.9);
-    color: #f0c1a6;
+    border-color: rgba(var(--accent-rgb), 0.9);
+    color: var(--text-accent-soft);
 }
 
 .message-row.system .message-inner {
@@ -647,18 +940,92 @@ a:hover {
     justify-content: center;
 }
 
+.message-row.system {
+    animation: fadeIn var(--motion-slow) var(--ease-enter) both;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
 .system-pill {
     border-radius: 999px;
     border: 1px solid var(--chip-border);
-    background: rgba(58, 58, 52, 0.7);
+    background: var(--surface-muted);
     color: var(--muted);
     font-size: 12px;
     padding: 6px 12px;
 }
 
+.message-row.error .message-inner {
+    display: flex;
+    justify-content: center;
+}
+
+.error-card {
+    width: min(100%, 768px);
+    border-radius: 12px;
+    border: 1px solid rgba(220, 80, 60, 0.45);
+    border-left: 3px solid rgba(220, 80, 60, 0.9);
+    background: linear-gradient(180deg, rgba(78, 42, 38, 0.78), rgba(47, 36, 34, 0.92));
+    padding: 12px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: start;
+    gap: 10px;
+}
+
+.error-card-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #ffb0a5;
+    background: rgba(220, 80, 60, 0.2);
+    font-size: 13px;
+}
+
+.error-card-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #ffd7cf;
+    margin-bottom: 4px;
+}
+
+.error-card-text {
+    font-size: 12px;
+    color: #f2c0b7;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.error-card-action {
+    border: 1px solid rgba(220, 80, 60, 0.65);
+    border-radius: 999px;
+    background: rgba(220, 80, 60, 0.12);
+    color: #ffd9d3;
+    padding: 5px 11px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background-color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
+}
+
+.error-card-action:hover {
+    border-color: rgba(220, 80, 60, 0.85);
+    background: rgba(220, 80, 60, 0.22);
+}
+
 .message-row.tool .message-inner {
     display: flex;
     justify-content: flex-start;
+}
+
+.message-row.tool {
+    animation: slideInLeft var(--motion-normal) var(--ease-enter) both;
 }
 
 .message-row.tool-summary .message-inner {
@@ -670,11 +1037,16 @@ a:hover {
     width: 100%;
     max-width: 768px;
     border-radius: 10px;
-    transition: box-shadow 0.2s ease;
+    border: 1px solid transparent;
+    transition: border-color var(--motion-normal) var(--ease-standard), box-shadow var(--motion-normal) var(--ease-standard);
+}
+
+.tool-card:hover {
+    border-color: var(--surface-overlay-border);
 }
 
 .tool-card.tool-card-highlight {
-    box-shadow: 0 0 0 1px rgba(217, 119, 87, 0.72), 0 0 18px rgba(217, 119, 87, 0.2);
+    box-shadow: 0 0 0 1px var(--accent-rgba-072), 0 0 18px rgba(var(--accent-rgb), 0.2);
 }
 
 .tool-header {
@@ -685,7 +1057,7 @@ a:hover {
     font-size: 12px;
     cursor: pointer;
     padding: 3px 0;
-    transition: color 0.15s ease;
+    transition: color var(--motion-fast) var(--ease-standard);
 }
 
 .tool-header:hover {
@@ -706,7 +1078,7 @@ a:hover {
 .tool-caret {
     font-size: 9px;
     opacity: 0.5;
-    transition: transform 0.2s ease;
+    transition: transform var(--motion-normal) var(--ease-standard);
 }
 
 .tool-caret.open {
@@ -727,7 +1099,7 @@ a:hover {
 
 .tool-detail.open {
     display: block;
-    animation: toolReveal 200ms ease-out;
+    animation: toolReveal var(--motion-normal) var(--ease-enter);
 }
 
 @keyframes toolReveal {
@@ -876,13 +1248,13 @@ a:hover {
     max-width: 768px;
     border-radius: 10px;
     border: 1px solid var(--chip-border);
-    background: linear-gradient(180deg, rgba(41, 41, 36, 0.98), rgba(30, 30, 25, 0.95));
+    background: linear-gradient(180deg, var(--surface-card-soft), var(--code-bg));
     padding: 10px;
 }
 
 .tool-summary-title {
     font-size: 12px;
-    color: #d2cec0;
+    color: var(--text);
     margin-bottom: 8px;
     font-weight: 600;
 }
@@ -895,9 +1267,9 @@ a:hover {
 
 .diff-summary-file {
     width: 100%;
-    border: 1px solid #4a4a43;
+    border: 1px solid var(--table-border);
     border-radius: 8px;
-    background: rgba(24, 24, 20, 0.7);
+    background: var(--surface-muted);
     color: var(--text);
     padding: 6px 8px;
     cursor: pointer;
@@ -906,12 +1278,14 @@ a:hover {
     justify-content: space-between;
     gap: 8px;
     font-size: 11px;
-    transition: all 0.15s ease;
+    transition:
+        border-color var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard);
 }
 
 .diff-summary-file:hover {
-    border-color: rgba(217, 119, 87, 0.72);
-    background: rgba(217, 119, 87, 0.11);
+    border-color: var(--accent-rgba-072);
+    background: rgba(var(--accent-rgb), 0.11);
 }
 
 .diff-summary-filepath {
@@ -926,12 +1300,12 @@ a:hover {
 .diff-summary-total {
     margin-top: 9px;
     padding-top: 8px;
-    border-top: 1px solid #4a4a43;
+    border-top: 1px solid var(--table-border);
     display: flex;
     align-items: center;
     justify-content: space-between;
     font-size: 11px;
-    color: #b7b29a;
+    color: var(--text-soft);
 }
 
 .file-status-new {
@@ -997,8 +1371,8 @@ a:hover {
 }
 
 .git-card {
-    border: 1px solid rgba(217, 119, 87, 0.55);
-    border-left: 3px solid #d97757;
+    border: 1px solid rgba(var(--accent-rgb), 0.55);
+    border-left: 3px solid var(--accent);
     background: linear-gradient(180deg, rgba(53, 43, 36, 0.74), rgba(30, 28, 23, 0.95));
 }
 
@@ -1047,7 +1421,7 @@ a:hover {
     color: #9db6ff;
     text-decoration: underline;
     text-decoration-color: rgba(157, 182, 255, 0.4);
-    transition: color 0.15s ease, text-decoration-color 0.15s ease;
+    transition: color var(--motion-fast) var(--ease-standard), text-decoration-color var(--motion-fast) var(--ease-standard);
 }
 
 .cipr-link:hover {
@@ -1121,7 +1495,7 @@ a:hover {
     padding: 6px 10px;
     font-size: 12px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background-color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
 }
 
 .ci-fix-btn:hover {
@@ -1134,9 +1508,9 @@ a:hover {
 
 .artifact-indicator {
     margin-top: 8px;
-    border: 1px solid rgba(212, 132, 90, 0.5);
+    border: 1px solid rgba(var(--accent-rgb), 0.5);
     background: var(--accent-soft);
-    color: #f0c1a6;
+    color: var(--text-accent-soft);
     border-radius: 999px;
     padding: 5px 10px;
     font-size: 11px;
@@ -1144,12 +1518,14 @@ a:hover {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    transition: all 0.15s ease;
+    transition:
+        border-color var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard);
 }
 
 .artifact-indicator:hover {
-    border-color: rgba(212, 132, 90, 0.8);
-    background: rgba(212, 132, 90, 0.24);
+    border-color: rgba(var(--accent-rgb), 0.8);
+    background: rgba(var(--accent-rgb), 0.24);
 }
 
 .artifact-indicator-icon {
@@ -1163,12 +1539,12 @@ a:hover {
     right: 0;
     bottom: 0;
     width: min(var(--artifacts-panel-width), 94vw);
-    border-left: 1px solid #3f3f38;
+    border-left: 1px solid var(--input-border);
     background:
-        radial-gradient(circle at 12% 8%, rgba(217, 119, 87, 0.08), transparent 38%),
+        radial-gradient(circle at 12% 8%, rgba(var(--accent-rgb), 0.08), transparent 38%),
         var(--artifacts-panel-bg);
     transform: translateX(100%);
-    transition: transform 250ms ease;
+    transition: transform var(--motion-normal) var(--ease-standard);
     z-index: 50;
     pointer-events: none;
     display: flex;
@@ -1179,7 +1555,7 @@ a:hover {
     flex: none;
     min-height: 44px;
     padding: 10px 12px;
-    border-bottom: 1px solid #3f3f38;
+    border-bottom: 1px solid var(--input-border);
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -1206,13 +1582,16 @@ a:hover {
     font-size: 16px;
     line-height: 1;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition:
+        border-color var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard),
+        color var(--motion-fast) var(--ease-standard);
 }
 
 .artifacts-close-btn:hover {
     color: var(--text);
-    border-color: rgba(212, 132, 90, 0.72);
-    background: rgba(212, 132, 90, 0.1);
+    border-color: var(--accent-rgba-072);
+    background: rgba(var(--accent-rgb), 0.1);
 }
 
 .artifacts-panel-body {
@@ -1225,7 +1604,7 @@ a:hover {
 .artifacts-list {
     min-height: 0;
     overflow-y: auto;
-    border-bottom: 1px solid #3f3f38;
+    border-bottom: 1px solid var(--input-border);
     padding: 8px;
 }
 
@@ -1245,7 +1624,10 @@ a:hover {
     text-align: left;
     cursor: pointer;
     padding: 8px 9px;
-    transition: all 0.15s ease;
+    transition:
+        border-color var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard),
+        box-shadow var(--motion-fast) var(--ease-standard);
 }
 
 .artifact-row + .artifact-row {
@@ -1253,13 +1635,13 @@ a:hover {
 }
 
 .artifact-row:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--surface-overlay-soft);
 }
 
 .artifact-row.selected {
-    border-color: rgba(212, 132, 90, 0.72);
-    box-shadow: inset 2px 0 0 rgba(212, 132, 90, 0.9);
-    background: rgba(212, 132, 90, 0.09);
+    border-color: var(--accent-rgba-072);
+    box-shadow: inset 2px 0 0 rgba(var(--accent-rgb), 0.9);
+    background: rgba(var(--accent-rgb), 0.09);
 }
 
 .artifact-row-head {
@@ -1288,8 +1670,8 @@ a:hover {
 }
 
 .artifact-row-badge {
-    border: 1px solid #4c4c45;
-    background: rgba(58, 58, 52, 0.66);
+    border: 1px solid var(--input-border);
+    background: var(--surface-chip);
     border-radius: 999px;
     padding: 1px 7px;
     font-size: 10px;
@@ -1343,12 +1725,12 @@ a:hover {
 }
 
 .artifact-tag {
-    border: 1px solid #4c4c45;
-    background: rgba(58, 58, 52, 0.66);
+    border: 1px solid var(--input-border);
+    background: var(--surface-chip);
     border-radius: 999px;
     padding: 2px 8px;
     font-size: 10px;
-    color: #bcb7a4;
+    color: var(--text-soft);
     text-transform: uppercase;
     letter-spacing: 0.35px;
 }
@@ -1395,19 +1777,21 @@ a:hover {
     padding: 0 10px;
     font-size: 11px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition:
+        border-color var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard);
 }
 
 .artifact-action-btn:hover {
-    border-color: rgba(212, 132, 90, 0.72);
-    background: rgba(212, 132, 90, 0.1);
+    border-color: var(--accent-rgba-072);
+    background: rgba(var(--accent-rgb), 0.1);
 }
 
 .artifact-detail-code {
     min-height: 0;
     flex: 1;
     border-radius: 10px;
-    border: 1px solid #43433c;
+    border: 1px solid var(--input-border);
     background: var(--code-bg);
     overflow: auto;
 }
@@ -1434,12 +1818,12 @@ a:hover {
     width: 100%;
     max-width: 768px;
     border-radius: 12px;
-    border: 1px solid rgba(217, 131, 64, 0.75);
+    border: 1px solid var(--permission-border);
     background:
-        linear-gradient(135deg, rgba(72, 56, 36, 0.66), rgba(47, 47, 42, 0.96)),
-        #2f2f2a;
+        linear-gradient(135deg, var(--permission-gradient-start), var(--permission-gradient-end)),
+        var(--bg);
     box-shadow:
-        0 0 0 1px rgba(217, 131, 64, 0.16),
+        0 0 0 1px var(--permission-shadow-soft),
         0 10px 28px rgba(0, 0, 0, 0.24);
     padding: 12px;
 }
@@ -1456,18 +1840,18 @@ a:hover {
 @keyframes permissionPulse {
     0% {
         box-shadow:
-            0 0 0 1px rgba(217, 131, 64, 0.16),
+            0 0 0 1px var(--permission-shadow-soft),
             0 10px 28px rgba(0, 0, 0, 0.24);
     }
     50% {
         box-shadow:
-            0 0 0 1px rgba(217, 131, 64, 0.34),
+            0 0 0 1px var(--permission-shadow-strong),
             0 10px 30px rgba(0, 0, 0, 0.24),
-            0 0 18px rgba(217, 131, 64, 0.2);
+            0 0 18px var(--permission-glow);
     }
     100% {
         box-shadow:
-            0 0 0 1px rgba(217, 131, 64, 0.16),
+            0 0 0 1px var(--permission-shadow-soft),
             0 10px 28px rgba(0, 0, 0, 0.24);
     }
 }
@@ -1486,8 +1870,8 @@ a:hover {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: rgba(217, 131, 64, 0.18);
-    color: #f8c16d;
+    background: rgba(var(--accent-rgb), 0.18);
+    color: var(--text-accent-soft);
     font-size: 13px;
 }
 
@@ -1498,14 +1882,14 @@ a:hover {
 }
 
 .permission-request-tool {
-    color: #f7d9b0;
+    color: var(--text-accent-soft);
     font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.2px;
 }
 
 .permission-request-subtitle {
-    color: #c8b9a0;
+    color: var(--text-soft);
     font-size: 11px;
 }
 
@@ -1529,7 +1913,7 @@ a:hover {
 }
 
 .permission-meta-label {
-    color: #c3a882;
+    color: var(--text-soft);
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.35px;
@@ -1537,7 +1921,7 @@ a:hover {
 }
 
 .permission-meta-value {
-    color: #e4ddd0;
+    color: var(--text);
     font-size: 12px;
     font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
     word-break: break-word;
@@ -1545,8 +1929,8 @@ a:hover {
 
 .permission-preview {
     border-radius: 8px;
-    border: 1px solid rgba(217, 131, 64, 0.28);
-    background: rgba(20, 20, 16, 0.5);
+    border: 1px solid var(--permission-shadow-soft);
+    background: var(--surface-muted);
     overflow: hidden;
     font-size: 11px;
     margin-bottom: 10px;
@@ -1555,7 +1939,7 @@ a:hover {
 .permission-preview .tool-diff-old,
 .permission-preview .tool-diff-new,
 .permission-preview .tool-code {
-    border-bottom: 1px solid rgba(217, 131, 64, 0.16);
+    border-bottom: 1px solid var(--permission-shadow-soft);
 }
 
 .permission-preview .tool-code:last-child,
@@ -1571,18 +1955,20 @@ a:hover {
 }
 
 .permission-action-btn {
-    border: 1px solid rgba(110, 110, 100, 0.85);
+    border: 1px solid var(--surface-overlay-border);
     border-radius: 8px;
-    background: rgba(56, 56, 50, 0.9);
-    color: #ddd6c9;
+    background: var(--surface-card-soft);
+    color: var(--text);
     padding: 6px 12px;
     font-size: 12px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition:
+        border-color var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard);
 }
 
 .permission-action-btn:hover {
-    border-color: rgba(217, 131, 64, 0.72);
+    border-color: var(--accent-rgba-072);
 }
 
 .permission-action-btn.allow {
@@ -1616,9 +2002,9 @@ a:hover {
 .permission-comment-input {
     flex: 1 1 auto;
     min-width: 140px;
-    border: 1px solid rgba(110, 110, 100, 0.85);
+    border: 1px solid var(--surface-overlay-border);
     border-radius: 8px;
-    background: rgba(30, 30, 25, 0.7);
+    background: var(--surface-muted);
     color: var(--text);
     font-size: 12px;
     padding: 6px 8px;
@@ -1626,13 +2012,13 @@ a:hover {
 
 .permission-comment-input:focus {
     outline: none;
-    border-color: rgba(217, 131, 64, 0.78);
-    box-shadow: 0 0 0 1px rgba(217, 131, 64, 0.34);
+    border-color: var(--accent-rgba-072);
+    box-shadow: 0 0 0 1px var(--accent-rgba-055);
 }
 
 .permission-response-status {
     margin-top: 9px;
-    color: #d6c6ad;
+    color: var(--text-soft);
     font-size: 11px;
 }
 
@@ -1640,6 +2026,30 @@ a:hover {
 .permission-request-card.resolved .permission-comment-input {
     cursor: default;
     opacity: 0.62;
+}
+
+.permission-request-card.permission-denied {
+    border-color: rgba(197, 92, 88, 0.55);
+    background: linear-gradient(135deg, rgba(110, 40, 38, 0.18), rgba(45, 35, 30, 0.92));
+}
+
+.permission-request-card.permission-denied.pending {
+    animation: permissionDeniedPulse 2200ms ease-in-out infinite;
+}
+
+@keyframes permissionDeniedPulse {
+    0%, 100% { box-shadow: 0 1px 10px rgba(197, 70, 60, 0.25); }
+    50% { box-shadow: 0 2px 22px rgba(220, 80, 70, 0.42); }
+}
+
+.permission-action-btn.always-allow {
+    border-color: rgba(155, 140, 100, 0.72);
+    background: rgba(90, 75, 35, 0.4);
+    color: #e4d8a8;
+}
+
+.permission-action-btn.always-allow:hover {
+    background: rgba(120, 100, 45, 0.5);
 }
 
 
@@ -1681,8 +2091,8 @@ a:hover {
 }
 
 .markdown-body a {
-    color: #D97757;
-    transition: all 0.15s ease;
+    color: var(--accent);
+    transition: color var(--motion-fast) var(--ease-standard), text-decoration-color var(--motion-fast) var(--ease-standard);
 }
 
 .markdown-body a:hover {
@@ -1692,8 +2102,8 @@ a:hover {
 .markdown-body blockquote {
     margin: 0 0 0.8em;
     padding: 0.45em 0.9em;
-    border-left: 3px solid #D97757;
-    background: rgba(26, 26, 22, 0.7);
+    border-left: 3px solid var(--accent);
+    background: var(--surface-muted);
     border-radius: 8px;
     font-style: italic;
 }
@@ -1701,7 +2111,7 @@ a:hover {
 .markdown-body code.inline-code {
     border-radius: 4px;
     border: none;
-    background: #3a3a34;
+    background: var(--inline-code-bg);
     padding: 2px 6px;
     font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
     font-size: 0.92em;
@@ -1711,46 +2121,82 @@ a:hover {
     width: 100%;
     border-collapse: collapse;
     margin: 0 0 0.8em;
-    border: 1px solid #4a4a43;
+    border: 1px solid var(--table-border);
     border-radius: 8px;
     overflow: hidden;
 }
 
 .markdown-body th,
 .markdown-body td {
-    border: 1px solid #4a4a43;
+    border: 1px solid var(--table-border);
     padding: 6px 8px;
     text-align: left;
 }
 
 .markdown-body th {
-    background: rgba(58, 58, 52, 0.8);
+    background: var(--surface-muted-strong);
 }
 
 .markdown-body hr {
     border: none;
-    border-top: 1px solid #4a4a43;
+    border-top: 1px solid var(--table-border);
     margin: 0.9em 0;
 }
 
+.assistant-message h1 { font-size: 1.35em; font-weight: 700; margin: 1.2em 0 0.5em; }
+.assistant-message h2 { font-size: 1.2em; font-weight: 600; margin: 1em 0 0.4em; }
+.assistant-message h3 { font-size: 1.05em; font-weight: 600; margin: 0.8em 0 0.3em; }
+.assistant-message p { margin: 0 0 0.7em; }
+.assistant-message ul, .assistant-message ol { padding-left: 1.5em; margin: 0 0 0.7em; }
+.assistant-message li { margin: 0.2em 0; }
+.assistant-message blockquote {
+    border-left: 3px solid var(--accent);
+    padding-left: 1em;
+    margin: 0 0 0.7em;
+    color: var(--text-soft);
+    background: none;
+    border-radius: 0;
+    font-style: normal;
+}
+.assistant-message table { border-collapse: collapse; width: 100%; margin: 0.7em 0; font-size: 14px; }
+.assistant-message th, .assistant-message td {
+    border: 1px solid var(--surface-overlay-border);
+    padding: 6px 12px;
+    text-align: left;
+}
+.assistant-message th { background: var(--surface-overlay); font-weight: 600; }
+.assistant-message hr { border: none; border-top: 1px solid var(--surface-overlay-border); margin: 1em 0; }
+.assistant-message code:not(pre code) {
+    background: var(--surface-overlay);
+    color: var(--inline-code-color);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.88em;
+}
+
 .code-block {
-    margin: 0 0 0.85em;
-    border-radius: 12px;
+    background: var(--code-block-bg);
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
     overflow: hidden;
-    border: 1px solid #4a4a43;
-    background: var(--code-bg);
+    margin: 0.75rem 0;
 }
 
 .code-head {
-    height: 34px;
-    padding: 0 10px;
-    border-bottom: 1px solid #4a4a43;
-    background: #21211c;
     display: flex;
-    align-items: center;
     justify-content: space-between;
-    color: #aea892;
+    align-items: center;
+    padding: 8px 14px;
+    background: var(--surface-overlay-soft);
+    border-bottom: 1px solid var(--surface-overlay);
     font-size: 12px;
+}
+
+.code-head span {
+    color: var(--code-head-muted);
+    text-transform: lowercase;
+    font-size: 11px;
+    font-weight: 500;
 }
 
 .action-btn {
@@ -1760,13 +2206,32 @@ a:hover {
     cursor: pointer;
 }
 
+.code-copy-btn,
+.action-btn.copy-action {
+    transition:
+        background-color var(--motion-fast) var(--ease-standard),
+        color var(--motion-fast) var(--ease-standard),
+        transform var(--motion-fast) var(--ease-standard);
+}
+
+.code-copy-btn:active,
+.action-btn.copy-action:active {
+    transform: scale(0.92);
+}
+
+.code-copy-btn.copied,
+.action-btn.copy-action.copied {
+    color: #22c55e !important;
+    background: rgba(34, 197, 94, 0.1) !important;
+}
+
 .code-block pre {
     margin: 0;
-    padding: 12px;
+    padding: 14px 16px;
     overflow-x: auto;
     font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
     font-size: 13px;
-    line-height: 1.45;
+    line-height: 1.6;
 }
 
 .code-block pre code.hljs {
@@ -1784,7 +2249,7 @@ a:hover {
 .hljs-type { color: #e6c07b; }
 .hljs-attr { color: #d19a66; }
 .hljs-meta { color: #61afef; }
-.hljs-tag { color: #e06c75; }
+.hljs-tag { color: var(--inline-code-color); }
 
 #imageLightbox {
     position: fixed;
@@ -1827,7 +2292,7 @@ a:hover {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.15s ease;
+    transition: background-color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
 }
 
 #lightboxCloseBtn:hover {
@@ -1841,28 +2306,36 @@ a:hover {
     gap: 8px;
 }
 
-.typing-shell .sparkle-small {
-    margin: 0;
+.thinking-indicator {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 12px 16px;
+    width: fit-content;
+    animation: messageEnter var(--motion-normal) var(--ease-enter) both;
 }
 
-.sparkle-pulse {
-    animation: sparkle-pulse 1.3s ease-in-out infinite;
-    filter: drop-shadow(0 0 10px rgba(217, 119, 87, 0.6));
+.thinking-indicator span {
+    display: block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #94a3b8;
+    animation: dotBounce var(--motion-loop) ease-in-out infinite;
 }
 
-@keyframes sparkle-pulse {
-    0%, 100% {
-        transform: scale(1) rotate(0deg);
-        filter: drop-shadow(0 0 8px rgba(217, 119, 87, 0.55));
-    }
-    33% {
-        transform: scale(1.18) rotate(12deg);
-        filter: drop-shadow(0 0 20px rgba(240, 193, 166, 0.85));
-    }
-    66% {
-        transform: scale(1.05) rotate(-6deg);
-        filter: drop-shadow(0 0 14px rgba(217, 150, 110, 0.7));
-    }
+.thinking-indicator span:nth-child(2) { animation-delay: calc(var(--motion-loop) / 6); }
+.thinking-indicator span:nth-child(3) { animation-delay: calc(var(--motion-loop) / 3); }
+
+@keyframes dotBounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+    30% { transform: translateY(-6px); opacity: 1; }
+}
+
+.thinking-indicator.fade-out {
+    opacity: 0;
+    transform: translateY(-4px);
+    transition: opacity var(--motion-fast) var(--ease-exit), transform var(--motion-fast) var(--ease-exit);
 }
 
 #chatComposer {
@@ -1878,22 +2351,48 @@ a:hover {
     margin: 0 auto;
 }
 
-.stop-process-btn {
-    display: block;
+.stop-process-slot {
+    min-height: 38px;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
     margin: 0 auto 10px;
+}
+
+.stop-process-btn {
     border: 1px solid rgba(220, 80, 60, 0.4);
     background: rgba(220, 80, 60, 0.12);
     color: #e07a6a;
     border-radius: 999px;
     padding: 5px 18px;
     font-size: 13px;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition:
+        opacity var(--motion-fast) var(--ease-standard),
+        visibility var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard),
+        border-color var(--motion-fast) var(--ease-standard);
+}
+
+.stop-process-btn.is-visible {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
 }
 
 .stop-process-btn:hover {
     background: rgba(220, 80, 60, 0.22);
     border-color: rgba(220, 80, 60, 0.65);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+    }
 }
 
 @media (min-width: 1100px) {
@@ -1957,27 +2456,29 @@ a:hover {
 <div id="app">
     <section id="welcomeView">
         <div class="welcome-shell">
-            <div class="welcome-icon" aria-hidden="true">
+            <div id="welcomeIcon" class="welcome-icon" aria-hidden="true">
                 <svg width="42" height="42" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <g transform="translate(50,50)">
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(0)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(30)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(60)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(90)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(120)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(150)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(180)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(210)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(240)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(270)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(300)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(330)"/></g>
+                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(0)"/></g>
+                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(30)"/></g>
+                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(60)"/></g>
+                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(90)"/></g>
+                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(120)"/></g>
+                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(150)"/></g>
+                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(180)"/></g>
+                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(210)"/></g>
+                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(240)"/></g>
+                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(270)"/></g>
+                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(300)"/></g>
+                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(330)"/></g>
                     </g>
                 </svg>
             </div>
-            <h1 class="welcome-title">Back at it, steve</h1>
+            <h1 id="welcomeTitle" class="welcome-title">Back at it</h1>
+            <div id="welcomeProviderBadge" class="welcome-provider-badge">✺ Claude</div>
 
-            <div class="composer-card">
+            <div class="composer-card" style="position:relative;">
+                <div id="welcomeSlashDropdown" class="slash-dropdown" role="listbox" aria-label="Skills"></div>
                 <div id="welcomeAttachments" class="attachment-strip"></div>
                 <textarea id="welcomeInput" class="composer-input" rows="1" placeholder="Type / for skills"></textarea>
                 <div class="control-row">
@@ -2031,6 +2532,7 @@ a:hover {
             <button id="artifactsToggleBtn" type="button" title="Open artifacts panel">📦 Artifacts</button>
         </div>
         <div id="messages"></div>
+        <button id="scroll-to-bottom-btn" type="button" aria-label="Scroll to bottom">↓</button>
         <aside id="artifactsPanel" aria-hidden="true">
             <div class="artifacts-panel-header">
                 <h2 class="artifacts-panel-title">Artifacts</h2>
@@ -2070,8 +2572,11 @@ a:hover {
         </aside>
 
         <div id="chatComposer">
-            <button id="stopBtn" class="stop-process-btn" type="button" style="display:none;">Stop generating</button>
-            <div class="composer-card">
+            <div class="stop-process-slot">
+                <button id="stopBtn" class="stop-process-btn" type="button">Stop generating</button>
+            </div>
+            <div class="composer-card" style="position:relative;">
+                <div id="chatSlashDropdown" class="slash-dropdown" role="listbox" aria-label="Skills"></div>
                 <div id="chatAttachments" class="attachment-strip"></div>
                 <textarea id="chatInput" class="composer-input" rows="1" placeholder="Reply..."></textarea>
                 <div class="control-row">
@@ -2118,7 +2623,7 @@ a:hover {
 
 <script>
 (function () {
-    const MODEL_OPTIONS = [
+    let MODEL_OPTIONS = [
         {
             value: "sonnet",
             short: "Sonnet 4.6",
@@ -2157,16 +2662,16 @@ a:hover {
         },
     ];
 
-    const PERMISSION_OPTIONS = [
+    let PERMISSION_OPTIONS = [
         {
             value: "auto",
             title: "Auto",
-            description: "Claude asks only when approval is needed.",
+            description: "Asks only when approval is needed.",
         },
         {
             value: "plan",
             title: "Plan mode",
-            description: "Claude proposes plans before applying changes.",
+            description: "Proposes plans before applying changes.",
         },
         {
             value: "bypassPermissions",
@@ -2175,12 +2680,37 @@ a:hover {
         },
     ];
 
+    const DEFAULT_SLASH_COMMANDS = [
+        { name: "/help", icon: "?", description: "Show available commands and usage tips", providers: ["claude", "codex"] },
+        { name: "/clear", icon: "\u2716", description: "Clear the current conversation", providers: ["claude", "codex"] },
+        { name: "/compact", icon: "\u25A3", description: "Compact conversation to save context", providers: ["claude"] },
+        { name: "/cost", icon: "$", description: "Show token usage and cost for this session", providers: ["claude"] },
+        { name: "/doctor", icon: "\u2695", description: "Check CLI installation health", providers: ["claude"] },
+        { name: "/init", icon: "\u2699", description: "Initialize project with CLAUDE.md", providers: ["claude"] },
+        { name: "/login", icon: "\u2192", description: "Switch Anthropic accounts", providers: ["claude"] },
+        { name: "/logout", icon: "\u2190", description: "Sign out from your Anthropic account", providers: ["claude"] },
+        { name: "/memory", icon: "\u2601", description: "Edit CLAUDE.md memory files", providers: ["claude"] },
+        { name: "/model", icon: "\u269B", description: "Switch the AI model", providers: ["claude", "codex"] },
+        { name: "/permissions", icon: "\u26A0", description: "View or update tool permissions", providers: ["claude"] },
+        { name: "/pr-review", icon: "\u2714", description: "Review a GitHub pull request", providers: ["claude"] },
+        { name: "/review", icon: "\u2606", description: "Review code changes", providers: ["claude"] },
+        { name: "/status", icon: "\u2139", description: "Show session and git status", providers: ["claude"] },
+        { name: "/terminal-setup", icon: "\u2328", description: "Install Shift+Enter key binding", providers: ["claude"] },
+        { name: "/vim", icon: "V", description: "Toggle vim mode for input", providers: ["claude"] },
+    ];
+    var HOST_SLASH_COMMANDS = [];
+
     const appEl = document.getElementById("app");
     const welcomeViewEl = document.getElementById("welcomeView");
+    const welcomeTitleEl = document.getElementById("welcomeTitle");
+    const welcomeProviderBadgeEl = document.getElementById("welcomeProviderBadge");
     const chatViewEl = document.getElementById("chatView");
     const messagesEl = document.getElementById("messages");
+    const scrollToBottomBtnEl = document.getElementById("scroll-to-bottom-btn");
     const welcomeInputEl = document.getElementById("welcomeInput");
     const chatInputEl = document.getElementById("chatInput");
+    const welcomeSlashDropdownEl = document.getElementById("welcomeSlashDropdown");
+    const chatSlashDropdownEl = document.getElementById("chatSlashDropdown");
     const dropOverlayEl = document.getElementById("dropOverlay");
     const welcomeAttachmentsEl = document.getElementById("welcomeAttachments");
     const chatAttachmentsEl = document.getElementById("chatAttachments");
@@ -2219,16 +2749,36 @@ a:hover {
     const DIFF_HARD_LINE_LIMIT = 1800;
     const DIFF_RENDER_LINE_LIMIT = 1000;
     const DIFF_AUTO_EXPAND_MAX_LINES = 180;
+    const MOTION_FAST_MS = 120;
+    const STREAM_RENDER_THROTTLE_MS = 80;
+    const ASSISTANT_PHASE = Object.freeze({
+        IDLE: "idle",
+        SENDING: "sending",
+        WAITING_FIRST_TOKEN: "waiting_first_token",
+        STREAMING: "streaming",
+        DONE: "done",
+        ERROR: "error",
+    });
 
     let hasMessages = false;
     let typingRow = null;
+    let thinkingIndicatorRow = null;
     let currentAssistantRow = null;
     let currentAssistantBody = null;
     let currentAssistantRaw = "";
+    let assistantHasFirstChunk = false;
+    let assistantPhase = ASSISTANT_PHASE.IDLE;
     let renderQueued = false;
+    let renderTimerId = null;
+    let lastAssistantRenderAt = 0;
+    let userScrolledUp = false;
     let selectedModel = "opus";
     let selectedReasoning = "medium";
     let selectedPermission = "auto";
+    let reasoningVisible = true;
+    let activeProviderId = "claude";
+    let activeProviderName = "Claude";
+    let activeProviderIcon = "✺";
     let activePopup = null;
     let lastUserPayload = null;
     let currentFolderDisplay = "~";
@@ -2245,11 +2795,16 @@ a:hover {
     let selectedArtifactVersion = 0;
     let artifactSnippetCounter = 0;
     const seenPermissionRequests = Object.create(null);
+    const seenToolUseIds = Object.create(null);
     const prCardByKey = Object.create(null);
     const prCardByUrl = Object.create(null);
     const ciCardByKey = Object.create(null);
     const artifacts = [];
     const artifactByKey = Object.create(null);
+    let slashDropdownOpen = false;
+    let slashSelectedIndex = 0;
+    let slashFilteredItems = [];
+    let activeSlashInput = null;
     const LANGUAGE_EXTENSION_MAP = Object.freeze({
         bash: ".sh",
         c: ".c",
@@ -2323,28 +2878,6 @@ a:hover {
         yaml: "yaml",
         yml: "yaml",
     });
-
-    function sparkleSvg(size, className) {
-        const svgClass = className || "";
-        return [
-            '<svg class="' + svgClass + '" width="' + size + '" height="' + size + '" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">',
-            '  <g transform="translate(50,50)">',
-            '    <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(0)"/></g>',
-            '    <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(30)"/></g>',
-            '    <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(60)"/></g>',
-            '    <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(90)"/></g>',
-            '    <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(120)"/></g>',
-            '    <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(150)"/></g>',
-            '    <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(180)"/></g>',
-            '    <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(210)"/></g>',
-            '    <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(240)"/></g>',
-            '    <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(270)"/></g>',
-            '    <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(300)"/></g>',
-            '    <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="#D97757" transform="rotate(330)"/></g>',
-            "  </g>",
-            "</svg>",
-        ].join("");
-    }
 
     function updateFolderDisplay(pathValue) {
         const nextValue = String(pathValue || "").trim() || "~";
@@ -4037,7 +4570,7 @@ a:hover {
                 '<div class="code-block" data-code-index="' + index + '" data-code-title="' + titleEncoded + '" data-code-lang="' + langEncoded + '" data-code-filename="' + fileEncoded + '">',
                 '  <div class="code-head">',
                 "    <span>" + label + "</span>",
-                '    <button class="action-btn code-copy-btn" data-raw="' + rawEncoded + '">Copy</button>',
+                '    <button class="action-btn code-copy-btn copy-action" data-raw="' + rawEncoded + '">Copy</button>',
                 "  </div>",
                 '  <pre><code class="' + codeClass + '">' + highlighted + '</code></pre>',
                 "</div>",
@@ -4059,12 +4592,80 @@ a:hover {
         }
     }
 
+    function parseHostPayload(rawValue) {
+        if (typeof rawValue === "string") {
+            try {
+                return JSON.parse(rawValue);
+            } catch (_error) {
+                return null;
+            }
+        }
+        return rawValue;
+    }
+
+    function toModelOptions(rawValue) {
+        const payload = parseHostPayload(rawValue);
+        if (!Array.isArray(payload)) {
+            return [];
+        }
+        return payload.map(function (entry, index) {
+            if (Array.isArray(entry)) {
+                const title = String(entry[0] || "Model " + (index + 1));
+                const value = String(entry[1] || "").trim();
+                return {
+                    value: value,
+                    short: title.split("(")[0].trim() || title,
+                    title: title,
+                    description: "Model option",
+                };
+            }
+            const title = String(entry && entry.title ? entry.title : "Model " + (index + 1));
+            const value = String(entry && entry.value ? entry.value : "").trim();
+            const short = String(entry && entry.short ? entry.short : title.split("(")[0].trim() || title);
+            const description = String(entry && entry.description ? entry.description : "Model option");
+            return {
+                value: value,
+                short: short,
+                title: title,
+                description: description,
+            };
+        }).filter(function (option) {
+            return option.value.length > 0;
+        });
+    }
+
+    function toPermissionOptions(rawValue) {
+        const payload = parseHostPayload(rawValue);
+        if (!Array.isArray(payload)) {
+            return [];
+        }
+        return payload.map(function (entry, index) {
+            if (Array.isArray(entry)) {
+                return {
+                    value: String(entry[1] || "").trim(),
+                    title: String(entry[0] || "Permission " + (index + 1)),
+                    description: "Permission option",
+                };
+            }
+            return {
+                value: String(entry && entry.value ? entry.value : "").trim(),
+                title: String(entry && entry.title ? entry.title : "Permission " + (index + 1)),
+                description: String(entry && entry.description ? entry.description : "Permission option"),
+            };
+        }).filter(function (option) {
+            return option.value.length > 0;
+        });
+    }
+
     function normalizeModelValue(rawValue) {
         const value = String(rawValue || "").trim();
         const valid = MODEL_OPTIONS.some(function (option) {
             return option.value === value;
         });
-        return valid ? value : "sonnet";
+        if (valid) {
+            return value;
+        }
+        return MODEL_OPTIONS.length > 0 ? MODEL_OPTIONS[0].value : "";
     }
 
     function normalizePermissionValue(rawValue) {
@@ -4072,7 +4673,10 @@ a:hover {
         const valid = PERMISSION_OPTIONS.some(function (option) {
             return option.value === value;
         });
-        return valid ? value : "auto";
+        if (valid) {
+            return value;
+        }
+        return PERMISSION_OPTIONS.length > 0 ? PERMISSION_OPTIONS[0].value : "";
     }
 
     function findModelMeta(value) {
@@ -4097,6 +4701,9 @@ a:hover {
     }
 
     function renderSelectorLabels() {
+        if (MODEL_OPTIONS.length === 0) {
+            return;
+        }
         const modelLabel = findModelMeta(selectedModel).short;
         modelButtons.forEach(function (button) {
             const labelEl = button.querySelector(".model-label");
@@ -4105,12 +4712,29 @@ a:hover {
             }
         });
 
+        if (!reasoningVisible) {
+            return;
+        }
         const reasoningLabel = findReasoningMeta(selectedReasoning).title;
         reasoningButtons.forEach(function (button) {
             const labelEl = button.querySelector(".reasoning-label");
             if (labelEl) {
                 labelEl.textContent = reasoningLabel;
             }
+        });
+    }
+
+    function setReasoningVisible(isVisible) {
+        reasoningVisible = !!isVisible;
+        reasoningButtons.forEach(function (button) {
+            const wrapper = button.closest(".selector-group");
+            if (wrapper) {
+                wrapper.style.display = reasoningVisible ? "" : "none";
+            }
+            button.disabled = !reasoningVisible;
+        });
+        reasoningPopups.forEach(function (popup) {
+            closePopup(popup, true);
         });
     }
 
@@ -4215,6 +4839,9 @@ a:hover {
         if (type === "model") {
             renderModelPopup(popup);
         } else if (type === "reasoning") {
+            if (!reasoningVisible) {
+                return;
+            }
             renderReasoningPopup(popup);
         } else {
             renderPermissionPopup(popup);
@@ -4233,6 +4860,7 @@ a:hover {
             welcomeViewEl.style.display = "none";
             chatViewEl.classList.add("active");
             appEl.classList.add("chat-state");
+            window.requestAnimationFrame(updateUserScrolledState);
             setTimeout(function () { chatInputEl.focus(); }, 50);
             return;
         }
@@ -4240,7 +4868,23 @@ a:hover {
         welcomeViewEl.style.display = "flex";
         chatViewEl.classList.remove("active");
         appEl.classList.remove("chat-state");
+        userScrolledUp = false;
+        updateScrollButtonVisibility();
         setTimeout(function () { welcomeInputEl.focus(); }, 50);
+    }
+
+    function setAssistantPhase(nextPhase) {
+        const normalizedPhase = Object.values(ASSISTANT_PHASE).indexOf(nextPhase) >= 0
+            ? nextPhase
+            : ASSISTANT_PHASE.IDLE;
+        assistantPhase = normalizedPhase;
+        if (stopBtnEl) {
+            const showStopButton =
+                assistantPhase === ASSISTANT_PHASE.SENDING
+                || assistantPhase === ASSISTANT_PHASE.WAITING_FIRST_TOKEN
+                || assistantPhase === ASSISTANT_PHASE.STREAMING;
+            stopBtnEl.classList.toggle("is-visible", showStopButton);
+        }
     }
 
     function normalizeAttachment(payload) {
@@ -4405,6 +5049,7 @@ a:hover {
         };
         lastUserPayload = outgoing;
         setChatState(true);
+        setAssistantPhase(ASSISTANT_PHASE.SENDING);
         addUserMessage(outgoing.text, outgoing.attachments);
         postToHost("sendMessage", JSON.stringify(outgoing));
         clearInputs();
@@ -4419,11 +5064,35 @@ a:hover {
         });
     }
 
-    function scrollToBottom(force) {
-        const nearBottom = (messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight) < 150;
-        if (force || nearBottom) {
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+    function distanceFromBottom() {
+        return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+    }
+
+    function updateScrollButtonVisibility() {
+        if (!scrollToBottomBtnEl) {
+            return;
         }
+        scrollToBottomBtnEl.classList.toggle("visible", hasMessages && userScrolledUp);
+    }
+
+    function updateUserScrolledState() {
+        userScrolledUp = distanceFromBottom() > 80;
+        updateScrollButtonVisibility();
+    }
+
+    function scrollToBottom(force, smooth) {
+        const nearBottom = distanceFromBottom() < 150;
+        if (force || nearBottom) {
+            if (smooth && messagesEl.scrollTo) {
+                messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: "smooth" });
+            } else {
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+            if (smooth) {
+                userScrolledUp = false;
+            }
+        }
+        updateScrollButtonVisibility();
     }
 
     function openImageLightbox(src, alt) {
@@ -4457,7 +5126,12 @@ a:hover {
         const inner = document.createElement("div");
         inner.className = "message-inner";
         row.appendChild(inner);
-        messagesEl.appendChild(row);
+
+        if (thinkingIndicatorRow && thinkingIndicatorRow.isConnected && thinkingIndicatorRow.parentNode === messagesEl) {
+            messagesEl.insertBefore(row, thinkingIndicatorRow);
+        } else {
+            messagesEl.appendChild(row);
+        }
 
         return { row: row, inner: inner };
     }
@@ -4818,7 +5492,7 @@ a:hover {
         const fixButton = document.createElement("button");
         fixButton.type = "button";
         fixButton.className = "ci-fix-btn";
-        fixButton.textContent = "Claude can try to fix this";
+        fixButton.textContent = activeProviderName + " can try to fix this";
         fixButton.style.display = "none";
         fixButton.addEventListener("click", function () {
             const inputEl = activeInput();
@@ -4891,6 +5565,75 @@ a:hover {
         scrollToBottom(true);
     }
 
+    function isErrorSystemMessage(raw) {
+        const text = String(raw || "").trim();
+        if (!text) {
+            return false;
+        }
+        if (/\b(no|0)\s+errors?\b/i.test(text)) {
+            return false;
+        }
+        return /\b(error|failed|failure|exception|traceback|denied|unable to|could not)\b/i.test(text);
+    }
+
+    function addErrorMessage(raw) {
+        const text = String(raw || "").trim();
+        if (!text) {
+            return;
+        }
+
+        hideThinkingIndicator(true);
+        if (renderTimerId) {
+            window.clearTimeout(renderTimerId);
+            renderTimerId = null;
+        }
+        setAssistantPhase(ASSISTANT_PHASE.ERROR);
+
+        const rowObj = createMessageRow("error");
+        const card = document.createElement("div");
+        card.className = "error-card";
+
+        const icon = document.createElement("div");
+        icon.className = "error-card-icon";
+        icon.textContent = "⚠";
+        card.appendChild(icon);
+
+        const content = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "error-card-title";
+        title.textContent = /\bdenied\b/i.test(text)
+            ? "Request denied"
+            : "Request failed";
+        content.appendChild(title);
+
+        const message = document.createElement("div");
+        message.className = "error-card-text";
+        message.textContent = textWithEmojiShortcodes(text);
+        content.appendChild(message);
+        card.appendChild(content);
+
+        const action = document.createElement("button");
+        action.type = "button";
+        action.className = "error-card-action";
+        if (lastUserPayload) {
+            action.textContent = "Retry";
+            action.addEventListener("click", function () {
+                sendPayload(lastUserPayload);
+            });
+        } else {
+            action.textContent = "Dismiss";
+            action.addEventListener("click", function () {
+                const row = action.closest(".message-row");
+                if (row) {
+                    row.remove();
+                }
+            });
+        }
+        card.appendChild(action);
+
+        rowObj.inner.appendChild(card);
+    }
+
     function addSystemMessage(text) {
         setChatState(true);
 
@@ -4928,16 +5671,62 @@ a:hover {
             return;
         }
 
+        if (isErrorSystemMessage(raw)) {
+            addErrorMessage(raw);
+            if (!userScrolledUp) {
+                scrollToBottom(true);
+            }
+            return;
+        }
+
         const rowObj = createMessageRow("system");
         const pill = document.createElement("div");
         pill.className = "system-pill";
         pill.textContent = textWithEmojiShortcodes(raw);
 
         rowObj.inner.appendChild(pill);
-        scrollToBottom(true);
+        if (!userScrolledUp) {
+            scrollToBottom(true);
+        }
     }
 
     function addToolMessage(data) {
+        var toolUseId = data && typeof data.toolUseId === "string" ? data.toolUseId.trim() : "";
+        if (toolUseId) {
+            var hasOutput = !!(data.output && String(data.output).trim());
+            if (seenToolUseIds[toolUseId]) {
+                if (hasOutput) {
+                    var existingCard = seenToolUseIds[toolUseId];
+                    if (existingCard && existingCard.parentNode) {
+                        var existingDetail = existingCard.querySelector(".tool-detail");
+                        if (existingDetail) {
+                            var outputBlock = document.createElement("div");
+                            outputBlock.className = "tool-output";
+                            var outputPre = document.createElement("pre");
+                            outputPre.textContent = String(data.output).slice(0, 12000);
+                            outputBlock.appendChild(outputPre);
+                            existingDetail.appendChild(outputBlock);
+                        }
+                    }
+                }
+                /* Duplicate tool-use ID: skip card creation below but still
+                   process git/pr/ci event data that may arrive with the update. */
+                const dupFallback = deriveCiprFallback(data);
+                const dupGitEvent = data && data.git_event && typeof data.git_event === "object"
+                    ? data.git_event
+                    : (dupFallback.git || null);
+                const dupPrEvent = data && data.pr_event && typeof data.pr_event === "object"
+                    ? data.pr_event
+                    : (dupFallback.pr || null);
+                const dupCiEvent = data && data.ci_event && typeof data.ci_event === "object"
+                    ? data.ci_event
+                    : (dupFallback.ci || null);
+                if (dupGitEvent) { addGitCard(dupGitEvent); }
+                if (dupPrEvent) { addPRCard(dupPrEvent); }
+                if (dupCiEvent) { addCIStatus(dupCiEvent); }
+                return;
+            }
+        }
         const fallback = deriveCiprFallback(data);
         const gitEvent = data && data.git_event && typeof data.git_event === "object"
             ? data.git_event
@@ -5104,6 +5893,9 @@ a:hover {
 
         registerToolArtifact(data, card);
         rowObj.inner.appendChild(card);
+        if (toolUseId) {
+            seenToolUseIds[toolUseId] = card;
+        }
         trackToolEvent(summaryEntry, rowObj.row);
         scrollToBottom(true);
     }
@@ -5126,7 +5918,10 @@ a:hover {
         setChatState(true);
 
         const toolName = String(data.name || "Tool");
-        const description = String(data.description || "Claude requests approval before running this tool.");
+        const isDenialCard = !!data.__permission_denied__;
+        const description = String(
+            data.description || (activeProviderName + " requests approval before running this tool.")
+        );
         const proposedAction = String(data.proposedAction || "");
         const filePath = String(data.path || "");
         const command = String(data.command || "");
@@ -5147,7 +5942,9 @@ a:hover {
 
         const rowObj = createMessageRow("permission");
         const card = document.createElement("div");
-        card.className = "permission-request-card pending";
+        card.className = isDenialCard
+            ? "permission-request-card pending permission-denied"
+            : "permission-request-card pending";
         card.setAttribute("data-request-id", requestId);
 
         const header = document.createElement("div");
@@ -5155,7 +5952,7 @@ a:hover {
 
         const icon = document.createElement("span");
         icon.className = "permission-request-icon";
-        icon.textContent = permissionIconForTool(toolName);
+        icon.textContent = isDenialCard ? "\u26D4" : permissionIconForTool(toolName);
         header.appendChild(icon);
 
         const titleWrap = document.createElement("div");
@@ -5168,7 +5965,7 @@ a:hover {
 
         const subtitle = document.createElement("div");
         subtitle.className = "permission-request-subtitle";
-        subtitle.textContent = "Permission required";
+        subtitle.textContent = isDenialCard ? "Permission denied" : "Permission required";
         titleWrap.appendChild(subtitle);
 
         header.appendChild(titleWrap);
@@ -5264,125 +6061,252 @@ a:hover {
         const actions = document.createElement("div");
         actions.className = "permission-actions";
 
-        const allowButton = document.createElement("button");
-        allowButton.type = "button";
-        allowButton.className = "permission-action-btn allow";
-        allowButton.textContent = "Allow";
-        actions.appendChild(allowButton);
+        if (isDenialCard) {
+            const allowForSessionBtn = document.createElement("button");
+            allowForSessionBtn.type = "button";
+            allowForSessionBtn.className = "permission-action-btn allow";
+            allowForSessionBtn.textContent = "Allow " + toolName + " (re-send to retry)";
+            actions.appendChild(allowForSessionBtn);
 
-        const denyButton = document.createElement("button");
-        denyButton.type = "button";
-        denyButton.className = "permission-action-btn deny";
-        denyButton.textContent = "Deny";
-        actions.appendChild(denyButton);
+            const alwaysAllowBtn = document.createElement("button");
+            alwaysAllowBtn.type = "button";
+            alwaysAllowBtn.className = "permission-action-btn always-allow";
+            alwaysAllowBtn.textContent = "Always Allow " + toolName;
+            actions.appendChild(alwaysAllowBtn);
 
-        const commentWrap = document.createElement("div");
-        commentWrap.className = "permission-comment-wrap";
+            const denyButton = document.createElement("button");
+            denyButton.type = "button";
+            denyButton.className = "permission-action-btn deny";
+            denyButton.textContent = "Keep Denied";
+            actions.appendChild(denyButton);
 
-        const commentInput = document.createElement("input");
-        commentInput.type = "text";
-        commentInput.className = "permission-comment-input";
-        commentInput.placeholder = "Add comment or modification request";
-        commentWrap.appendChild(commentInput);
+            const status = document.createElement("div");
+            status.className = "permission-response-status";
+            status.textContent = "This tool was denied. Allow it and re-send your message to retry.";
+            card.appendChild(actions);
+            card.appendChild(status);
 
-        const commentButton = document.createElement("button");
-        commentButton.type = "button";
-        commentButton.className = "permission-action-btn";
-        commentButton.textContent = "Send";
-        commentWrap.appendChild(commentButton);
+            let resolved = false;
 
-        actions.appendChild(commentWrap);
-        card.appendChild(actions);
+            function resolveDenialCard(action) {
+                if (resolved) return;
+                resolved = true;
+                card.classList.remove("pending");
+                card.classList.add("resolved");
+                allowForSessionBtn.disabled = true;
+                alwaysAllowBtn.disabled = true;
+                denyButton.disabled = true;
 
-        const status = document.createElement("div");
-        status.className = "permission-response-status";
-        status.textContent = "Waiting for your decision.";
-        card.appendChild(status);
-
-        let resolved = false;
-
-        function resolveCard(action, commentText) {
-            if (resolved) {
-                return;
-            }
-            resolved = true;
-            card.classList.remove("pending");
-            card.classList.add("resolved");
-
-            allowButton.disabled = true;
-            denyButton.disabled = true;
-            commentButton.disabled = true;
-            commentInput.disabled = true;
-
-            if (action === "allow") {
-                status.textContent = "Approved. Sent to Claude.";
-                return;
-            }
-            if (action === "deny") {
-                status.textContent = "Denied. Claude will not run this action.";
-                return;
-            }
-            status.textContent = commentText
-                ? 'Comment sent: "' + commentText + '"'
-                : "Comment sent to Claude.";
-        }
-
-        function submitResponse(action) {
-            if (resolved) {
-                return;
+                if (action === "allow" || action === "always_allow") {
+                    status.textContent = toolName + " allowed for this session. Re-send your message to retry.";
+                } else {
+                    status.textContent = "Permission remains denied.";
+                }
             }
 
-            const trimmedComment = String(commentInput.value || "").trim();
-            if (action === "comment" && !trimmedComment) {
-                commentInput.focus();
-                return;
+            allowForSessionBtn.addEventListener("click", function () {
+                postToHost("permissionResponse", JSON.stringify({
+                    action: "allow",
+                    toolName: toolName,
+                    requestId: requestId,
+                    isDenialCard: true,
+                }));
+                resolveDenialCard("allow");
+            });
+
+            alwaysAllowBtn.addEventListener("click", function () {
+                postToHost("permissionResponse", JSON.stringify({
+                    action: "always_allow",
+                    toolName: toolName,
+                    requestId: requestId,
+                    isDenialCard: true,
+                }));
+                resolveDenialCard("always_allow");
+            });
+
+            denyButton.addEventListener("click", function () {
+                postToHost("permissionResponse", JSON.stringify({
+                    action: "deny",
+                    toolName: toolName,
+                    requestId: requestId,
+                    isDenialCard: true,
+                }));
+                resolveDenialCard("deny");
+            });
+        } else {
+            const allowButton = document.createElement("button");
+            allowButton.type = "button";
+            allowButton.className = "permission-action-btn allow";
+            allowButton.textContent = "Allow";
+            actions.appendChild(allowButton);
+
+            const alwaysAllowBtn = document.createElement("button");
+            alwaysAllowBtn.type = "button";
+            alwaysAllowBtn.className = "permission-action-btn always-allow";
+            alwaysAllowBtn.textContent = "Always Allow " + toolName;
+            actions.appendChild(alwaysAllowBtn);
+
+            const denyButton = document.createElement("button");
+            denyButton.type = "button";
+            denyButton.className = "permission-action-btn deny";
+            denyButton.textContent = "Deny";
+            actions.appendChild(denyButton);
+
+            const commentWrap = document.createElement("div");
+            commentWrap.className = "permission-comment-wrap";
+
+            const commentInput = document.createElement("input");
+            commentInput.type = "text";
+            commentInput.className = "permission-comment-input";
+            commentInput.placeholder = "Add comment or modification request";
+            commentWrap.appendChild(commentInput);
+
+            const commentButton = document.createElement("button");
+            commentButton.type = "button";
+            commentButton.className = "permission-action-btn";
+            commentButton.textContent = "Send";
+            commentWrap.appendChild(commentButton);
+
+            actions.appendChild(commentWrap);
+            card.appendChild(actions);
+
+            const status = document.createElement("div");
+            status.className = "permission-response-status";
+            status.textContent = "Waiting for your decision.";
+            card.appendChild(status);
+
+            let resolved = false;
+
+            function resolveCard(action, commentText) {
+                if (resolved) {
+                    return;
+                }
+                resolved = true;
+                card.classList.remove("pending");
+                card.classList.add("resolved");
+
+                allowButton.disabled = true;
+                alwaysAllowBtn.disabled = true;
+                denyButton.disabled = true;
+                commentButton.disabled = true;
+                commentInput.disabled = true;
+
+                if (action === "allow" || action === "always_allow") {
+                    status.textContent = "Approved. Sent to " + activeProviderName + ".";
+                    return;
+                }
+                if (action === "deny") {
+                    status.textContent = "Denied. " + activeProviderName + " will not run this action.";
+                    return;
+                }
+                status.textContent = commentText
+                    ? 'Comment sent: "' + commentText + '"'
+                    : ("Comment sent to " + activeProviderName + ".");
             }
 
-            postToHost("permissionResponse", JSON.stringify({
-                action: action,
-                comment: action === "comment" ? trimmedComment : "",
-                requestId: requestId,
-            }));
-            resolveCard(action, trimmedComment);
-        }
+            function submitResponse(action) {
+                if (resolved) {
+                    return;
+                }
 
-        allowButton.addEventListener("click", function () {
-            submitResponse("allow");
-        });
+                const trimmedComment = String(commentInput.value || "").trim();
+                if (action === "comment" && !trimmedComment) {
+                    commentInput.focus();
+                    return;
+                }
 
-        denyButton.addEventListener("click", function () {
-            submitResponse("deny");
-        });
+                postToHost("permissionResponse", JSON.stringify({
+                    action: action,
+                    toolName: toolName,
+                    comment: action === "comment" ? trimmedComment : "",
+                    requestId: requestId,
+                    isDenialCard: false,
+                }));
+                resolveCard(action, trimmedComment);
+            }
 
-        commentButton.addEventListener("click", function () {
-            submitResponse("comment");
-        });
+            allowButton.addEventListener("click", function () {
+                submitResponse("allow");
+            });
 
-        commentInput.addEventListener("keydown", function (event) {
-            if (event.key === "Enter") {
-                event.preventDefault();
+            alwaysAllowBtn.addEventListener("click", function () {
+                submitResponse("always_allow");
+            });
+
+            denyButton.addEventListener("click", function () {
+                submitResponse("deny");
+            });
+
+            commentButton.addEventListener("click", function () {
                 submitResponse("comment");
-            }
-        });
+            });
+
+            commentInput.addEventListener("keydown", function (event) {
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    submitResponse("comment");
+                }
+            });
+        }
 
         rowObj.inner.appendChild(card);
         scrollToBottom(true);
     }
 
-    function startAssistantMessage() {
+    function showThinkingIndicator() {
+        if (thinkingIndicatorRow) {
+            return;
+        }
+
+        const rowObj = createMessageRow("assistant");
+        const indicator = document.createElement("div");
+        indicator.className = "thinking-indicator";
+        indicator.innerHTML = "<span></span><span></span><span></span>";
+        rowObj.inner.appendChild(indicator);
+        thinkingIndicatorRow = rowObj.row;
+        if (!userScrolledUp) {
+            scrollToBottom(true);
+        } else {
+            updateScrollButtonVisibility();
+        }
+    }
+
+    function hideThinkingIndicator(immediate) {
+        if (!thinkingIndicatorRow) {
+            return;
+        }
+
+        const el = thinkingIndicatorRow;
+        thinkingIndicatorRow = null;
+        if (immediate) {
+            if (el.isConnected) {
+                el.remove();
+            }
+            updateUserScrolledState();
+            return;
+        }
+
+        const indicator = el.querySelector(".thinking-indicator");
+        if (indicator) {
+            indicator.classList.add("fade-out");
+        }
+
+        window.setTimeout(function () {
+            if (el.isConnected) {
+                el.remove();
+            }
+            updateUserScrolledState();
+        }, MOTION_FAST_MS);
+    }
+
+    function ensureAssistantMessageRow() {
         if (currentAssistantBody) {
             return;
         }
 
-        setChatState(true);
-
         const rowObj = createMessageRow("assistant");
         const block = document.createElement("div");
         block.className = "assistant-block";
-
-        const icon = document.createElement("div");
-        icon.className = "sparkle-small sparkle-live";
-        icon.innerHTML = sparkleSvg(20, "sparkle-pulse");
 
         const wrap = document.createElement("div");
         wrap.className = "assistant-content-wrap";
@@ -5402,18 +6326,47 @@ a:hover {
         wrap.appendChild(body);
         wrap.appendChild(actions);
 
-        block.appendChild(icon);
         block.appendChild(wrap);
         rowObj.inner.appendChild(block);
 
         currentAssistantRow = rowObj.row;
         currentAssistantBody = body;
-        currentAssistantRaw = "";
-
-        scrollToBottom(true);
     }
 
-    function scheduleAssistantRender() {
+    function startAssistantMessage() {
+        setChatState(true);
+        setAssistantPhase(ASSISTANT_PHASE.WAITING_FIRST_TOKEN);
+        showThinkingIndicator();
+
+        if (currentAssistantBody) {
+            return;
+        }
+
+        currentAssistantRaw = "";
+        assistantHasFirstChunk = false;
+
+        if (!userScrolledUp) {
+            scrollToBottom(true);
+        }
+    }
+
+    function renderAssistantContent(showCursor) {
+        if (!currentAssistantBody) {
+            return;
+        }
+        currentAssistantBody.innerHTML = markdownToHtml(currentAssistantRaw);
+        currentAssistantBody.dataset.raw = currentAssistantRaw;
+        if (showCursor) {
+            const cursor = document.createElement("span");
+            cursor.className = "streaming-cursor";
+            currentAssistantBody.appendChild(cursor);
+            window.requestAnimationFrame(function () {
+                cursor.classList.add("is-visible");
+            });
+        }
+    }
+
+    function queueAssistantRenderFrame() {
         if (renderQueued) {
             return;
         }
@@ -5421,12 +6374,45 @@ a:hover {
         renderQueued = true;
         window.requestAnimationFrame(function () {
             renderQueued = false;
-            if (currentAssistantBody) {
-                currentAssistantBody.innerHTML = markdownToHtml(currentAssistantRaw);
-                currentAssistantBody.dataset.raw = currentAssistantRaw;
+            lastAssistantRenderAt = Date.now();
+            renderAssistantContent(true);
+            if (!userScrolledUp) {
+                scrollToBottom(true);
+            } else {
+                updateScrollButtonVisibility();
             }
-            scrollToBottom(false);
         });
+    }
+
+    function scheduleAssistantRender(forceImmediate) {
+        if (!currentAssistantBody) {
+            return;
+        }
+
+        if (forceImmediate) {
+            if (renderTimerId) {
+                window.clearTimeout(renderTimerId);
+                renderTimerId = null;
+            }
+            queueAssistantRenderFrame();
+            return;
+        }
+
+        if (renderTimerId || renderQueued) {
+            return;
+        }
+
+        const elapsed = Date.now() - lastAssistantRenderAt;
+        const delay = Math.max(0, STREAM_RENDER_THROTTLE_MS - elapsed);
+        if (delay === 0) {
+            queueAssistantRenderFrame();
+            return;
+        }
+
+        renderTimerId = window.setTimeout(function () {
+            renderTimerId = null;
+            queueAssistantRenderFrame();
+        }, delay);
     }
 
     function appendAssistantChunk(text) {
@@ -5434,34 +6420,62 @@ a:hover {
             return;
         }
 
-        if (!currentAssistantBody) {
+        if (!currentAssistantBody && !thinkingIndicatorRow) {
             startAssistantMessage();
         }
 
+        if (!assistantHasFirstChunk) {
+            assistantHasFirstChunk = true;
+            ensureAssistantMessageRow();
+            hideThinkingIndicator(false);
+            setAssistantPhase(ASSISTANT_PHASE.STREAMING);
+        }
+
         currentAssistantRaw += String(text);
-        scheduleAssistantRender();
+        scheduleAssistantRender(false);
     }
 
     function finishAssistantMessage() {
+        hideThinkingIndicator(true);
+        if (renderTimerId) {
+            window.clearTimeout(renderTimerId);
+            renderTimerId = null;
+        }
+
+        const lingeringIndicators = messagesEl.querySelectorAll(".thinking-indicator");
+        lingeringIndicators.forEach(function (indicator) {
+            const row = indicator.closest(".message-row");
+            if (row) {
+                row.remove();
+                return;
+            }
+            indicator.remove();
+        });
+
+        if (!currentAssistantBody && currentAssistantRaw.trim()) {
+            ensureAssistantMessageRow();
+        }
+
         if (currentAssistantBody) {
-            currentAssistantBody.innerHTML = markdownToHtml(currentAssistantRaw);
-            currentAssistantBody.dataset.raw = currentAssistantRaw;
+            renderAssistantContent(false);
             if (!currentAssistantRaw.trim() && currentAssistantRow) {
                 currentAssistantRow.remove();
             }
         }
 
-        if (currentAssistantRow) {
-            const liveSparkle = currentAssistantRow.querySelector(".sparkle-live");
-            if (liveSparkle) {
-                liveSparkle.remove();
-            }
-        }
+        const cursors = messagesEl.querySelectorAll(".streaming-cursor");
+        cursors.forEach(function (cursor) {
+            cursor.remove();
+        });
 
         currentAssistantBody = null;
         currentAssistantRow = null;
         currentAssistantRaw = "";
-        scrollToBottom(true);
+        assistantHasFirstChunk = false;
+        setAssistantPhase(ASSISTANT_PHASE.DONE);
+        if (!userScrolledUp) {
+            scrollToBottom(true);
+        }
     }
 
     function setTyping(isTyping) {
@@ -5469,35 +6483,50 @@ a:hover {
 
         if (shouldShow && !typingRow) {
             setChatState(true);
+            setAssistantPhase(ASSISTANT_PHASE.WAITING_FIRST_TOKEN);
 
             const rowObj = createMessageRow("assistant");
             const shell = document.createElement("div");
             shell.className = "typing-shell";
 
-            const sparkle = document.createElement("div");
-            sparkle.className = "sparkle-small";
-            sparkle.innerHTML = sparkleSvg(20, "sparkle-pulse");
+            const indicator = document.createElement("div");
+            indicator.className = "thinking-indicator";
+            indicator.innerHTML = "<span></span><span></span><span></span>";
 
-            shell.appendChild(sparkle);
+            shell.appendChild(indicator);
             rowObj.inner.appendChild(shell);
             typingRow = rowObj.row;
-            scrollToBottom(true);
+            if (!userScrolledUp) {
+                scrollToBottom(true);
+            }
             return;
         }
 
         if (!shouldShow && typingRow) {
             typingRow.remove();
             typingRow = null;
-            scrollToBottom(true);
+            setAssistantPhase(ASSISTANT_PHASE.DONE);
+            if (!userScrolledUp) {
+                scrollToBottom(true);
+            }
         }
     }
 
     function clearMessages() {
         renderQueued = false;
+        if (renderTimerId) {
+            window.clearTimeout(renderTimerId);
+            renderTimerId = null;
+        }
+        lastAssistantRenderAt = 0;
         currentAssistantRaw = "";
         currentAssistantBody = null;
         currentAssistantRow = null;
+        assistantHasFirstChunk = false;
         typingRow = null;
+        thinkingIndicatorRow = null;
+        setAssistantPhase(ASSISTANT_PHASE.IDLE);
+        userScrolledUp = false;
         resetToolTurnState();
         toolCardCounter = 0;
         lastPRUrl = "";
@@ -5510,10 +6539,14 @@ a:hover {
         Object.keys(ciCardByKey).forEach(function (key) {
             delete ciCardByKey[key];
         });
+        Object.keys(seenToolUseIds).forEach(function (key) {
+            delete seenToolUseIds[key];
+        });
         resetArtifactsSession();
         closeImageLightbox();
 
         messagesEl.innerHTML = "";
+        updateScrollButtonVisibility();
         setChatState(false);
         clearInputs();
         clearAttachments();
@@ -5547,6 +6580,25 @@ a:hover {
         }
     }
 
+    function showCopiedFeedback(button) {
+        if (!button) {
+            return;
+        }
+        if (!button.dataset.originalLabel) {
+            button.dataset.originalLabel = button.textContent || "Copy";
+        }
+        if (button._copyFeedbackTimer) {
+            window.clearTimeout(button._copyFeedbackTimer);
+        }
+        button.classList.add("copied");
+        button.textContent = "Copied!";
+        button._copyFeedbackTimer = window.setTimeout(function () {
+            button.classList.remove("copied");
+            button.textContent = button.dataset.originalLabel || "Copy";
+            button._copyFeedbackTimer = null;
+        }, 2000);
+    }
+
     function markActionPressed(button) {
         const action = button.getAttribute("data-action");
         if (action === "up" || action === "down") {
@@ -5570,8 +6622,250 @@ a:hover {
         }, 700);
     }
 
+    function getSlashDropdownForInput(inputEl) {
+        if (inputEl === welcomeInputEl) return welcomeSlashDropdownEl;
+        if (inputEl === chatInputEl) return chatSlashDropdownEl;
+        return null;
+    }
+
+    function normalizeCommandProviders(rawProviders) {
+        if (!Array.isArray(rawProviders)) {
+            return ["claude", "codex"];
+        }
+        var normalized = [];
+        rawProviders.forEach(function (entry) {
+            var provider = String(entry || "").trim().toLowerCase();
+            if ((provider === "claude" || provider === "codex") && normalized.indexOf(provider) === -1) {
+                normalized.push(provider);
+            }
+        });
+        return normalized.length ? normalized : ["claude", "codex"];
+    }
+
+    function allSlashCommands() {
+        var merged = [];
+        var seen = Object.create(null);
+        var provider = String(activeProviderId || "claude").trim().toLowerCase() || "claude";
+
+        function pushUnique(list) {
+            list.forEach(function (cmd) {
+                if (!cmd || typeof cmd !== "object") {
+                    return;
+                }
+                var name = String(cmd.name || "").trim();
+                if (!name) {
+                    return;
+                }
+                var key = name.toLowerCase();
+                if (seen[key]) {
+                    return;
+                }
+                var providers = normalizeCommandProviders(cmd.providers);
+                if (providers.indexOf(provider) === -1) {
+                    return;
+                }
+                seen[key] = true;
+                merged.push({
+                    name: name,
+                    icon: String(cmd.icon || "/").trim() || "/",
+                    description: String(cmd.description || "").trim(),
+                    providers: providers,
+                });
+            });
+        }
+
+        pushUnique(HOST_SLASH_COMMANDS);
+        pushUnique(DEFAULT_SLASH_COMMANDS);
+        return merged;
+    }
+
+    function filterSlashCommands(query) {
+        var q = query.toLowerCase();
+        var commands = allSlashCommands();
+        if (!q || q === "/") return commands.slice();
+        return commands.filter(function (cmd) {
+            return cmd.name.toLowerCase().indexOf(q) === 0 ||
+                   cmd.description.toLowerCase().indexOf(q.replace(/^\//, "")) !== -1;
+        });
+    }
+
+    function requestSlashCommandsRefresh() {
+        postToHost("refreshSlashCommands", "refresh");
+    }
+
+    function renderSlashDropdown(dropdownEl, items) {
+        dropdownEl.innerHTML = "";
+        if (!items.length) {
+            var empty = document.createElement("div");
+            empty.className = "slash-dropdown-empty";
+            empty.textContent = "No matching commands";
+            dropdownEl.appendChild(empty);
+            return;
+        }
+        var header = document.createElement("div");
+        header.className = "slash-dropdown-header";
+        header.textContent = "Commands and Skills";
+        dropdownEl.appendChild(header);
+        items.forEach(function (cmd, idx) {
+            var item = document.createElement("button");
+            item.type = "button";
+            item.className = "slash-dropdown-item" + (idx === slashSelectedIndex ? " selected" : "");
+            item.setAttribute("role", "option");
+            item.setAttribute("data-index", String(idx));
+
+            var iconWrap = document.createElement("span");
+            iconWrap.className = "slash-dropdown-icon";
+            iconWrap.textContent = cmd.icon || "/";
+            item.appendChild(iconWrap);
+
+            var info = document.createElement("span");
+            info.className = "slash-dropdown-info";
+            var nameSpan = document.createElement("span");
+            nameSpan.className = "slash-dropdown-name";
+            nameSpan.textContent = cmd.name;
+            info.appendChild(nameSpan);
+            var descSpan = document.createElement("span");
+            descSpan.className = "slash-dropdown-desc";
+            descSpan.textContent = cmd.description;
+            info.appendChild(descSpan);
+            item.appendChild(info);
+
+            item.addEventListener("mousedown", function (e) {
+                e.preventDefault();
+                selectSlashCommand(cmd);
+            });
+            item.addEventListener("mouseenter", function () {
+                slashSelectedIndex = idx;
+                updateSlashSelection(dropdownEl);
+            });
+            dropdownEl.appendChild(item);
+        });
+    }
+
+    function updateSlashSelection(dropdownEl) {
+        var items = dropdownEl.querySelectorAll(".slash-dropdown-item");
+        items.forEach(function (el, i) {
+            el.classList.toggle("selected", i === slashSelectedIndex);
+        });
+        var selected = items[slashSelectedIndex];
+        if (selected) {
+            selected.scrollIntoView({ block: "nearest" });
+        }
+    }
+
+    function openSlashDropdown(inputEl) {
+        var dropdownEl = getSlashDropdownForInput(inputEl);
+        if (!dropdownEl) return;
+        requestSlashCommandsRefresh();
+        var text = String(inputEl.value || "");
+        slashFilteredItems = filterSlashCommands(text);
+        slashSelectedIndex = 0;
+        activeSlashInput = inputEl;
+        renderSlashDropdown(dropdownEl, slashFilteredItems);
+        dropdownEl.classList.add("open");
+        slashDropdownOpen = true;
+    }
+
+    function closeSlashDropdown() {
+        if (welcomeSlashDropdownEl) welcomeSlashDropdownEl.classList.remove("open");
+        if (chatSlashDropdownEl) chatSlashDropdownEl.classList.remove("open");
+        slashDropdownOpen = false;
+        slashFilteredItems = [];
+        slashSelectedIndex = 0;
+        activeSlashInput = null;
+    }
+
+    function updateSlashDropdown(inputEl) {
+        var dropdownEl = getSlashDropdownForInput(inputEl);
+        if (!dropdownEl) return;
+        var text = String(inputEl.value || "");
+        if (!text.startsWith("/")) {
+            closeSlashDropdown();
+            return;
+        }
+        var spaceIndex = text.indexOf(" ");
+        if (spaceIndex !== -1) {
+            closeSlashDropdown();
+            return;
+        }
+        slashFilteredItems = filterSlashCommands(text);
+        slashSelectedIndex = Math.min(slashSelectedIndex, Math.max(0, slashFilteredItems.length - 1));
+        renderSlashDropdown(dropdownEl, slashFilteredItems);
+        dropdownEl.classList.add("open");
+        slashDropdownOpen = true;
+        activeSlashInput = inputEl;
+    }
+
+    function selectSlashCommand(cmd) {
+        var inputEl = activeSlashInput || activeInput();
+        inputEl.value = cmd.name + " ";
+        autoResizeInput(inputEl);
+        closeSlashDropdown();
+        inputEl.focus();
+        inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+    }
+
+    window.updateSlashCommands = function (commands) {
+        if (!Array.isArray(commands)) {
+            HOST_SLASH_COMMANDS = [];
+            return;
+        }
+
+        HOST_SLASH_COMMANDS = commands.map(function (entry) {
+            var name = String(entry && entry.name ? entry.name : "").trim();
+            if (!name) {
+                return null;
+            }
+            if (!name.startsWith("/")) {
+                name = "/" + name.replace(/^\/+/, "");
+            }
+            return {
+                name: name,
+                icon: String(entry && entry.icon ? entry.icon : "S").trim() || "S",
+                description: String(entry && entry.description ? entry.description : "Custom skill").trim(),
+                providers: normalizeCommandProviders(entry && entry.providers),
+            };
+        }).filter(Boolean);
+
+        if (slashDropdownOpen && activeSlashInput) {
+            updateSlashDropdown(activeSlashInput);
+        }
+    };
+
     function attachInputBehavior(inputEl) {
         inputEl.addEventListener("keydown", function (event) {
+            if (slashDropdownOpen && activeSlashInput === inputEl) {
+                if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    if (slashFilteredItems.length > 0) {
+                        slashSelectedIndex = (slashSelectedIndex + 1) % slashFilteredItems.length;
+                        var dd = getSlashDropdownForInput(inputEl);
+                        if (dd) updateSlashSelection(dd);
+                    }
+                    return;
+                }
+                if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    if (slashFilteredItems.length > 0) {
+                        slashSelectedIndex = (slashSelectedIndex - 1 + slashFilteredItems.length) % slashFilteredItems.length;
+                        var dd = getSlashDropdownForInput(inputEl);
+                        if (dd) updateSlashSelection(dd);
+                    }
+                    return;
+                }
+                if (event.key === "Enter" || event.key === "Tab") {
+                    if (slashFilteredItems.length > 0) {
+                        event.preventDefault();
+                        selectSlashCommand(slashFilteredItems[slashSelectedIndex]);
+                        return;
+                    }
+                }
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeSlashDropdown();
+                    return;
+                }
+            }
             if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 sendInput(inputEl);
@@ -5580,6 +6874,18 @@ a:hover {
 
         inputEl.addEventListener("input", function () {
             autoResizeInput(inputEl);
+            var text = String(inputEl.value || "");
+            if (text.startsWith("/") && text.indexOf(" ") === -1) {
+                if (!slashDropdownOpen || activeSlashInput !== inputEl) {
+                    openSlashDropdown(inputEl);
+                } else {
+                    updateSlashDropdown(inputEl);
+                }
+            } else {
+                if (slashDropdownOpen && activeSlashInput === inputEl) {
+                    closeSlashDropdown();
+                }
+            }
         });
 
         inputEl.addEventListener("paste", function (event) {
@@ -5601,6 +6907,14 @@ a:hover {
                 }
                 fileToAttachment(file).then(addAttachment).catch(function () {});
             });
+        });
+
+        inputEl.addEventListener("blur", function () {
+            window.setTimeout(function () {
+                if (activeSlashInput === inputEl) {
+                    closeSlashDropdown();
+                }
+            }, 150);
         });
 
         autoResizeInput(inputEl);
@@ -5669,7 +6983,7 @@ a:hover {
     if (stopBtnEl) {
         stopBtnEl.addEventListener("click", function () {
             postToHost("stopProcess", "stop");
-            stopBtnEl.style.display = "none";
+            setAssistantPhase(ASSISTANT_PHASE.DONE);
         });
     }
 
@@ -5758,6 +7072,18 @@ a:hover {
         });
     }
 
+    if (messagesEl) {
+        messagesEl.addEventListener("scroll", function () {
+            updateUserScrolledState();
+        }, { passive: true });
+    }
+
+    if (scrollToBottomBtnEl) {
+        scrollToBottomBtnEl.addEventListener("click", function () {
+            scrollToBottom(true, true);
+        });
+    }
+
     document.addEventListener("dragenter", function (event) {
         const hasFiles = event.dataTransfer && Array.from(event.dataTransfer.types || []).indexOf("Files") >= 0;
         if (!hasFiles) {
@@ -5832,11 +7158,7 @@ a:hover {
             const raw = safeDecodeURIComponent(encoded);
 
             copyText(raw, function () {
-                const previous = codeCopyButton.textContent;
-                codeCopyButton.textContent = "Copied";
-                window.setTimeout(function () {
-                    codeCopyButton.textContent = previous;
-                }, 900);
+                showCopiedFeedback(codeCopyButton);
             });
             return;
         }
@@ -5919,10 +7241,17 @@ a:hover {
         if (!event.target.closest(".selector-group")) {
             closeActivePopup(false);
         }
+        if (slashDropdownOpen && !event.target.closest(".slash-dropdown") && !event.target.closest(".composer-input")) {
+            closeSlashDropdown();
+        }
     });
 
     document.addEventListener("keydown", function (event) {
         if (event.key === "Escape") {
+            if (slashDropdownOpen) {
+                closeSlashDropdown();
+                return;
+            }
             if (imageLightboxEl && imageLightboxEl.classList.contains("open")) {
                 closeImageLightbox();
                 return;
@@ -5960,6 +7289,66 @@ a:hover {
         }
     };
 
+    window.applyProviderTheme = function (colorsJson) {
+        const colors = parseHostPayload(colorsJson);
+        if (!colors || typeof colors !== "object") {
+            return;
+        }
+        Object.keys(colors).forEach(function (key) {
+            const value = String(colors[key] == null ? "" : colors[key]).trim();
+            if (!value) {
+                return;
+            }
+            document.documentElement.style.setProperty("--" + key, value);
+        });
+    };
+
+    window.setModelOptions = function (optionsJson) {
+        const nextOptions = toModelOptions(optionsJson);
+        if (nextOptions.length === 0) {
+            return;
+        }
+        MODEL_OPTIONS = nextOptions;
+        selectedModel = normalizeModelValue(selectedModel);
+        renderSelectorLabels();
+    };
+
+    window.setPermissionOptions = function (optionsJson) {
+        const nextOptions = toPermissionOptions(optionsJson);
+        if (nextOptions.length === 0) {
+            return;
+        }
+        PERMISSION_OPTIONS = nextOptions;
+        selectedPermission = normalizePermissionValue(selectedPermission);
+    };
+
+    window.setProviderBranding = function (payload) {
+        const data = parseHostPayload(payload);
+        if (!data || typeof data !== "object") {
+            return;
+        }
+        activeProviderId = String(data.id || activeProviderId).trim().toLowerCase() || activeProviderId;
+        activeProviderName = String(data.name || activeProviderName).trim() || activeProviderName;
+        activeProviderIcon = String(data.icon || activeProviderIcon).trim() || activeProviderIcon;
+        const welcomeTitle = String(data.welcomeTitle || (activeProviderName + " is ready"));
+        if (welcomeTitleEl) {
+            welcomeTitleEl.textContent = welcomeTitle;
+        }
+        if (welcomeProviderBadgeEl) {
+            welcomeProviderBadgeEl.textContent = activeProviderIcon + " " + activeProviderName;
+        }
+        Array.from(document.querySelectorAll(".ci-fix-btn")).forEach(function (button) {
+            button.textContent = activeProviderName + " can try to fix this";
+        });
+        if (slashDropdownOpen && activeSlashInput) {
+            updateSlashDropdown(activeSlashInput);
+        }
+    };
+
+    window.setReasoningVisible = function (isVisible) {
+        setReasoningVisible(!!isVisible);
+    };
+
     window.updateReasoningLevel = function (value) {
         selectedReasoning = value;
         renderSelectorLabels();
@@ -5974,8 +7363,14 @@ a:hover {
         selectedPermission = normalizePermissionValue(permissionValue);
     };
     window.setProcessing = function (isProcessing) {
-        if (stopBtnEl) {
-            stopBtnEl.style.display = isProcessing ? "block" : "none";
+        if (isProcessing) {
+            if (assistantPhase === ASSISTANT_PHASE.IDLE || assistantPhase === ASSISTANT_PHASE.DONE || assistantPhase === ASSISTANT_PHASE.ERROR) {
+                setAssistantPhase(ASSISTANT_PHASE.SENDING);
+            }
+            return;
+        }
+        if (assistantPhase !== ASSISTANT_PHASE.STREAMING) {
+            setAssistantPhase(ASSISTANT_PHASE.DONE);
         }
     };
     window.focusInput = function () {
@@ -5991,6 +7386,7 @@ a:hover {
 
     resetToolTurnState();
     setChatState(false);
+    setReasoningVisible(true);
     renderSelectorLabels();
     updateFolderDisplay("~");
     renderAttachments();

@@ -22,6 +22,14 @@ def _session_payloads_from_raw(raw: Any) -> list[dict[str, Any]]:
     raise ValueError("Unsupported sessions.json format")
 
 
+def _normalize_payload_for_legacy_schema(payload: dict[str, Any]) -> dict[str, Any]:
+    if "provider" in payload:
+        return payload
+    migrated = dict(payload)
+    migrated["provider"] = "claude"
+    return migrated
+
+
 def load_sessions() -> list[SessionRecord]:
     ensure_config_dir()
     if not SESSIONS_PATH.is_file():
@@ -34,7 +42,8 @@ def load_sessions() -> list[SessionRecord]:
     seen_ids: set[str] = set()
 
     for item in payloads:
-        session = SessionRecord.from_dict(item)
+        normalized_payload = _normalize_payload_for_legacy_schema(item)
+        session = SessionRecord.from_dict(normalized_payload)
         if session.id in seen_ids:
             session.id = str(uuid.uuid4())
         seen_ids.add(session.id)

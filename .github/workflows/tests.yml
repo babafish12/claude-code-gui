@@ -1,0 +1,51 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_contract:
+        description: Run contract tests
+        required: false
+        default: "false"
+
+jobs:
+  unit-integration:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[test] || pip install pytest pytest-cov pytest-mock coverage[toml]
+      - name: Optional GTK deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-gtk-3.0 || true
+      - name: Run tests
+        run: pytest -m "unit or integration or gtk_css" --cov=claude_code_gui --cov-report=term-missing --cov-fail-under=80
+
+  contract:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_contract == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[test] || pip install pytest pytest-cov pytest-mock coverage[toml]
+      - name: Run contract tests
+        env:
+          RUN_CONTRACT_TESTS: "1"
+        run: pytest -m "contract" -q

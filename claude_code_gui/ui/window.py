@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import math
 import mimetypes
 import os
 import re
 import subprocess
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -28,8 +30,6 @@ from claude_code_gui.app.constants import (
     CONNECTION_ERROR,
     CONNECTION_STARTING,
     CONTEXT_MAX_TOKENS,
-    MODEL_OPTIONS,
-    PERMISSION_OPTIONS,
     REASONING_LEVEL_OPTIONS,
     SESSION_STATUS_ACTIVE,
     SESSION_STATUS_ARCHIVED,
@@ -44,7 +44,7 @@ from claude_code_gui.app.constants import (
     STATUS_WARNING,
 )
 from claude_code_gui.assets.chat_template import CHAT_WEBVIEW_HTML
-from claude_code_gui.assets.gtk_css import CSS_STYLES
+from claude_code_gui.assets.gtk_css import build_gtk_css
 from claude_code_gui.core.model_permissions import (
     normalize_model_value,
     normalize_permission_value,
@@ -52,6 +52,12 @@ from claude_code_gui.core.model_permissions import (
 from claude_code_gui.core.paths import format_path, normalize_folder, shorten_path
 from claude_code_gui.core.time_utils import current_timestamp, parse_timestamp
 from claude_code_gui.domain.claude_types import ClaudeRunConfig
+from claude_code_gui.domain.provider import (
+    DEFAULT_PROVIDER_ID,
+    PROVIDERS,
+    ProviderConfig,
+    normalize_provider_id,
+)
 from claude_code_gui.domain.session import SessionRecord
 from claude_code_gui.runtime.claude_process import ClaudeProcess
 from claude_code_gui.services.attachment_service import (
@@ -64,7 +70,8 @@ from claude_code_gui.services.attachment_service import (
 from claude_code_gui.services.binary_probe import (
     binary_exists,
     detect_cli_flag_support,
-    find_claude_binary,
+    find_provider_binary,
+    is_codex_authenticated,
 )
 from claude_code_gui.storage.config_paths import RECENT_FOLDERS_LIMIT
 from claude_code_gui.storage.recent_folders_store import (
@@ -74,11 +81,19 @@ from claude_code_gui.storage.recent_folders_store import (
 from claude_code_gui.storage.sessions_store import load_sessions, save_sessions
 
 
+logger = logging.getLogger(__name__)
+
+
 class ClaudeCodeWindow(Gtk.Window):
     """Single-window Claude Code shell with WebKit2 chat UI and session context."""
 
     def __init__(self) -> None:
         super().__init__(title=APP_NAME)
+        self._active_provider_id: str = DEFAULT_PROVIDER_ID
+        self._provider_binaries: dict[str, str | None] = {
+            provider_id: find_provider_binary(list(provider.binary_names))
+            for provider_id, provider in PROVIDERS.items()
+        }
         self.set_decorated(True)
         self.set_default_size(APP_DEFAULT_WIDTH, APP_DEFAULT_HEIGHT)
         self.set_size_request(APP_MIN_WIDTH, APP_MIN_HEIGHT)
@@ -91,10 +106,13 @@ class ClaudeCodeWindow(Gtk.Window):
 
         self._sidebar_container: Gtk.Box | None = None
         self._sidebar_toggle_button: Gtk.Button | None = None
+        self._provider_toggle_button: Gtk.Button | None = None
         self._sidebar_current_width = float(SIDEBAR_OPEN_WIDTH)
         self._sidebar_expanded = True
         self._sidebar_animation_id: int | None = None
+        self._sidebar_toggle_pulse_animation_id: int | None = None
         self._sidebar_expanded_only_widgets: list[Gtk.Widget] = []
+        self._css_provider: Gtk.CssProvider | None = None
 
         self._window_fade_animation_id: int | None = None
         self._window_fade_started = False
@@ -104,8 +122,8 @@ class ClaudeCodeWindow(Gtk.Window):
         self._chat_reveal_animation_id: int | None = None
         self._chat_reveal_widgets: list[tuple[Gtk.Widget, float]] = []
         self._chat_pulse_animation_id: int | None = None
+        self._last_slash_commands_cache = ""
 
-        self._project_status_label: Gtk.Label | None = None
         self._project_path_entry: Gtk.Entry | None = None
         self._project_path_popover: Gtk.Popover | None = None
         self._project_path_suggestion_scroll: Gtk.ScrolledWindow | None = None
@@ -123,6 +141,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._window_has_focus = True
         self._permission_request_pending = False
         self._notification_counter = 0
+        self._allowed_tools: set[str] = set()
 
         self._connection_dot: Gtk.Label | None = None
         self._connection_label: Gtk.Label | None = None
@@ -139,14 +158,16 @@ class ClaudeCodeWindow(Gtk.Window):
 
         self._request_temp_files: dict[str, list[str]] = {}
 
-        self._selected_model_index = 1
+        self._model_options: list[tuple[str, str]] = list(self._active_provider.model_options)
+        self._permission_options: list[tuple[str, str, bool]] = list(self._active_provider.permission_options)
+        self._selected_model_index = 1 if len(self._model_options) > 1 else 0
         self._selected_permission_index = 0
         self._selected_reasoning_index = 1
 
         self._project_folder = normalize_folder(os.getcwd())
         self._recent_folders = load_recent_folders(self._project_folder)
 
-        self._binary_path = find_claude_binary()
+        self._binary_path = self._provider_binaries.get(self._active_provider_id)
         self._supports_model_flag = False
         self._supports_permission_flag = False
         self._supports_reasoning_flag = False
@@ -178,8 +199,10 @@ class ClaudeCodeWindow(Gtk.Window):
         self._set_dark_theme_preference()
         self._install_css()
         self._build_ui()
+        self._apply_provider_branding()
         self._load_sessions_into_state()
         self._refresh_session_list()
+        self._update_provider_toggle_button()
         GLib.idle_add(self._refresh_session_list_idle)
 
         self.connect("destroy", self._on_destroy)
@@ -189,7 +212,7 @@ class ClaudeCodeWindow(Gtk.Window):
 
         if self._binary_path is None:
             self._set_connection_state(CONNECTION_DISCONNECTED)
-            self._set_status_message("CLI not found", STATUS_ERROR)
+            self._set_status_message(f"{self._active_provider.name} CLI not found", STATUS_ERROR)
             self._set_active_session_status(SESSION_STATUS_ERROR)
             self._show_missing_binary_error()
             self._start_status_fade_in()
@@ -210,17 +233,54 @@ class ClaudeCodeWindow(Gtk.Window):
         if settings is not None:
             settings.set_property("gtk-application-prefer-dark-theme", True)
 
+    @property
+    def _active_provider(self) -> ProviderConfig:
+        return PROVIDERS[self._active_provider_id]
+
+    def _provider_display_name(self, provider_id: str | None = None) -> str:
+        provider = PROVIDERS[normalize_provider_id(provider_id or self._active_provider_id)]
+        return provider.name
+
+    def _provider_cli_label(self, provider_id: str | None = None) -> str:
+        return f"{self._provider_display_name(provider_id)} CLI"
+
+    def _provider_button_label(self, provider_id: str | None = None) -> str:
+        provider = PROVIDERS[normalize_provider_id(provider_id or self._active_provider_id)]
+        return f"{provider.icon} {provider.name}"
+
+    def _provider_window_title(self, provider_id: str | None = None) -> str:
+        return f"{self._provider_display_name(provider_id)} Code"
+
     def _install_css(self) -> None:
-        provider = Gtk.CssProvider()
-        provider.load_from_data(CSS_STYLES.encode("utf-8"))
+        provider = self._active_provider
+        self._swap_css(
+            provider.colors,
+            provider.accent_rgb,
+            provider.accent_soft_rgb,
+        )
+
+    def _swap_css(
+        self,
+        colors: dict[str, str],
+        accent_rgb: tuple[int, int, int],
+        accent_soft_rgb: tuple[int, int, int],
+    ) -> None:
+        css = build_gtk_css(colors, accent_rgb, accent_soft_rgb)
+        new_provider = Gtk.CssProvider()
+        new_provider.load_from_data(css.encode("utf-8"))
 
         screen = Gdk.Screen.get_default()
-        if screen is not None:
-            Gtk.StyleContext.add_provider_for_screen(
-                screen,
-                provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-            )
+        if screen is None:
+            return
+
+        Gtk.StyleContext.add_provider_for_screen(
+            screen,
+            new_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+        if self._css_provider is not None:
+            Gtk.StyleContext.remove_provider_for_screen(screen, self._css_provider)
+        self._css_provider = new_provider
 
     def _build_ui(self) -> None:
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -285,7 +345,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 app.send_notification(f"claude-code-gui-{self._notification_counter}", notification)
                 return
             except Exception:
-                pass
+                logger.exception("Could not send Gio notification; falling back to notify-send.")
 
         command = ["notify-send", title_text, body_text, "--urgency", normalized_urgency]
         try:
@@ -311,15 +371,27 @@ class ClaudeCodeWindow(Gtk.Window):
 
         sidebar_top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
 
-        toggle_button = Gtk.Button(label="")
+        toggle_button = Gtk.Button()
         toggle_button.set_relief(Gtk.ReliefStyle.NONE)
         toggle_button.set_halign(Gtk.Align.START)
         toggle_button.get_style_context().add_class("sidebar-toggle-gtk")
         toggle_button.get_style_context().add_class("sidebar-header-toggle")
         toggle_button._drag_blocker = True
+        toggle_icon = Gtk.Label(label="☰")
+        toggle_icon.get_style_context().add_class("sidebar-toggle-glyph")
+        toggle_button.add(toggle_icon)
         toggle_button.connect("clicked", self._on_sidebar_toggle_clicked)
         sidebar_top.pack_start(toggle_button, False, False, 0)
         self._sidebar_toggle_button = toggle_button
+
+        provider_button = Gtk.Button(label=self._provider_button_label())
+        provider_button.set_relief(Gtk.ReliefStyle.NONE)
+        provider_button.set_halign(Gtk.Align.START)
+        provider_button.get_style_context().add_class("provider-switch-button")
+        provider_button._drag_blocker = True
+        provider_button.connect("clicked", self._on_provider_toggle_clicked)
+        sidebar_top.pack_start(provider_button, False, False, 0)
+        self._provider_toggle_button = provider_button
 
         new_session_button = Gtk.Button(label="+ New Chat")
         new_session_button.set_relief(Gtk.ReliefStyle.NONE)
@@ -389,6 +461,7 @@ class ClaudeCodeWindow(Gtk.Window):
             session_scroll,
         ]
         self._update_sidebar_toggle_button()
+        self._update_provider_toggle_button()
         self._set_sidebar_content_visibility(self._sidebar_expanded)
 
         return sidebar
@@ -437,6 +510,11 @@ class ClaudeCodeWindow(Gtk.Window):
         manager.connect("script-message-received::permissionResponse", self._on_js_permission_response)
         manager.register_script_message_handler("stopProcess")
         manager.connect("script-message-received::stopProcess", self._on_js_stop_process)
+        manager.register_script_message_handler("refreshSlashCommands")
+        manager.connect(
+            "script-message-received::refreshSlashCommands",
+            self._on_js_refresh_slash_commands,
+        )
         self._webview_user_content_manager = manager
 
         webview = WebKit2.WebView.new_with_user_content_manager(manager)
@@ -567,8 +645,6 @@ class ClaudeCodeWindow(Gtk.Window):
         bar.pack_start(status_message, True, True, 0)
         self._status_message_label = status_message
 
-        self._project_status_label = None
-
         timer = Gtk.Label(label="00:00:00")
         timer.get_style_context().add_class("bottom-timer")
         bar.pack_end(timer, False, False, 0)
@@ -625,13 +701,13 @@ class ClaudeCodeWindow(Gtk.Window):
         return self._find_session(self._active_session_id)
 
     def _model_index_from_value(self, model_value: str) -> int:
-        for index, (_, value) in enumerate(MODEL_OPTIONS):
+        for index, (_, value) in enumerate(self._model_options):
             if value == model_value:
                 return index
         return 0
 
     def _permission_index_from_value(self, permission_mode: str) -> int:
-        for index, (_, value, _) in enumerate(PERMISSION_OPTIONS):
+        for index, (_, value, _) in enumerate(self._permission_options):
             if value == permission_mode:
                 return index
         return 0
@@ -650,21 +726,19 @@ class ClaudeCodeWindow(Gtk.Window):
             self._set_status_message(f"{context}: {error}", STATUS_WARNING)
             return False
 
-    def _reset_conversation_state(self, reason: str, reset_timer: bool = True) -> None:
+    def _reset_conversation_state(
+        self,
+        reason: str,
+        reset_timer: bool = True,
+        preserve_conversation_id: bool = False,
+    ) -> None:
         if reset_timer:
             self._session_started_us = GLib.get_monotonic_time()
         self._interrupt_running_process(reason)
-        self._conversation_id = None
-        self._clear_messages()
-        self._show_welcome()
-        self._set_typing(False)
-        self._has_messages = False
-        self._last_request_failed = False
-        self._active_assistant_message = ""
-
-    def _reset_conversation_state_keep_id(self, reason: str) -> None:
-        self._session_started_us = GLib.get_monotonic_time()
-        self._interrupt_running_process(reason)
+        if not preserve_conversation_id:
+            self._conversation_id = None
+            self._call_js("setProcessing", False)
+        self._allowed_tools = set()
         self._clear_messages()
         self._show_welcome()
         self._set_typing(False)
@@ -699,7 +773,11 @@ class ClaudeCodeWindow(Gtk.Window):
                 active.history = active.history[-200:]
 
     def _promote_replacement_session(self) -> SessionRecord | None:
-        candidates = [s for s in self._sessions if s.status != SESSION_STATUS_ARCHIVED]
+        candidates = [
+            s
+            for s in self._sessions
+            if s.provider == self._active_provider_id and s.status != SESSION_STATUS_ARCHIVED
+        ]
         if not candidates:
             self._active_session_id = None
             return None
@@ -729,7 +807,11 @@ class ClaudeCodeWindow(Gtk.Window):
             self._active_session_id = None
             return
 
-        active_candidates = [s for s in self._sessions if s.status != SESSION_STATUS_ARCHIVED]
+        active_candidates = [
+            s
+            for s in self._sessions
+            if s.provider == self._active_provider_id and s.status != SESSION_STATUS_ARCHIVED
+        ]
         if not active_candidates:
             self._active_session_id = None
             return
@@ -737,16 +819,12 @@ class ClaudeCodeWindow(Gtk.Window):
         selected = max(active_candidates, key=self._session_sort_key)
         changed = False
 
-        for session in active_candidates:
-            if session.id == selected.id:
-                if session.status != SESSION_STATUS_ACTIVE:
-                    session.status = SESSION_STATUS_ACTIVE
-                    changed = True
-            elif session.status == SESSION_STATUS_ACTIVE:
+        for session in self._sessions:
+            if session.status == SESSION_STATUS_ACTIVE:
                 session.status = SESSION_STATUS_ENDED
                 changed = True
 
-        self._active_session_id = selected.id
+        self._active_session_id = None
         self._apply_session_to_controls(selected, add_to_recent=os.path.isdir(selected.project_path))
         self._conversation_id = None
 
@@ -754,9 +832,20 @@ class ClaudeCodeWindow(Gtk.Window):
             self._save_sessions_safe("Could not save session state")
 
     def _apply_session_to_controls(self, session: SessionRecord, add_to_recent: bool) -> None:
+        session.provider = normalize_provider_id(session.provider)
+        self._set_provider_option_lists(
+            session.provider,
+            preferred_model=session.model,
+            preferred_permission=session.permission_mode,
+        )
+        if self._model_options:
+            session.model = self._model_options[self._selected_model_index][1]
+        if self._permission_options:
+            session.permission_mode = self._permission_options[self._selected_permission_index][1]
+        if not self._active_provider.supports_reasoning:
+            session.reasoning_level = "medium"
+
         self._project_folder = session.project_path
-        self._selected_model_index = self._model_index_from_value(session.model)
-        self._selected_permission_index = self._permission_index_from_value(session.permission_mode)
         self._selected_reasoning_index = self._reasoning_index_from_value(session.reasoning_level)
         self._set_project_path_entry_text(self._project_folder)
 
@@ -767,8 +856,10 @@ class ClaudeCodeWindow(Gtk.Window):
         self._update_status_model_and_permission()
         self._update_context_indicator()
 
-        _, reasoning_value = REASONING_LEVEL_OPTIONS[self._selected_reasoning_index]
-        self._call_js("updateReasoningLevel", reasoning_value)
+        self._call_js("setReasoningVisible", self._active_provider.supports_reasoning)
+        if self._active_provider.supports_reasoning:
+            _, reasoning_value = REASONING_LEVEL_OPTIONS[self._selected_reasoning_index]
+            self._call_js("updateReasoningLevel", reasoning_value)
 
     def _build_session_title(self, folder: str, timestamp: str) -> str:
         try:
@@ -781,8 +872,8 @@ class ClaudeCodeWindow(Gtk.Window):
     def _create_session_record(self, folder: str) -> SessionRecord:
         normalized = normalize_folder(folder)
         now = current_timestamp()
-        _, model_value = MODEL_OPTIONS[self._selected_model_index]
-        _, permission_value, _ = PERMISSION_OPTIONS[self._selected_permission_index]
+        _, model_value = self._model_options[self._selected_model_index]
+        _, permission_value, _ = self._permission_options[self._selected_permission_index]
         return SessionRecord(
             id=str(uuid.uuid4()),
             title=self._build_session_title(normalized, now),
@@ -792,6 +883,7 @@ class ClaudeCodeWindow(Gtk.Window):
             status=SESSION_STATUS_ACTIVE,
             created_at=now,
             last_used_at=now,
+            provider=self._active_provider_id,
         )
 
     def _set_active_session_status(self, status: str) -> None:
@@ -881,12 +973,13 @@ class ClaudeCodeWindow(Gtk.Window):
         self._refresh_session_list()
 
     def _get_filtered_sessions(self) -> list[SessionRecord]:
+        provider_sessions = [s for s in self._sessions if s.provider == self._active_provider_id]
         if self._session_filter == "active":
-            candidates = [s for s in self._sessions if s.status == SESSION_STATUS_ACTIVE]
+            candidates = [s for s in provider_sessions if s.status == SESSION_STATUS_ACTIVE]
         elif self._session_filter == "archived":
-            candidates = [s for s in self._sessions if s.status == SESSION_STATUS_ARCHIVED]
+            candidates = [s for s in provider_sessions if s.status == SESSION_STATUS_ARCHIVED]
         else:
-            candidates = [s for s in self._sessions if s.status != SESSION_STATUS_ARCHIVED]
+            candidates = [s for s in provider_sessions if s.status != SESSION_STATUS_ARCHIVED]
 
         if self._session_search_query:
             query = self._session_search_query
@@ -899,17 +992,157 @@ class ClaudeCodeWindow(Gtk.Window):
         return sorted(candidates, key=self._session_sort_key, reverse=True)
 
     @staticmethod
-    def _get_session_preview(session: SessionRecord) -> str:
+    def _get_session_last_message(session: SessionRecord) -> str:
         if not session.history:
             return ""
         for msg in reversed(session.history):
-            if msg.get("role") == "user":
-                content = str(msg.get("content") or "").strip()
-                content = content.replace("\n", " ")
-                if len(content) > 50:
-                    return content[:47] + "..."
-                return content
+            role = str(msg.get("role") or "").strip().lower()
+            if role != "user":
+                continue
+            content = re.sub(r"\s+", " ", str(msg.get("content") or "").strip())
+            if not content:
+                continue
+            if len(content) > 74:
+                return content[:71] + "..."
+            return content
         return ""
+
+    @staticmethod
+    def _format_session_timestamp(timestamp_value: str) -> str:
+        try:
+            dt = datetime.fromisoformat(timestamp_value).astimezone()
+        except ValueError:
+            return "--:--"
+        return dt.strftime("%d.%m. %H:%M")
+
+    @staticmethod
+    def _truncate_text(value: str, max_chars: int) -> str:
+        cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+        if len(cleaned) <= max_chars:
+            return cleaned
+        return cleaned[: max_chars - 3].rstrip() + "..."
+
+    @staticmethod
+    def _safe_slash_name(name: str) -> str:
+        raw = str(name or "").strip().strip("/")
+        if not raw:
+            return ""
+        cleaned = re.sub(r"[^a-zA-Z0-9._/-]+", "-", raw)
+        cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-")
+        if not cleaned:
+            return ""
+        return f"/{cleaned}"
+
+    @staticmethod
+    def _read_markdown_summary(path: Path) -> str:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            return ""
+
+        title = ""
+        for raw_line in lines[:80]:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                if not title:
+                    title = line.lstrip("#").strip()
+                continue
+            if line.startswith(("```", "---", "<!--")):
+                continue
+            return line
+        return title
+
+    def _discover_custom_slash_commands(self) -> list[dict[str, Any]]:
+        commands: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def normalize_providers(providers: list[str] | tuple[str, ...]) -> list[str]:
+            normalized: list[str] = []
+            for provider_id in providers:
+                candidate = normalize_provider_id(provider_id)
+                if candidate not in normalized:
+                    normalized.append(candidate)
+            return normalized or [DEFAULT_PROVIDER_ID]
+
+        def add_command(name: str, icon: str, description: str, providers: list[str] | tuple[str, ...]) -> None:
+            safe_name = self._safe_slash_name(name)
+            if not safe_name:
+                return
+            key = safe_name.casefold()
+            if key in seen:
+                return
+            provider_list = normalize_providers(providers)
+            seen.add(key)
+            commands.append(
+                {
+                    "name": safe_name,
+                    "icon": icon,
+                    "description": self._truncate_text(description, 96),
+                    "providers": provider_list,
+                }
+            )
+
+        project_root = Path(self._project_folder)
+        command_roots: list[tuple[Path, tuple[str, ...]]] = [
+            (project_root / ".claude" / "commands", ("claude",)),
+            (Path.home() / ".claude" / "commands", ("claude",)),
+        ]
+        if self._active_provider_id == "codex":
+            command_roots.extend(
+                [
+                    (project_root / ".codex" / "commands", ("codex",)),
+                    (Path.home() / ".codex" / "commands", ("codex",)),
+                ]
+            )
+        for root, providers in command_roots:
+            if not root.is_dir():
+                continue
+            for command_file in sorted(root.rglob("*.md"), key=lambda p: str(p).casefold()):
+                if not command_file.is_file():
+                    continue
+                try:
+                    relative = command_file.relative_to(root).with_suffix("")
+                except ValueError:
+                    continue
+                if any(part.startswith(".") for part in relative.parts):
+                    continue
+                slash_name = "/".join(relative.parts)
+                summary = self._read_markdown_summary(command_file) or "Custom slash command"
+                add_command(slash_name, "C", f"Custom command: {summary}", providers)
+
+        if self._active_provider_id == "codex":
+            skill_roots: list[tuple[Path, tuple[str, ...]]] = [
+                (project_root / ".codex" / "skills", ("codex",)),
+                (Path.home() / ".codex" / "skills", ("codex",)),
+            ]
+        else:
+            skill_roots = [
+                (project_root / ".agents" / "skills", ("claude",)),
+                (Path.home() / ".agents" / "skills", ("claude",)),
+            ]
+        for root, providers in skill_roots:
+            if not root.is_dir():
+                continue
+            for skill_dir in sorted(root.iterdir(), key=lambda p: p.name.casefold()):
+                if not skill_dir.is_dir() or skill_dir.name.startswith("."):
+                    continue
+                skill_doc = skill_dir / "SKILL.md"
+                if not skill_doc.is_file():
+                    continue
+                summary = self._read_markdown_summary(skill_doc) or "Custom skill"
+                add_command(skill_dir.name, "S", f"Custom skill: {summary}", providers)
+
+        return commands
+
+    def _refresh_slash_commands(self) -> None:
+        commands = self._discover_custom_slash_commands()
+        payload = json.dumps(commands, ensure_ascii=False, sort_keys=True)
+        if payload == self._last_slash_commands_cache:
+            return
+        self._last_slash_commands_cache = payload
+        self._call_js("updateSlashCommands", commands)
 
     def _make_session_row(self, session: SessionRecord, allow_open: bool) -> Gtk.Box:
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
@@ -936,21 +1169,37 @@ class ClaudeCodeWindow(Gtk.Window):
         status_dot.get_style_context().add_class(f"session-status-{status}")
         title_row.pack_start(status_dot, False, False, 0)
 
-        title = Gtk.Label(label=session.title or "New chat")
+        title_text = self._get_session_last_message(session) or session.title or "New chat"
+        title = Gtk.Label(label=title_text)
         title.set_xalign(0.0)
+        title.set_ellipsize(Pango.EllipsizeMode.END)
+        title.set_single_line_mode(True)
+        title.set_max_width_chars(40)
         title.get_style_context().add_class("session-title")
         title_row.pack_start(title, True, True, 0)
         label_box.pack_start(title_row, False, False, 0)
 
-        preview_text = self._get_session_preview(session)
-        if preview_text:
-            preview = Gtk.Label(label=preview_text)
-            preview.set_xalign(0.0)
-            preview.set_ellipsize(Pango.EllipsizeMode.END)
-            preview.set_max_width_chars(32)
-            preview.set_single_line_mode(True)
-            preview.get_style_context().add_class("session-preview")
-            label_box.pack_start(preview, False, False, 0)
+        meta_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+
+        meta_time = Gtk.Label(label=self._format_session_timestamp(session.last_used_at or session.created_at))
+        meta_time.set_xalign(0.0)
+        meta_time.set_single_line_mode(True)
+        meta_time.get_style_context().add_class("session-meta")
+        meta_time.get_style_context().add_class("session-meta-time")
+        meta_row.pack_start(meta_time, False, False, 0)
+
+        path_display = shorten_path(format_path(session.project_path), 30)
+        meta_path = Gtk.Label(label=path_display)
+        meta_path.set_xalign(0.0)
+        meta_path.set_hexpand(True)
+        meta_path.set_ellipsize(Pango.EllipsizeMode.END)
+        meta_path.set_single_line_mode(True)
+        meta_path.set_max_width_chars(32)
+        meta_path.get_style_context().add_class("session-meta")
+        meta_path.get_style_context().add_class("session-meta-path")
+        meta_row.pack_start(meta_path, True, True, 0)
+
+        label_box.pack_start(meta_row, False, False, 0)
 
         open_button.add(label_box)
         row.pack_start(open_button, True, True, 0)
@@ -983,6 +1232,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 try:
                     menu_button.popup()
                 except Exception:
+                    logger.exception("Could not show session row context menu via popup(); using fallback.")
                     popover.show_all()
                 return True
             return False
@@ -995,8 +1245,9 @@ class ClaudeCodeWindow(Gtk.Window):
         if self._session_list_box is None or self._session_empty_label is None:
             return
 
+        provider_sessions = [s for s in self._sessions if s.provider == self._active_provider_id]
         if self._sessions_title_label is not None:
-            self._sessions_title_label.set_text(f"Sessions ({len(self._sessions)})")
+            self._sessions_title_label.set_text(f"Sessions ({len(provider_sessions)})")
 
         self._clear_box(self._session_list_box)
         visible_sessions = self._get_filtered_sessions()
@@ -1008,7 +1259,9 @@ class ClaudeCodeWindow(Gtk.Window):
             elif self._session_filter == "archived":
                 self._session_empty_label.set_text("No archived sessions.")
             else:
-                self._session_empty_label.set_text("No chats yet. Click + New Chat.")
+                self._session_empty_label.set_text(
+                    f"No {self._active_provider.name} chats yet. Click + New Chat."
+                )
             self._session_list_box.pack_start(self._session_empty_label, False, False, 0)
             self._session_empty_label.show()
             return
@@ -1047,6 +1300,14 @@ class ClaudeCodeWindow(Gtk.Window):
         session = self._find_session(session_id)
         if session is None:
             return
+        if session.provider != self._active_provider_id:
+            if not self._switch_provider(session.provider):
+                self._set_status_message(
+                    f"Cannot open session: {self._provider_display_name(session.provider)} is unavailable.",
+                    STATUS_WARNING,
+                )
+                return
+
         if session.status == SESSION_STATUS_ARCHIVED:
             self._set_status_message("Archived sessions cannot be opened", STATUS_WARNING)
             return
@@ -1067,14 +1328,14 @@ class ClaudeCodeWindow(Gtk.Window):
         self._save_sessions_safe("Could not save sessions")
 
         self._conversation_id = session.conversation_id
-        self._reset_conversation_state_keep_id("Session switched")
+        self._reset_conversation_state("Session switched", preserve_conversation_id=True)
 
         if session.history:
             self._replay_history(session.history)
 
         if self._binary_path is None:
             self._set_connection_state(CONNECTION_DISCONNECTED)
-            self._set_status_message("CLI not found", STATUS_ERROR)
+            self._set_status_message(f"{self._active_provider.name} CLI not found", STATUS_ERROR)
             self._set_active_session_status(SESSION_STATUS_ERROR)
             return
 
@@ -1085,60 +1346,54 @@ class ClaudeCodeWindow(Gtk.Window):
         else:
             self._set_status_message("Session switched.", STATUS_INFO)
 
-    def _archive_session(self, session_id: str) -> None:
-        session = self._find_session(session_id)
-        if session is None or session.status == SESSION_STATUS_ARCHIVED:
-            return
-
-        was_active = session.id == self._active_session_id
-        session.status = SESSION_STATUS_ARCHIVED
-        session.last_used_at = current_timestamp()
-
-        replacement = self._promote_replacement_session() if was_active else None
-
-        self._refresh_session_list()
-        self._save_sessions_safe("Could not save sessions")
-
-        if was_active and replacement is not None:
-            self._reset_conversation_state("Active session archived")
-            self._refresh_connection_state()
-            self._set_status_message("Archived session. Switched to replacement.", STATUS_INFO)
-            return
-
-        if was_active and replacement is None:
-            self._reset_conversation_state("Session archived", reset_timer=False)
-            self._set_status_message("Session archived", STATUS_MUTED)
-            self._refresh_connection_state()
-            return
-
-        self._set_status_message("Session archived", STATUS_MUTED)
-
-    def _delete_session(self, session_id: str) -> None:
+    def _mutate_session_and_reconcile_active(self, session_id: str, action: str) -> None:
         session = self._find_session(session_id)
         if session is None:
             return
 
-        was_active = session.id == self._active_session_id
-        self._sessions = [item for item in self._sessions if item.id != session_id]
+        if action == "archive":
+            if session.status == SESSION_STATUS_ARCHIVED:
+                return
+            active_reason = "Active session archived"
+            terminal_reason = "Session archived"
+            replacement_message = "Archived session. Switched to replacement."
+            terminal_message = "Session archived"
+            session.status = SESSION_STATUS_ARCHIVED
+            session.last_used_at = current_timestamp()
+        elif action == "delete":
+            active_reason = "Active session deleted"
+            terminal_reason = "Session deleted"
+            replacement_message = "Deleted session. Switched to replacement."
+            terminal_message = "Session deleted"
+            self._sessions = [item for item in self._sessions if item.id != session_id]
+        else:
+            return
 
+        was_active = session.id == self._active_session_id
         replacement = self._promote_replacement_session() if was_active else None
 
         self._refresh_session_list()
         self._save_sessions_safe("Could not save sessions")
 
         if was_active and replacement is not None:
-            self._reset_conversation_state("Active session deleted")
+            self._reset_conversation_state(active_reason)
             self._refresh_connection_state()
-            self._set_status_message("Deleted session. Switched to replacement.", STATUS_INFO)
+            self._set_status_message(replacement_message, STATUS_INFO)
             return
 
         if was_active and replacement is None:
-            self._reset_conversation_state("Session deleted", reset_timer=False)
-            self._set_status_message("Session deleted", STATUS_MUTED)
+            self._reset_conversation_state(terminal_reason, reset_timer=False)
+            self._set_status_message(terminal_message, STATUS_MUTED)
             self._refresh_connection_state()
             return
 
-        self._set_status_message("Session deleted", STATUS_MUTED)
+        self._set_status_message(terminal_message, STATUS_MUTED)
+
+    def _archive_session(self, session_id: str) -> None:
+        self._mutate_session_and_reconcile_active(session_id, "archive")
+
+    def _delete_session(self, session_id: str) -> None:
+        self._mutate_session_and_reconcile_active(session_id, "delete")
 
     def _start_new_session(self, folder: str) -> None:
         normalized = normalize_folder(folder)
@@ -1162,7 +1417,7 @@ class ClaudeCodeWindow(Gtk.Window):
 
         if self._binary_path is None:
             self._set_connection_state(CONNECTION_DISCONNECTED)
-            self._set_status_message("CLI not found", STATUS_ERROR)
+            self._set_status_message(f"{self._active_provider.name} CLI not found", STATUS_ERROR)
             self._set_active_session_status(SESSION_STATUS_ERROR)
             return
 
@@ -1397,18 +1652,18 @@ class ClaudeCodeWindow(Gtk.Window):
     def _update_project_folder_labels(self) -> None:
         full_display = format_path(self._project_folder)
 
-        if self._project_status_label is not None:
-            self._project_status_label.set_text(shorten_path(full_display, 44))
-            tooltip = full_display
-            if self._last_status_message:
-                tooltip = f"{full_display}\n{self._last_status_message}"
-            self._project_status_label.set_tooltip_text(tooltip)
-
         self._call_js("updateFolder", full_display)
 
     def _update_status_model_and_permission(self) -> None:
-        _, model_value = MODEL_OPTIONS[self._selected_model_index]
-        _, permission_value, _ = PERMISSION_OPTIONS[self._selected_permission_index]
+        if not self._model_options or not self._permission_options:
+            return
+        self._selected_model_index = max(0, min(self._selected_model_index, len(self._model_options) - 1))
+        self._selected_permission_index = max(
+            0,
+            min(self._selected_permission_index, len(self._permission_options) - 1),
+        )
+        _, model_value = self._model_options[self._selected_model_index]
+        _, permission_value, _ = self._permission_options[self._selected_permission_index]
         self._call_js("updateModel", model_value)
         self._call_js("updatePermission", permission_value)
 
@@ -1477,6 +1732,7 @@ class ClaudeCodeWindow(Gtk.Window):
             self._connection_dot.set_tooltip_text(state_text)
 
     def _refresh_connection_state(self) -> None:
+        self._update_provider_toggle_button()
         if not binary_exists(self._binary_path):
             self._set_connection_state(CONNECTION_DISCONNECTED)
             return
@@ -1485,6 +1741,9 @@ class ClaudeCodeWindow(Gtk.Window):
             return
         if self._last_request_failed:
             self._set_connection_state(CONNECTION_ERROR)
+            return
+        if self._active_provider_id == "codex" and not is_codex_authenticated():
+            self._set_connection_state(CONNECTION_DISCONNECTED)
             return
         self._set_connection_state(CONNECTION_CONNECTED)
 
@@ -1537,6 +1796,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._add_recent_folder(normalized)
         self._update_project_folder_labels()
         self._update_context_indicator()
+        self._refresh_slash_commands()
 
         active_session = self._get_active_session()
         if active_session is not None and active_session.status != SESSION_STATUS_ARCHIVED:
@@ -1553,21 +1813,16 @@ class ClaudeCodeWindow(Gtk.Window):
         if restart_session and self._active_session_id is not None:
             self._interrupt_running_process("Folder changed")
             self._conversation_id = None
+            self._allowed_tools = set()
             self._add_system_message("Conversation reset because the project folder changed.")
             self._last_request_failed = False
             self._refresh_connection_state()
 
-    def _detect_cli_flag_support(self, binary_path: str) -> None:
-        caps = detect_cli_flag_support(binary_path)
-        self._supports_model_flag = caps.supports_model_flag
-        self._supports_permission_flag = caps.supports_permission_flag
-        self._supports_reasoning_flag = caps.supports_reasoning_flag
-        self._supports_output_format_flag = caps.supports_output_format_flag
-        self._supports_stream_json = caps.supports_stream_json
-        self._supports_json = caps.supports_json
-        self._supports_include_partial_messages = caps.supports_include_partial_messages
-
     def _detect_cli_flag_support_async(self, binary_path: str) -> None:
+        if not binary_path:
+            self._set_cli_caps(None)
+            return
+
         import threading
 
         def _probe() -> None:
@@ -1576,37 +1831,46 @@ class ClaudeCodeWindow(Gtk.Window):
 
         threading.Thread(target=_probe, daemon=True).start()
 
-    def _apply_cli_caps(self, caps: "CliCapabilities") -> bool:
+    def _set_cli_caps(self, caps: "CliCapabilities | None") -> None:
+        if caps is None:
+            self._supports_model_flag = False
+            self._supports_permission_flag = False
+            self._supports_reasoning_flag = False
+            self._supports_output_format_flag = False
+            self._supports_stream_json = False
+            self._supports_json = False
+            self._supports_include_partial_messages = False
+            return
+
         self._supports_model_flag = caps.supports_model_flag
         self._supports_permission_flag = caps.supports_permission_flag
-        self._supports_reasoning_flag = caps.supports_reasoning_flag
+        self._supports_reasoning_flag = caps.supports_reasoning_flag and self._active_provider.supports_reasoning
         self._supports_output_format_flag = caps.supports_output_format_flag
         self._supports_stream_json = caps.supports_stream_json
         self._supports_json = caps.supports_json
         self._supports_include_partial_messages = caps.supports_include_partial_messages
+
+    def _apply_cli_caps(self, caps: "CliCapabilities") -> bool:
+        self._set_cli_caps(caps)
         self._refresh_connection_state()
         return False
 
     def _show_missing_binary_error(self) -> None:
-        self.send_notification(
-            "Claude CLI not found",
-            "Install claude or claude-code so requests can run.",
-            urgency="critical",
-        )
-        self._add_system_message(
-            "Claude CLI was not found. Searched for claude, claude-code, and ~/.config/Claude/claude-code/."
-        )
+        provider = self._active_provider
+        binary_names = ", ".join(provider.binary_names)
+        message = f"{provider.name} CLI was not found. Expected binaries: {binary_names}."
+        self.send_notification(f"{provider.name} CLI not found", message, urgency="critical")
+        self._add_system_message(message)
 
         dialog = Gtk.MessageDialog(
             transient_for=self,
             flags=Gtk.DialogFlags.MODAL,
             message_type=Gtk.MessageType.ERROR,
             buttons=Gtk.ButtonsType.CLOSE,
-            text="Claude CLI not found",
+            text=f"{provider.name} CLI not found",
         )
         dialog.format_secondary_text(
-            "Install Claude Code CLI (binary `claude` or `claude-code`) or place it under "
-            "~/.config/Claude/claude-code/."
+            f"Install {provider.name} CLI and ensure one of these executables is available: {binary_names}."
         )
         dialog.run()
         dialog.destroy()
@@ -1679,47 +1943,46 @@ class ClaudeCodeWindow(Gtk.Window):
     ) -> None:
         self._prompt_for_project_folder()
 
-    def _apply_model_selection(self, index: int) -> None:
-        if index < 0 or index >= len(MODEL_OPTIONS):
+    def _apply_session_option(self, kind: str, index: int) -> None:
+        if kind == "model":
+            options = self._model_options
+            selected_index = self._selected_model_index
+            running_change_reason = "Model changed"
+            status_message = "Model updated"
+        elif kind == "permission":
+            options = self._permission_options
+            selected_index = self._selected_permission_index
+            running_change_reason = "Permission mode changed"
+            status_message = "Permission mode updated"
+        else:
             return
 
-        if index == self._selected_model_index:
+        if index < 0 or index >= len(options):
+            return
+
+        if index == selected_index:
             self._update_status_model_and_permission()
             return
 
-        self._selected_model_index = index
+        if kind == "model":
+            self._selected_model_index = index
+        else:
+            self._selected_permission_index = index
+
         self._update_status_model_and_permission()
         self._update_context_indicator()
         active_session = self._get_active_session()
         if active_session is not None and active_session.status != SESSION_STATUS_ARCHIVED:
-            active_session.model = MODEL_OPTIONS[index][1]
+            if kind == "model":
+                active_session.model = self._model_options[index][1]
+            else:
+                active_session.permission_mode = self._permission_options[index][1]
             active_session.last_used_at = current_timestamp()
             self._save_sessions_safe("Could not save sessions")
             self._refresh_session_list()
         if self._has_messages and self._claude_process.is_running():
-            self._interrupt_running_process("Model changed")
-        self._set_status_message("Model updated", STATUS_INFO)
-
-    def _apply_permission_selection(self, index: int) -> None:
-        if index < 0 or index >= len(PERMISSION_OPTIONS):
-            return
-
-        if index == self._selected_permission_index:
-            self._update_status_model_and_permission()
-            return
-
-        self._selected_permission_index = index
-        self._update_status_model_and_permission()
-        self._update_context_indicator()
-        active_session = self._get_active_session()
-        if active_session is not None and active_session.status != SESSION_STATUS_ARCHIVED:
-            active_session.permission_mode = PERMISSION_OPTIONS[index][1]
-            active_session.last_used_at = current_timestamp()
-            self._save_sessions_safe("Could not save sessions")
-            self._refresh_session_list()
-        if self._has_messages and self._claude_process.is_running():
-            self._interrupt_running_process("Permission mode changed")
-        self._set_status_message("Permission mode updated", STATUS_INFO)
+            self._interrupt_running_process(running_change_reason)
+        self._set_status_message(status_message, STATUS_INFO)
 
     def _on_new_session_clicked(self, _button: Gtk.Button) -> None:
         if not os.path.isdir(self._project_folder):
@@ -1727,13 +1990,395 @@ class ClaudeCodeWindow(Gtk.Window):
             return
         self._start_new_session(self._project_folder)
 
-    def _on_new_session_other_folder_clicked(self, _button: Gtk.Button) -> None:
-        self._prompt_for_project_folder()
+    @staticmethod
+    def _provider_order() -> list[str]:
+        return list(PROVIDERS.keys())
+
+    def _next_provider_id(self) -> str | None:
+        ordered = self._provider_order()
+        if len(ordered) <= 1:
+            return None
+        try:
+            current_index = ordered.index(self._active_provider_id)
+        except ValueError:
+            return ordered[0]
+        return ordered[(current_index + 1) % len(ordered)]
+
+    def _provider_unavailability_reason(
+        self,
+        provider_id: str,
+        *,
+        refresh_binary: bool,
+        check_auth: bool,
+    ) -> str | None:
+        normalized_provider_id = normalize_provider_id(provider_id)
+        provider = PROVIDERS[normalized_provider_id]
+
+        if refresh_binary or normalized_provider_id not in self._provider_binaries:
+            self._provider_binaries[normalized_provider_id] = find_provider_binary(list(provider.binary_names))
+
+        binary_path = self._provider_binaries.get(normalized_provider_id)
+        if not binary_path:
+            binary_list = ", ".join(provider.binary_names)
+            return f"{provider.name} CLI was not found (expected: {binary_list})."
+
+        if normalized_provider_id == "codex" and check_auth and not is_codex_authenticated():
+            return "Codex is not logged in. Run `codex login` and retry."
+
+        return None
+
+    def _show_provider_unavailable_error(self, provider: ProviderConfig, reason: str) -> None:
+        title = f"{provider.name} unavailable"
+        self._set_status_message(reason, STATUS_ERROR)
+        self._add_system_message(reason)
+        self.send_notification(title, reason, urgency="critical")
+
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=Gtk.DialogFlags.MODAL,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.CLOSE,
+            text=title,
+        )
+        dialog.format_secondary_text(reason)
+        dialog.run()
+        dialog.destroy()
+
+    def _update_provider_toggle_button(self) -> None:
+        if self._provider_toggle_button is None:
+            return
+
+        self._provider_toggle_button.set_label(self._provider_button_label())
+        next_provider_id = self._next_provider_id()
+        if next_provider_id is None:
+            self._provider_toggle_button.set_sensitive(False)
+            self._provider_toggle_button.set_tooltip_text("No additional providers available")
+            return
+
+        reason = self._provider_unavailability_reason(
+            next_provider_id,
+            refresh_binary=True,
+            check_auth=True,
+        )
+        if reason is None:
+            next_provider_name = self._provider_display_name(next_provider_id)
+            self._provider_toggle_button.set_sensitive(True)
+            self._provider_toggle_button.set_tooltip_text(f"Switch to {next_provider_name}")
+            return
+
+        self._provider_toggle_button.set_sensitive(False)
+        self._provider_toggle_button.set_tooltip_text(reason)
+
+    def _on_provider_toggle_clicked(self, _button: Gtk.Button) -> None:
+        next_provider_id = self._next_provider_id()
+        if next_provider_id is None:
+            return
+        self._switch_provider(next_provider_id)
+
+    def _provider_theme_variables(self, provider: ProviderConfig) -> dict[str, str]:
+        accent_r, accent_g, accent_b = provider.accent_rgb
+        accent_soft_r, accent_soft_g, accent_soft_b = provider.accent_soft_rgb
+        colors = provider.colors
+        return {
+            "bg": colors["window_bg"],
+            "sidebar": colors["sidebar_bg"],
+            "input-bg": colors["button_bg"],
+            "input-border": colors["border"],
+            "input-focus": colors["accent_soft"],
+            "user-bubble": colors["button_bg_hover"],
+            "text": colors["foreground"],
+            "muted": colors["foreground_muted"],
+            "accent": colors["accent"],
+            "accent-soft": f"rgba({accent_soft_r}, {accent_soft_g}, {accent_soft_b}, 0.18)",
+            "chip-border": colors["border_soft"],
+            "code-bg": colors["popover_bg"],
+            "artifacts-panel-bg": colors["menu_bg"],
+            "accent-rgb": f"{accent_r}, {accent_g}, {accent_b}",
+            "accent-rgba-012": f"rgba({accent_r}, {accent_g}, {accent_b}, 0.12)",
+            "accent-rgba-072": f"rgba({accent_r}, {accent_g}, {accent_b}, 0.72)",
+            "accent-rgba-055": f"rgba({accent_r}, {accent_g}, {accent_b}, 0.55)",
+            "surface-panel": colors["sidebar_toggle_collapsed_bg"],
+            "surface-card": colors["button_bg_hover"],
+            "surface-card-soft": colors["button_bg"],
+            "surface-muted": colors["button_bg"],
+            "surface-muted-strong": colors["button_bg_hover"],
+            "surface-chip": colors["session_filter_bg"],
+            "surface-overlay": f"rgba({accent_r}, {accent_g}, {accent_b}, 0.08)",
+            "surface-overlay-soft": f"rgba({accent_r}, {accent_g}, {accent_b}, 0.05)",
+            "surface-overlay-border": f"rgba({accent_r}, {accent_g}, {accent_b}, 0.22)",
+            "text-soft": colors["session_meta_time"],
+            "text-accent-soft": colors["accent_soft"],
+            "permission-border": f"rgba({accent_r}, {accent_g}, {accent_b}, 0.65)",
+            "permission-gradient-start": f"rgba({accent_r}, {accent_g}, {accent_b}, 0.18)",
+            "permission-gradient-end": colors["window_bg"],
+            "permission-shadow-soft": f"rgba({accent_r}, {accent_g}, {accent_b}, 0.16)",
+            "permission-shadow-strong": f"rgba({accent_r}, {accent_g}, {accent_b}, 0.34)",
+            "permission-glow": f"rgba({accent_r}, {accent_g}, {accent_b}, 0.2)",
+            "inline-code-bg": colors["sidebar_toggle_collapsed_bg"],
+            "inline-code-color": colors["accent_soft"],
+            "table-border": colors["border"],
+            "code-block-bg": colors["popover_bg"],
+            "code-head-muted": colors["foreground_muted"],
+        }
+
+    @staticmethod
+    def _short_model_title(label: str) -> str:
+        candidate = str(label or "").split("(")[0].strip()
+        candidate = candidate.replace("Claude ", "")
+        return candidate or str(label or "")
+
+    def _provider_model_option_payload(self, provider: ProviderConfig) -> list[dict[str, str]]:
+        payload: list[dict[str, str]] = []
+        for label, value in provider.model_options:
+            payload.append(
+                {
+                    "value": value,
+                    "short": self._short_model_title(label),
+                    "title": label,
+                    "description": f"{provider.name} model option",
+                }
+            )
+        return payload
+
+    def _provider_permission_option_payload(self, provider: ProviderConfig) -> list[dict[str, str]]:
+        payload: list[dict[str, str]] = []
+        for label, value, is_advanced in provider.permission_options:
+            if value == "auto":
+                description = f"{provider.name} asks only when approval is needed."
+            elif value == "plan":
+                description = f"{provider.name} proposes plans before applying changes."
+            elif is_advanced:
+                description = "Runs actions directly with fewer confirmations."
+            else:
+                description = f"{provider.name} permission option"
+            payload.append(
+                {
+                    "value": value,
+                    "title": label,
+                    "description": description,
+                }
+            )
+        return payload
+
+    def _sync_provider_state_to_webview(self) -> None:
+        provider = self._active_provider
+        self._call_js("applyProviderTheme", self._provider_theme_variables(provider))
+        self._call_js("setModelOptions", self._provider_model_option_payload(provider))
+        self._call_js("setPermissionOptions", self._provider_permission_option_payload(provider))
+        self._call_js(
+            "setProviderBranding",
+            {
+                "id": provider.id,
+                "name": provider.name,
+                "icon": provider.icon,
+                "welcomeTitle": f"{provider.name} is ready",
+            },
+        )
+        self._call_js("setReasoningVisible", provider.supports_reasoning)
+        self._update_status_model_and_permission()
+        if provider.supports_reasoning:
+            _, reasoning_value = REASONING_LEVEL_OPTIONS[self._selected_reasoning_index]
+            self._call_js("updateReasoningLevel", reasoning_value)
+
+    def _apply_provider_branding(self) -> None:
+        self.set_title(self._provider_window_title())
+        self._sync_provider_state_to_webview()
+
+    def _set_provider_option_lists(
+        self,
+        provider_id: str,
+        *,
+        preferred_model: str | None = None,
+        preferred_permission: str | None = None,
+    ) -> None:
+        provider = PROVIDERS[normalize_provider_id(provider_id)]
+        previous_model_value = ""
+        if 0 <= self._selected_model_index < len(self._model_options):
+            previous_model_value = self._model_options[self._selected_model_index][1]
+        previous_permission_value = ""
+        if 0 <= self._selected_permission_index < len(self._permission_options):
+            previous_permission_value = self._permission_options[self._selected_permission_index][1]
+
+        self._model_options = list(provider.model_options)
+        self._permission_options = list(provider.permission_options)
+
+        normalized_model = normalize_model_value(
+            preferred_model if preferred_model is not None else previous_model_value,
+            provider=provider.id,
+        )
+        normalized_permission = normalize_permission_value(
+            preferred_permission if preferred_permission is not None else previous_permission_value,
+            provider=provider.id,
+        )
+        self._selected_model_index = self._model_index_from_value(normalized_model)
+        self._selected_permission_index = self._permission_index_from_value(normalized_permission)
+
+        if not provider.supports_reasoning:
+            self._selected_reasoning_index = self._reasoning_index_from_value("medium")
+
+    def _stop_running_request_for_provider_switch(self) -> bool:
+        self._invalidate_active_request()
+        self._permission_request_pending = False
+        if not self._claude_process.is_running():
+            return True
+
+        self._claude_process.stop()
+        deadline = time.monotonic() + 2.5
+        while self._claude_process.is_running() and time.monotonic() < deadline:
+            while Gtk.events_pending():
+                Gtk.main_iteration_do(False)
+            time.sleep(0.03)
+
+        if self._claude_process.is_running():
+            self._claude_process.stop(force=True)
+            force_deadline = time.monotonic() + 1.0
+            while self._claude_process.is_running() and time.monotonic() < force_deadline:
+                while Gtk.events_pending():
+                    Gtk.main_iteration_do(False)
+                time.sleep(0.03)
+
+        return not self._claude_process.is_running()
+
+    def _ensure_active_session_for_provider(self, *, reset_conversation: bool) -> None:
+        active_sessions = [
+            session
+            for session in self._sessions
+            if session.provider == self._active_provider_id and session.status != SESSION_STATUS_ARCHIVED
+        ]
+
+        if not active_sessions:
+            self._active_session_id = None
+            self._conversation_id = None
+            return
+
+        selected = max(active_sessions, key=self._session_sort_key)
+        for session in active_sessions:
+            if session.id != selected.id and session.status == SESSION_STATUS_ACTIVE:
+                session.status = SESSION_STATUS_ENDED
+        self._active_session_id = selected.id
+        selected.status = SESSION_STATUS_ACTIVE
+        selected.last_used_at = current_timestamp()
+        if reset_conversation:
+            selected.conversation_id = None
+        self._apply_session_to_controls(selected, add_to_recent=os.path.isdir(selected.project_path))
+        self._conversation_id = None if reset_conversation else selected.conversation_id
+
+    def _switch_provider(self, new_provider_id: str) -> bool:
+        normalized_new_provider_id = normalize_provider_id(new_provider_id)
+        if normalized_new_provider_id == self._active_provider_id:
+            return True
+
+        new_provider = PROVIDERS[normalized_new_provider_id]
+        reason = self._provider_unavailability_reason(
+            normalized_new_provider_id,
+            refresh_binary=True,
+            check_auth=True,
+        )
+        if reason is not None:
+            self._show_provider_unavailable_error(new_provider, reason)
+            self._update_provider_toggle_button()
+            return False
+
+        new_binary_path = self._provider_binaries.get(normalized_new_provider_id)
+        old_provider_id = self._active_provider_id
+        old_provider = PROVIDERS[old_provider_id]
+        old_binary_path = self._binary_path
+        old_model_options = list(self._model_options)
+        old_permission_options = list(self._permission_options)
+        old_selected_model_index = self._selected_model_index
+        old_selected_permission_index = self._selected_permission_index
+        old_selected_reasoning_index = self._selected_reasoning_index
+        old_active_session_id = self._active_session_id
+        old_conversation_id = self._conversation_id
+        old_allowed_tools = set(self._allowed_tools)
+        old_has_messages = self._has_messages
+        old_last_request_failed = self._last_request_failed
+        old_active_assistant_message = self._active_assistant_message
+        old_active_session = self._get_active_session()
+        old_active_session_status = old_active_session.status if old_active_session is not None else None
+        old_active_session_last_used = (
+            old_active_session.last_used_at if old_active_session is not None else None
+        )
+
+        if not self._stop_running_request_for_provider_switch():
+            self._update_provider_toggle_button()
+            self._set_status_message("Could not stop current request. Provider switch cancelled.", STATUS_ERROR)
+            return False
+
+        try:
+            self._swap_css(
+                new_provider.colors,
+                new_provider.accent_rgb,
+                new_provider.accent_soft_rgb,
+            )
+            self._active_provider_id = normalized_new_provider_id
+            self._binary_path = new_binary_path
+            self._set_provider_option_lists(normalized_new_provider_id)
+            self._ensure_active_session_for_provider(reset_conversation=True)
+
+            if old_active_session is not None and old_active_session.status == SESSION_STATUS_ACTIVE:
+                old_active_session.status = SESSION_STATUS_ENDED
+                old_active_session.last_used_at = current_timestamp()
+
+            self._conversation_id = None
+            self._allowed_tools = set()
+            self._clear_messages()
+            self._show_welcome()
+            self._set_typing(False)
+            self._has_messages = False
+            self._last_request_failed = False
+            self._active_assistant_message = ""
+
+            self._apply_provider_branding()
+            self._refresh_session_list()
+            self._refresh_slash_commands()
+            self._save_sessions_safe("Could not save sessions")
+            self._update_provider_toggle_button()
+
+            if self._binary_path is None:
+                self._set_connection_state(CONNECTION_DISCONNECTED)
+                self._show_missing_binary_error()
+            else:
+                self._detect_cli_flag_support_async(self._binary_path)
+                self._refresh_connection_state()
+            self._set_status_message(f"Switched to {new_provider.name}", STATUS_INFO)
+            return True
+        except Exception as error:
+            logger.exception("Provider switch failed; rolling back provider state.")
+            self._active_provider_id = old_provider_id
+            self._binary_path = old_binary_path
+            self._model_options = old_model_options
+            self._permission_options = old_permission_options
+            self._selected_model_index = old_selected_model_index
+            self._selected_permission_index = old_selected_permission_index
+            self._selected_reasoning_index = old_selected_reasoning_index
+            self._active_session_id = old_active_session_id
+            self._conversation_id = old_conversation_id
+            self._allowed_tools = old_allowed_tools
+            self._has_messages = old_has_messages
+            self._last_request_failed = old_last_request_failed
+            self._active_assistant_message = old_active_assistant_message
+            if old_active_session is not None and old_active_session_status is not None:
+                old_active_session.status = old_active_session_status
+                if old_active_session_last_used is not None:
+                    old_active_session.last_used_at = old_active_session_last_used
+            self._swap_css(
+                old_provider.colors,
+                old_provider.accent_rgb,
+                old_provider.accent_soft_rgb,
+            )
+            self._apply_provider_branding()
+            self._refresh_session_list()
+            self._update_provider_toggle_button()
+            self._refresh_connection_state()
+            self._set_status_message(f"Could not switch provider: {error}", STATUS_ERROR)
+            return False
 
     def _on_sidebar_toggle_clicked(self, _button: Any) -> None:
         self._sidebar_expanded = not self._sidebar_expanded
         self._set_sidebar_content_visibility(self._sidebar_expanded)
         self._update_sidebar_toggle_button()
+        self._pulse_sidebar_toggle_button()
         target_width = SIDEBAR_OPEN_WIDTH if self._sidebar_expanded else SIDEBAR_COLLAPSED_WIDTH
         self._animate_sidebar(target_width)
 
@@ -1741,13 +2386,42 @@ class ClaudeCodeWindow(Gtk.Window):
         if self._sidebar_toggle_button is None:
             return
 
+        context = self._sidebar_toggle_button.get_style_context()
+        context.remove_class("sidebar-toggle-expanded")
+        context.remove_class("sidebar-toggle-collapsed")
+
         if self._sidebar_expanded:
-            self._sidebar_toggle_button.set_label("◀")
+            context.add_class("sidebar-toggle-expanded")
             self._sidebar_toggle_button.set_tooltip_text("Collapse sidebar")
             return
 
-        self._sidebar_toggle_button.set_label("▶")
+        context.add_class("sidebar-toggle-collapsed")
         self._sidebar_toggle_button.set_tooltip_text("Expand sidebar")
+
+    def _pulse_sidebar_toggle_button(self) -> None:
+        if self._sidebar_toggle_button is None:
+            return
+
+        if self._sidebar_toggle_pulse_animation_id is not None:
+            GLib.source_remove(self._sidebar_toggle_pulse_animation_id)
+            self._sidebar_toggle_pulse_animation_id = None
+
+        start_time_us = GLib.get_monotonic_time()
+        duration_ms = 170.0
+
+        def tick() -> bool:
+            elapsed_ms = (GLib.get_monotonic_time() - start_time_us) / 1000.0
+            progress = self._clamp01(elapsed_ms / duration_ms)
+            envelope = math.sin(progress * math.pi)
+            self._sidebar_toggle_button.set_opacity(0.78 + envelope * 0.22)
+
+            if progress >= 1.0:
+                self._sidebar_toggle_button.set_opacity(1.0)
+                self._sidebar_toggle_pulse_animation_id = None
+                return False
+            return True
+
+        self._sidebar_toggle_pulse_animation_id = GLib.timeout_add(16, tick)
 
     def _set_sidebar_content_visibility(self, expanded: bool) -> None:
         for widget in self._sidebar_expanded_only_widgets:
@@ -1775,7 +2449,7 @@ class ClaudeCodeWindow(Gtk.Window):
 
         start_width = self._sidebar_current_width
         delta = float(target_width) - start_width
-        duration_ms = 260.0
+        duration_ms = 360.0 if target_width > start_width else 240.0
         start_time_us = GLib.get_monotonic_time()
 
         def tick() -> bool:
@@ -1958,8 +2632,9 @@ class ClaudeCodeWindow(Gtk.Window):
         for script in queued:
             self._run_javascript(script)
 
-        self._update_status_model_and_permission()
+        self._sync_provider_state_to_webview()
         self._show_welcome()
+        self._refresh_slash_commands()
         GLib.timeout_add(100, lambda: self._call_js("focusInput") or False)
 
     def _on_webview_focus_in(self, _webview: WebKit2.WebView, _event: Gdk.EventFocus) -> bool:
@@ -1978,8 +2653,8 @@ class ClaudeCodeWindow(Gtk.Window):
         js_result: WebKit2.JavascriptResult,
     ) -> None:
         raw_value = self._extract_message_from_js_result(js_result)
-        model_value = normalize_model_value(raw_value)
-        self._apply_model_selection(self._model_index_from_value(model_value))
+        model_value = normalize_model_value(raw_value, provider=self._active_provider_id)
+        self._apply_session_option("model", self._model_index_from_value(model_value))
 
     def _on_js_change_permission(
         self,
@@ -1987,14 +2662,22 @@ class ClaudeCodeWindow(Gtk.Window):
         js_result: WebKit2.JavascriptResult,
     ) -> None:
         raw_value = self._extract_message_from_js_result(js_result)
-        permission_value = normalize_permission_value(raw_value)
-        self._apply_permission_selection(self._permission_index_from_value(permission_value))
+        permission_value = normalize_permission_value(raw_value, provider=self._active_provider_id)
+        self._apply_session_option("permission", self._permission_index_from_value(permission_value))
 
     def _on_js_change_reasoning(
         self,
         _manager: WebKit2.UserContentManager,
         js_result: WebKit2.JavascriptResult,
     ) -> None:
+        if not self._active_provider.supports_reasoning:
+            self._set_status_message(
+                f"Reasoning level is ignored in {self._active_provider.name} mode.",
+                STATUS_MUTED,
+            )
+            self._call_js("setReasoningVisible", False)
+            return
+
         value = self._extract_message_from_js_result(js_result)
         index = self._reasoning_index_from_value(value)
         if index == self._selected_reasoning_index:
@@ -2009,6 +2692,13 @@ class ClaudeCodeWindow(Gtk.Window):
             self._save_sessions_safe("Could not save session reasoning level")
 
         self._set_status_message(f"Reasoning level set to {reasoning_value}", STATUS_MUTED)
+
+    def _on_js_refresh_slash_commands(
+        self,
+        _manager: WebKit2.UserContentManager,
+        _js_result: WebKit2.JavascriptResult,
+    ) -> None:
+        self._refresh_slash_commands()
 
     def _on_js_attach_file(
         self,
@@ -2100,7 +2790,7 @@ class ClaudeCodeWindow(Gtk.Window):
         if self._claude_process.is_running():
             self._claude_process.stop()
             self._set_status_message("Process stopped by user", STATUS_WARNING)
-            self._add_system_message("Process stopped.")
+            self._add_system_message(f"{self._active_provider.name} process stopped.")
 
     def _on_js_permission_response(
         self,
@@ -2120,11 +2810,42 @@ class ClaudeCodeWindow(Gtk.Window):
             return
 
         action = str(parsed_payload.get("action") or "").strip().lower()
-        if action not in {"allow", "deny", "comment"}:
+        if action not in {"allow", "deny", "comment", "always_allow"}:
             return
 
+        tool_name = str(parsed_payload.get("toolName") or "").strip()
         comment = str(parsed_payload.get("comment") or "")
         request_id = str(parsed_payload.get("requestId") or "")
+        is_denial_card = bool(parsed_payload.get("isDenialCard"))
+
+        if action == "always_allow" and tool_name:
+            self._allowed_tools.add(tool_name)
+            self._set_status_message(f"Always allowing {tool_name} for this session", STATUS_INFO)
+            self._add_system_message(
+                f"Tool '{tool_name}' has been added to the allowed list. "
+                "It will be pre-approved on future requests in this session."
+            )
+            if not is_denial_card:
+                self._claude_process.send_permission_response(
+                    action="allow",
+                    request_id=request_id,
+                )
+            return
+
+        if is_denial_card:
+            if action == "allow" and tool_name:
+                self._allowed_tools.add(tool_name)
+                self._set_status_message(
+                    f"Tool '{tool_name}' allowed. Re-send your message to retry.", STATUS_INFO,
+                )
+                self._add_system_message(
+                    f"Tool '{tool_name}' has been allowed. Please re-send your message "
+                    f"so {self._active_provider.name} can use this tool."
+                )
+            elif action == "deny":
+                self._set_status_message("Permission denied", STATUS_WARNING)
+            return
+
         sent = self._claude_process.send_permission_response(
             action=action,
             comment=comment,
@@ -2132,7 +2853,9 @@ class ClaudeCodeWindow(Gtk.Window):
         )
         if not sent:
             self._set_status_message("Could not deliver permission response", STATUS_WARNING)
-            self._add_system_message("Could not send permission response to Claude.")
+            self._add_system_message(
+                f"Could not send permission response to {self._active_provider.name}."
+            )
             return
 
         if action == "allow":
@@ -2154,8 +2877,14 @@ class ClaudeCodeWindow(Gtk.Window):
 
         if self._binary_path is None:
             self._refresh_connection_state()
-            self._set_status_message("CLI not found", STATUS_ERROR)
-            self._add_system_message("Claude CLI is not available.")
+            self._set_status_message(f"{self._active_provider.name} CLI not found", STATUS_ERROR)
+            self._add_system_message(f"{self._provider_cli_label()} is not available.")
+            return
+        if self._active_provider_id == "codex" and not is_codex_authenticated():
+            auth_message = "Codex is not logged in. Run `codex login` and retry."
+            self._refresh_connection_state()
+            self._set_status_message(auth_message, STATUS_ERROR)
+            self._add_system_message(auth_message)
             return
 
         if self._active_session_id is None:
@@ -2167,7 +2896,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 return
 
         if self._claude_process.is_running():
-            self._add_system_message("Claude is still responding. Please wait.")
+            self._add_system_message(f"{self._active_provider.name} is still responding. Please wait.")
             return
 
         active_session = self._get_active_session()
@@ -2182,9 +2911,11 @@ class ClaudeCodeWindow(Gtk.Window):
             self._set_active_session_status(SESSION_STATUS_ERROR)
             return
 
-        _, model_value = MODEL_OPTIONS[self._selected_model_index]
-        _, permission_value, _ = PERMISSION_OPTIONS[self._selected_permission_index]
+        _, model_value = self._model_options[self._selected_model_index]
+        _, permission_value, _ = self._permission_options[self._selected_permission_index]
         _, reasoning_value = REASONING_LEVEL_OPTIONS[self._selected_reasoning_index]
+        if not self._active_provider.supports_reasoning:
+            reasoning_value = "medium"
 
         attachment_paths = materialize_attachments(attachments)
         composed_message = compose_message_with_attachments(message, attachment_paths)
@@ -2196,10 +2927,12 @@ class ClaudeCodeWindow(Gtk.Window):
         self._context_char_count += len(composed_message)
         self._update_context_indicator()
 
-        self._set_typing(True)
+        # Create the assistant row immediately so users see true live streaming
+        # instead of waiting for the first token to create the bubble.
+        self._start_assistant_message()
         self._pulse_chat_shell()
         self._set_connection_state(CONNECTION_STARTING)
-        self._set_status_message("Sending message to Claude...", STATUS_INFO)
+        self._set_status_message(f"Sending message to {self._active_provider.name}...", STATUS_INFO)
 
         active_session.status = SESSION_STATUS_ACTIVE
         active_session.last_used_at = current_timestamp()
@@ -2228,6 +2961,8 @@ class ClaudeCodeWindow(Gtk.Window):
             stream_json_requires_verbose=self._stream_json_requires_verbose,
             reasoning_level=reasoning_value,
             supports_reasoning_flag=self._supports_reasoning_flag,
+            allowed_tools=list(self._allowed_tools) if self._allowed_tools else None,
+            provider_id=self._active_provider_id,
         )
         started = self._claude_process.send_message(request_token=request_token, config=config)
 
@@ -2236,6 +2971,7 @@ class ClaudeCodeWindow(Gtk.Window):
             self._context_char_count = max(0, self._context_char_count - len(composed_message))
             self._update_context_indicator()
             self._active_request_token = previous_request_token
+            self._finish_assistant_message()
             self._set_typing(False)
             self._refresh_connection_state()
             self._set_status_message("A request is already running", STATUS_WARNING)
@@ -2249,6 +2985,7 @@ class ClaudeCodeWindow(Gtk.Window):
             js_value = js_result.get_js_value()
             raw = js_value.to_string()
         except Exception:
+            logger.exception("Could not extract message payload from JavaScript result.")
             return ""
 
         if raw is None:
@@ -2273,7 +3010,7 @@ class ClaudeCodeWindow(Gtk.Window):
 
         if running:
             self._set_connection_state(CONNECTION_STARTING)
-            self._set_status_message("Claude is responding...", STATUS_INFO)
+            self._set_status_message(f"{self._active_provider.name} is responding...", STATUS_INFO)
 
     def _on_process_assistant_chunk(self, request_token: str, chunk: str) -> None:
         if not self._is_current_request(request_token):
@@ -2294,7 +3031,7 @@ class ClaudeCodeWindow(Gtk.Window):
         if not self._permission_request_pending and self._is_permission_request_message(message):
             self._permission_request_pending = True
             self.send_notification(
-                "Claude needs permission",
+                f"{self._active_provider.name} needs permission",
                 "A tool permission request is waiting for your input.",
                 urgency="critical",
             )
@@ -2311,7 +3048,7 @@ class ClaudeCodeWindow(Gtk.Window):
         if not self._permission_request_pending:
             self._permission_request_pending = True
             self.send_notification(
-                "Claude needs permission",
+                f"{self._active_provider.name} needs permission",
                 "A tool permission request is waiting for your input.",
                 urgency="critical",
             )
@@ -2344,23 +3081,23 @@ class ClaudeCodeWindow(Gtk.Window):
         if result.success:
             self._last_request_failed = False
             self._refresh_connection_state()
-            self._set_status_message("Claude response received", STATUS_MUTED)
+            self._set_status_message(f"{self._active_provider.name} response received", STATUS_MUTED)
             self._set_active_session_status(SESSION_STATUS_ACTIVE)
             self._save_sessions_safe("Could not save sessions")
             if had_assistant_output:
                 self.send_notification(
-                    "Claude response complete",
-                    "Claude finished responding.",
+                    f"{self._active_provider.name} response complete",
+                    f"{self._active_provider.name} finished responding.",
                 )
             return
 
-        error_message = result.error_message or "Claude request failed"
+        error_message = result.error_message or f"{self._active_provider.name} request failed"
         self._last_request_failed = True
         self._refresh_connection_state()
         self._set_status_message(error_message, STATUS_ERROR)
         self._set_active_session_status(SESSION_STATUS_ERROR)
         self._add_system_message(error_message)
-        self.send_notification("Claude error", error_message, urgency="critical")
+        self.send_notification(f"{self._active_provider.name} error", error_message, urgency="critical")
 
     def _enqueue_javascript(self, script: str) -> None:
         if not script:
@@ -2380,13 +3117,13 @@ class ClaudeCodeWindow(Gtk.Window):
             self._webview.run_javascript(script, None, None, None)
             return
         except TypeError:
-            pass
+            logger.exception("WebView 4-arg run_javascript signature failed; retrying legacy signature.")
 
         try:
             self._webview.run_javascript(script, None, None)
             return
         except TypeError:
-            pass
+            logger.exception("WebView 3-arg run_javascript signature failed; retrying bare signature.")
 
         self._webview.run_javascript(script)
 
@@ -2399,10 +3136,6 @@ class ClaudeCodeWindow(Gtk.Window):
         else:
             script = f"if (typeof {function_name} === 'function') {{ {function_name}(); }}"
         self._enqueue_javascript(script)
-
-    def _add_user_message(self, text: str) -> None:
-        self._has_messages = True
-        self._call_js("addUserMessage", text)
 
     def _start_assistant_message(self) -> None:
         self._active_assistant_message = ""
@@ -2440,8 +3173,15 @@ class ClaudeCodeWindow(Gtk.Window):
             cleanup_temp_paths(paths)
         self._request_temp_files.clear()
 
+        if self._css_provider is not None:
+            screen = Gdk.Screen.get_default()
+            if screen is not None:
+                Gtk.StyleContext.remove_provider_for_screen(screen, self._css_provider)
+            self._css_provider = None
+
         for attr in (
             "_sidebar_animation_id",
+            "_sidebar_toggle_pulse_animation_id",
             "_window_fade_animation_id",
             "_status_fade_animation_id",
             "_chat_reveal_animation_id",

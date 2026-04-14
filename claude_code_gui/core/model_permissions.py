@@ -3,43 +3,49 @@
 from __future__ import annotations
 
 from claude_code_gui.app.constants import (
-    LEGACY_MODEL_ALIASES,
-    LEGACY_PERMISSION_ALIASES,
-    MODEL_OPTIONS,
-    PERMISSION_OPTIONS,
     SESSION_STATUS_ENDED,
     SESSION_STATUSES,
+    get_legacy_model_aliases,
+    get_legacy_permission_aliases,
+    get_model_options,
+    get_permission_options,
 )
 
 
-def model_label_from_value(model_value: str) -> str:
-    for label, value in MODEL_OPTIONS:
+def model_label_from_value(model_value: str, provider: str = "claude") -> str:
+    model_options = get_model_options(provider)
+    for label, value in model_options:
         if value == model_value:
             return label
-    return MODEL_OPTIONS[0][0]
+    return model_options[0][0]
 
 
-def permission_label_from_value(permission_mode: str) -> str:
-    for label, value, _ in PERMISSION_OPTIONS:
+def permission_label_from_value(permission_mode: str, provider: str = "claude") -> str:
+    permission_options = get_permission_options(provider)
+    for label, value, _ in permission_options:
         if value == permission_mode:
             return label
-    return PERMISSION_OPTIONS[0][0]
+    return permission_options[0][0]
 
 
-def normalize_model_value(raw_value: str | None) -> str:
-    candidate = str(raw_value or MODEL_OPTIONS[0][1]).strip()
-    candidate = LEGACY_MODEL_ALIASES.get(candidate, candidate)
-    if candidate in {value for _, value in MODEL_OPTIONS}:
+def normalize_model_value(raw_value: str | None, provider: str = "claude") -> str:
+    model_options = get_model_options(provider)
+    legacy_aliases = get_legacy_model_aliases(provider)
+    candidate = str(raw_value or model_options[0][1]).strip()
+    candidate = legacy_aliases.get(candidate, candidate)
+    if candidate in {value for _, value in model_options}:
         return candidate
-    return MODEL_OPTIONS[0][1]
+    return model_options[0][1]
 
 
-def normalize_permission_value(raw_value: str | None) -> str:
-    candidate = str(raw_value or PERMISSION_OPTIONS[0][1]).strip()
-    candidate = LEGACY_PERMISSION_ALIASES.get(candidate, candidate)
-    if candidate in {value for _, value, _ in PERMISSION_OPTIONS}:
+def normalize_permission_value(raw_value: str | None, provider: str = "claude") -> str:
+    permission_options = get_permission_options(provider)
+    legacy_aliases = get_legacy_permission_aliases(provider)
+    candidate = str(raw_value or permission_options[0][1]).strip()
+    candidate = legacy_aliases.get(candidate, candidate)
+    if candidate in {value for _, value, _ in permission_options}:
         return candidate
-    return PERMISSION_OPTIONS[0][1]
+    return permission_options[0][1]
 
 
 def normalize_session_status(raw_value: str | None) -> str:

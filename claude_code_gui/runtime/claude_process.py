@@ -12,7 +12,15 @@ from typing import Any, Callable
 
 from gi.repository import GLib
 
+from claude_code_gui.domain.cli_dialect import (
+    CliDialect,
+    CliRunConfig,
+    ClaudeDialect,
+    CodexDialect,
+    ParsedEvent,
+)
 from claude_code_gui.domain.claude_types import ClaudeRunConfig, ClaudeRunResult
+from claude_code_gui.domain.provider import normalize_provider_id
 
 
 class ClaudeProcess:
@@ -37,12 +45,16 @@ class ClaudeProcess:
         self._stop_requested = False
         self._process: subprocess.Popen[str] | None = None
         self._permission_counter = 0
+        self._dialects: dict[str, CliDialect] = {
+            "claude": ClaudeDialect(),
+            "codex": CodexDialect(),
+        }
 
     def is_running(self) -> bool:
         with self._lock:
             return self._running
 
-    def stop(self) -> None:
+    def stop(self, *, force: bool = False) -> None:
         with self._lock:
             self._stop_requested = True
             process = self._process
@@ -52,7 +64,10 @@ class ClaudeProcess:
 
         if process.poll() is None:
             try:
-                process.terminate()
+                if force:
+                    process.kill()
+                else:
+                    process.terminate()
             except OSError:
                 return
 
@@ -106,20 +121,16 @@ class ClaudeProcess:
     def _run(self, request_token: str, config: ClaudeRunConfig) -> None:
         self._emit_running_changed(request_token, True)
 
-        modes: list[str] = []
-        if config.supports_output_format_flag:
-            if config.supports_stream_json:
-                modes.append("stream-json")
-            if config.supports_json:
-                modes.append("json")
-        modes.append("text")
+        provider_id = normalize_provider_id(config.provider_id)
+        provider_label = "Codex" if provider_id == "codex" else "Claude"
+        modes = self._build_modes(config)
 
         final_result = ClaudeRunResult(
             success=False,
             assistant_text="",
             streamed_assistant=False,
             conversation_id=config.conversation_id,
-            error_message="Claude CLI execution failed.",
+            error_message=f"{provider_label} CLI execution failed.",
         )
 
         try:
@@ -150,6 +161,45 @@ class ClaudeProcess:
             self._emit_running_changed(request_token, False)
             self._emit_complete(request_token, final_result)
 
+    @staticmethod
+    def _build_modes(config: ClaudeRunConfig) -> list[str]:
+        if normalize_provider_id(config.provider_id) == "codex":
+            return ["stream-json"]
+
+        modes: list[str] = []
+        if config.supports_output_format_flag:
+            if config.supports_stream_json:
+                modes.append("stream-json")
+            if config.supports_json:
+                modes.append("json")
+        modes.append("text")
+        return modes
+
+    @staticmethod
+    def _provider_label(provider_id: str) -> str:
+        return "Codex" if provider_id == "codex" else "Claude"
+
+    def _get_dialect(self, provider_id: str) -> CliDialect:
+        return self._dialects.get(provider_id, self._dialects["claude"])
+
+    @staticmethod
+    def _build_cli_run_config(config: ClaudeRunConfig, *, mode: str) -> CliRunConfig:
+        return CliRunConfig(
+            binary_path=config.binary_path,
+            cwd=config.cwd,
+            model=config.model,
+            permission_mode=config.permission_mode,
+            reasoning_level=config.reasoning_level,
+            allowed_tools=list(config.allowed_tools) if config.allowed_tools else None,
+            output_format=mode,
+            supports_model_flag=config.supports_model_flag,
+            supports_permission_flag=config.supports_permission_flag,
+            supports_output_format_flag=config.supports_output_format_flag,
+            supports_include_partial_messages=config.supports_include_partial_messages,
+            stream_json_requires_verbose=config.stream_json_requires_verbose,
+            supports_reasoning_flag=config.supports_reasoning_flag,
+        )
+
     def _run_single_attempt(
         self,
         *,
@@ -157,27 +207,18 @@ class ClaudeProcess:
         config: ClaudeRunConfig,
         mode: str,
     ) -> tuple[ClaudeRunResult, bool]:
-        argv = [config.binary_path, "-p", config.message]
-
-        if mode in {"stream-json", "json"}:
-            argv.extend(["--output-format", mode])
-
-        if mode == "stream-json" and config.stream_json_requires_verbose:
-            argv.append("--verbose")
-        if mode == "stream-json" and config.supports_include_partial_messages:
-            argv.append("--include-partial-messages")
-
-        if config.supports_model_flag:
-            argv.extend(["--model", config.model])
-
-        if config.supports_permission_flag:
-            argv.extend(["--permission-mode", config.permission_mode])
-
-        if config.supports_reasoning_flag and config.reasoning_level:
-            argv.extend(["--effort", config.reasoning_level])
-
+        provider_id = normalize_provider_id(config.provider_id)
+        provider_label = self._provider_label(provider_id)
+        dialect = self._get_dialect(provider_id)
+        dialect_config = self._build_cli_run_config(config, mode=mode)
         if config.conversation_id:
-            argv.extend(["--resume", config.conversation_id])
+            argv = dialect.build_resume_argv(
+                config.conversation_id,
+                config.message,
+                dialect_config,
+            )
+        else:
+            argv = dialect.build_argv(config.message, dialect_config)
 
         try:
             process_env = dict(os.environ)
@@ -200,7 +241,7 @@ class ClaudeProcess:
                     assistant_text="",
                     streamed_assistant=False,
                     conversation_id=config.conversation_id,
-                    error_message=f"Could not start Claude CLI: {error}",
+                    error_message=f"Could not start {provider_label} CLI: {error}",
                 ),
                 False,
             )
@@ -218,7 +259,6 @@ class ClaudeProcess:
         cost_usd = 0.0
         input_tokens = 0
         output_tokens = 0
-        pending_shell_tools: dict[str, dict[str, Any]] = {}
 
         stdout = process.stdout
         if stdout is not None:
@@ -237,185 +277,61 @@ class ClaudeProcess:
                     if self._stop_requested:
                         break
 
-                if mode == "stream-json":
+                if mode in {"stream-json", "json"}:
                     event = self._parse_json_line(stripped)
-                    if event is None:
-                        continue
-                    parsed_json = True
-                    event_type = str(event.get("type") or "").strip().lower()
+                    if event is not None:
+                        parsed_json = True
 
-                    delta_texts = self._extract_text_deltas(event)
-                    if delta_texts:
-                        for text_chunk in delta_texts:
-                            assistant_parts.append(text_chunk)
-                            streamed_assistant = True
-                            self._emit_assistant_chunk(request_token, text_chunk)
-
-                    if event_type == "assistant":
-                        texts, tools, permission_requests = self._extract_assistant_content(
-                            event.get("message"),
-                            request_token=request_token,
-                        )
-                        for permission_request in permission_requests:
-                            self._emit_permission_request(request_token, permission_request)
-                        for tool_message in tools:
-                            parsed_tool = self._parse_json_line(tool_message)
-                            if parsed_tool is not None:
-                                tool_use_id = str(parsed_tool.get("toolUseId") or "").strip()
-                                if tool_use_id:
-                                    pending_shell_tools[tool_use_id] = dict(parsed_tool)
-                            self._emit_system_message(request_token, tool_message)
-                        for text_chunk in texts:
-                            assistant_parts.append(text_chunk)
-                            streamed_assistant = True
-                            self._emit_assistant_chunk(request_token, text_chunk)
-                        continue
-
-                    if event_type == "content_block_start":
-                        block_payload = event.get("content_block")
-                        if not isinstance(block_payload, dict):
-                            block_payload = event.get("contentBlock")
-                        if not isinstance(block_payload, dict):
-                            block_payload = {}
-                        if str(block_payload.get("type") or "").strip().lower() == "tool_use":
-                            tool_data = self._extract_tool_data(block_payload)
-                            if tool_data is not None:
-                                tool_use_id = str(tool_data.get("toolUseId") or "").strip()
-                                if tool_use_id:
-                                    pending_shell_tools[tool_use_id] = dict(tool_data)
-                                permission_request = self._extract_permission_request(
-                                    block_payload,
-                                    request_token=request_token,
-                                    fallback_tool_data=tool_data,
-                                )
-                                if permission_request is not None:
-                                    self._emit_permission_request(request_token, permission_request)
-                                else:
-                                    self._emit_system_message(
-                                        request_token,
-                                        json.dumps(tool_data, ensure_ascii=False),
-                                    )
-                        continue
-
-                    if event_type == "user":
-                        for tool_result_entry in self._extract_tool_result_entries(event.get("message")):
-                            merged_tool = self._merge_tool_result_with_tool_use(
-                                tool_result_entry,
-                                pending_shell_tools,
+                    suppressed_tool_use_ids: set[str] = set()
+                    suppress_tools_without_id = False
+                    if provider_id == "claude" and mode == "stream-json":
+                        if isinstance(event, dict):
+                            suppressed_tool_use_ids, suppress_tools_without_id = self._emit_claude_permission_requests(
+                                request_token=request_token,
+                                event=event,
                             )
-                            if merged_tool is None:
-                                continue
-                            self._emit_system_message(
-                                request_token,
-                                json.dumps(merged_tool, ensure_ascii=False),
-                            )
-                        continue
 
-                    if event_type == "tool_use":
-                        tool_data = self._extract_tool_data(event)
-                        permission_request = self._extract_permission_request(
-                            event,
-                            request_token=request_token,
-                            fallback_tool_data=tool_data,
-                        )
-                        if permission_request is not None:
-                            self._emit_permission_request(request_token, permission_request)
-                            continue
-                        if tool_data is not None:
-                            tool_use_id = str(tool_data.get("toolUseId") or "").strip()
-                            if tool_use_id:
-                                pending_shell_tools[tool_use_id] = dict(tool_data)
-                            self._emit_system_message(
-                                request_token,
-                                json.dumps(tool_data, ensure_ascii=False),
-                            )
-                        continue
+                    parsed_events = dialect.parse_line(stripped)
+                    for parsed_event in parsed_events:
+                        if parsed_event.session_id:
+                            detected_conversation_id = parsed_event.session_id
 
-                    if event_type == "tool_result":
-                        merged_tool = self._merge_tool_result_with_tool_use(
-                            {
-                                "toolUseId": event.get("tool_use_id") or event.get("toolUseId") or event.get("id"),
-                                "output": self._coerce_text(
-                                    event.get("content")
-                                    or event.get("output")
-                                    or event.get("result")
-                                ),
-                            },
-                            pending_shell_tools,
-                        )
-                        if merged_tool is not None:
-                            self._emit_system_message(
-                                request_token,
-                                json.dumps(merged_tool, ensure_ascii=False),
-                            )
-                        continue
-
-                    permission_request = self._extract_permission_request(
-                        event,
-                        request_token=request_token,
-                        fallback_tool_data=None,
-                    )
-                    if permission_request is not None:
-                        self._emit_permission_request(request_token, permission_request)
-                        continue
-
-                    if event_type == "result":
-                        raw_conversation_id = event.get("conversation_id") or event.get("session_id")
-                        if isinstance(raw_conversation_id, str) and raw_conversation_id.strip():
-                            detected_conversation_id = raw_conversation_id.strip()
-
-                        raw_result = event.get("result")
-                        if isinstance(raw_result, str):
-                            result_text = raw_result
-
-                        raw_cost = event.get("total_cost_usd")
-                        if isinstance(raw_cost, (int, float)):
-                            cost_usd = float(raw_cost)
-                        usage = event.get("usage")
-                        if isinstance(usage, dict):
-                            input_tokens = int(usage.get("input_tokens") or 0)
-                            output_tokens = int(usage.get("output_tokens") or 0)
-
-                        if bool(event.get("is_error")):
-                            if isinstance(raw_result, str) and raw_result.strip():
-                                error_messages.append(raw_result.strip())
+                        if parsed_event.text:
+                            if parsed_event.raw_type == "result":
+                                result_text = parsed_event.text
                             else:
-                                error_messages.append("Claude returned an error result.")
-                        continue
+                                assistant_parts.append(parsed_event.text)
+                                streamed_assistant = True
+                                self._emit_assistant_chunk(request_token, parsed_event.text)
 
-                    if event_type == "error":
-                        message_text = event.get("error") or event.get("message")
-                        if isinstance(message_text, str) and message_text.strip():
-                            error_messages.append(message_text.strip())
-                        continue
+                        if parsed_event.tool:
+                            tool_payload = self._normalize_tool_payload(
+                                parsed_event=parsed_event,
+                                provider_id=provider_id,
+                            )
+                            if tool_payload is not None:
+                                tool_use_id = str(tool_payload.get("toolUseId") or "").strip()
+                                if tool_use_id and tool_use_id in suppressed_tool_use_ids:
+                                    continue
+                                if suppress_tools_without_id and not tool_use_id:
+                                    continue
+                                self._emit_system_message(
+                                    request_token,
+                                    json.dumps(tool_payload, ensure_ascii=False),
+                                )
 
-                    if event_type == "system":
-                        subtype = str(event.get("subtype") or "")
-                        if subtype in {"error", "warning"}:
-                            raw_message = event.get("message") or event.get("output")
-                            if isinstance(raw_message, str) and raw_message.strip():
-                                self._emit_system_message(request_token, raw_message.strip())
-                        continue
+                        if parsed_event.usage:
+                            raw_cost = parsed_event.usage.get("total_cost_usd")
+                            if isinstance(raw_cost, (int, float)):
+                                cost_usd = float(raw_cost)
+                            input_tokens = int(parsed_event.usage.get("input_tokens") or 0)
+                            output_tokens = int(parsed_event.usage.get("output_tokens") or 0)
 
-                elif mode == "json":
-                    event = self._parse_json_line(stripped)
-                    if event is None:
-                        continue
-                    parsed_json = True
-
-                    raw_conversation_id = event.get("conversation_id") or event.get("session_id")
-                    if isinstance(raw_conversation_id, str) and raw_conversation_id.strip():
-                        detected_conversation_id = raw_conversation_id.strip()
-
-                    raw_result = event.get("result")
-                    if isinstance(raw_result, str):
-                        result_text = raw_result
-
-                    if bool(event.get("is_error")):
-                        if isinstance(raw_result, str) and raw_result.strip():
-                            error_messages.append(raw_result.strip())
-                        else:
-                            error_messages.append("Claude returned an error result.")
+                        if parsed_event.error:
+                            if provider_id == "claude" and parsed_event.raw_type == "system":
+                                self._emit_system_message(request_token, parsed_event.error)
+                            else:
+                                error_messages.append(parsed_event.error)
 
                 else:
                     if line:
@@ -451,7 +367,7 @@ class ClaudeProcess:
         if error_messages:
             error_message = error_messages[-1]
         elif return_code != 0:
-            output_hint = captured_output[-1] if captured_output else "Claude exited with an error."
+            output_hint = captured_output[-1] if captured_output else f"{provider_label} exited with an error."
             error_message = output_hint
 
         success = return_code == 0 and not error_messages
@@ -481,6 +397,98 @@ class ClaudeProcess:
         if isinstance(parsed, dict):
             return parsed
         return None
+
+    def _emit_claude_permission_requests(
+        self,
+        *,
+        request_token: str,
+        event: dict[str, Any],
+    ) -> tuple[set[str], bool]:
+        suppressed_tool_use_ids: set[str] = set()
+        suppress_tools_without_id = False
+
+        def _record_suppression(tool_data: dict[str, Any] | None) -> None:
+            nonlocal suppress_tools_without_id
+            if not isinstance(tool_data, dict):
+                return
+            tool_use_id = str(tool_data.get("toolUseId") or "").strip()
+            if tool_use_id:
+                suppressed_tool_use_ids.add(tool_use_id)
+            else:
+                suppress_tools_without_id = True
+
+        def _emit_for_payload(payload: dict[str, Any], tool_data: dict[str, Any] | None) -> None:
+            permission_request = self._extract_permission_request(
+                payload,
+                request_token=request_token,
+                fallback_tool_data=tool_data,
+            )
+            if permission_request is None:
+                return
+            self._emit_permission_request(request_token, permission_request)
+            _record_suppression(tool_data)
+
+        event_type = str(event.get("type") or "").strip().lower()
+        if event_type == "assistant":
+            message = event.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        if str(block.get("type") or "").strip().lower() != "tool_use":
+                            continue
+                        tool_data = self._extract_tool_data(block)
+                        _emit_for_payload(block, tool_data)
+            return suppressed_tool_use_ids, suppress_tools_without_id
+
+        if event_type == "content_block_start":
+            block_payload = event.get("content_block")
+            if not isinstance(block_payload, dict):
+                block_payload = event.get("contentBlock")
+            if isinstance(block_payload, dict) and str(block_payload.get("type") or "").strip().lower() == "tool_use":
+                tool_data = self._extract_tool_data(block_payload)
+                _emit_for_payload(block_payload, tool_data)
+            return suppressed_tool_use_ids, suppress_tools_without_id
+
+        if event_type == "tool_use":
+            tool_data = self._extract_tool_data(event)
+            _emit_for_payload(event, tool_data)
+            return suppressed_tool_use_ids, suppress_tools_without_id
+
+        _emit_for_payload(event, None)
+        return suppressed_tool_use_ids, suppress_tools_without_id
+
+    def _normalize_tool_payload(
+        self,
+        *,
+        parsed_event: ParsedEvent,
+        provider_id: str,
+    ) -> dict[str, Any] | None:
+        if not isinstance(parsed_event.tool, dict):
+            return None
+
+        tool_payload = dict(parsed_event.tool)
+        tool_payload["__tool__"] = True
+
+        tool_use_id = str(tool_payload.get("toolUseId") or tool_payload.get("id") or "").strip()
+        if tool_use_id:
+            tool_payload["toolUseId"] = tool_use_id
+
+        if not str(tool_payload.get("name") or "").strip():
+            if provider_id == "codex":
+                tool_payload["name"] = "bash"
+            else:
+                tool_payload["name"] = "tool"
+
+        self._attach_cipr_metadata(tool_payload)
+        if provider_id == "claude" and str(tool_payload.get("name") or "").strip().lower() == "tool_result":
+            has_cipr = bool(tool_payload.get("git_event") or tool_payload.get("pr_event") or tool_payload.get("ci_event"))
+            if not has_cipr:
+                return None
+
+        return tool_payload
 
     def _extract_assistant_content(
         self,

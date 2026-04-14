@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from claude_code_gui.domain.provider import DEFAULT_PROVIDER_ID, get_provider_config
+
 APP_NAME = "Claude Code"
 APP_MIN_WIDTH = 900
 APP_MIN_HEIGHT = 600
@@ -23,11 +25,11 @@ SESSION_STATUSES = {
     SESSION_STATUS_ERROR,
 }
 
-MODEL_OPTIONS: list[tuple[str, str]] = [
-    ("Claude Sonnet (Latest)", "sonnet"),
-    ("Claude Opus (Latest)", "opus"),
-    ("Claude Haiku (Latest)", "haiku"),
-]
+def get_model_options(provider: str = DEFAULT_PROVIDER_ID) -> list[tuple[str, str]]:
+    return list(get_provider_config(provider).model_options)
+
+
+MODEL_OPTIONS: list[tuple[str, str]] = get_model_options()
 
 LEGACY_MODEL_ALIASES: dict[str, str] = {
     "default": "sonnet",
@@ -36,11 +38,17 @@ LEGACY_MODEL_ALIASES: dict[str, str] = {
     "claude-haiku-4-5": "haiku",
 }
 
-PERMISSION_OPTIONS: list[tuple[str, str, bool]] = [
-    ("Auto", "auto", False),
-    ("Plan mode", "plan", False),
-    ("Bypass permissions (Advanced)", "bypassPermissions", True),
-]
+def get_legacy_model_aliases(provider: str = DEFAULT_PROVIDER_ID) -> dict[str, str]:
+    if provider == "claude":
+        return LEGACY_MODEL_ALIASES
+    return {}
+
+
+def get_permission_options(provider: str = DEFAULT_PROVIDER_ID) -> list[tuple[str, str, bool]]:
+    return list(get_provider_config(provider).permission_options)
+
+
+PERMISSION_OPTIONS: list[tuple[str, str, bool]] = get_permission_options()
 
 REASONING_LEVEL_OPTIONS: list[tuple[str, str]] = [
     ("Low (Fast)", "low"),
@@ -53,6 +61,12 @@ LEGACY_PERMISSION_ALIASES: dict[str, str] = {
     "default": "auto",
     "acceptEdits": "auto",
 }
+
+
+def get_legacy_permission_aliases(provider: str = DEFAULT_PROVIDER_ID) -> dict[str, str]:
+    if provider == "claude":
+        return LEGACY_PERMISSION_ALIASES
+    return {}
 
 CONNECTION_CONNECTED = "connected"
 CONNECTION_DISCONNECTED = "disconnected"

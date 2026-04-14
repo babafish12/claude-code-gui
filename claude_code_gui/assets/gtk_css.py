@@ -2,26 +2,71 @@
 
 from __future__ import annotations
 
-WINDOW_BG = "#2f2f2a"
-HEADER_BG = "#2c2c27"
-SIDEBAR_BG = "#252520"
-CHAT_OUTER_BG = "#2f2f2a"
-CHAT_BG = "#2f2f2a"
-STATUS_BG = "#292923"
-BORDER = "#4a4a43"
-BORDER_SOFT = "#3b3b35"
-FOREGROUND = "#d4d4c8"
-FOREGROUND_MUTED = "#8a8a7a"
-ACCENT = "#d97757"
-ACCENT_SOFT = "#e09670"
-WARNING = "#d5a160"
-ERROR = "#df7f66"
-SUCCESS = "#8bbf8a"
-BUTTON_BG = "#35352f"
-BUTTON_BG_HOVER = "#3f3f38"
-BUTTON_BG_ACTIVE = "#484840"
+from claude_code_gui.domain.provider import PROVIDERS
 
-CSS_STYLES = f"""
+
+def build_gtk_css(
+    colors: dict[str, str],
+    accent_rgb: tuple[int, int, int],
+    accent_soft_rgb: tuple[int, int, int],
+) -> str:
+    WINDOW_BG = colors["window_bg"]
+    HEADER_BG = colors["header_bg"]
+    HEADER_GRADIENT_END = colors["header_gradient_end"]
+    SIDEBAR_BG = colors["sidebar_bg"]
+    CHAT_OUTER_BG = colors["chat_outer_bg"]
+    CHAT_BG = colors["chat_bg"]
+    STATUS_BG = colors["status_bg"]
+    BOTTOM_GRADIENT_END = colors["bottom_gradient_end"]
+    BORDER = colors["border"]
+    BORDER_SOFT = colors["border_soft"]
+    FOREGROUND = colors["foreground"]
+    FOREGROUND_MUTED = colors["foreground_muted"]
+    ACCENT = colors["accent"]
+    ACCENT_SOFT = colors["accent_soft"]
+    WARNING = colors["warning"]
+    ERROR = colors["error"]
+    SUCCESS = colors["success"]
+    BUTTON_BG = colors["button_bg"]
+    BUTTON_BG_HOVER = colors["button_bg_hover"]
+    BUTTON_BG_ACTIVE = colors["button_bg_active"]
+    NEW_SESSION_BG = colors["new_session_bg"]
+    NEW_SESSION_BORDER = colors["new_session_border"]
+    SIDEBAR_TOGGLE_COLLAPSED_BG = colors["sidebar_toggle_collapsed_bg"]
+    MENU_BG = colors["menu_bg"]
+    POPOVER_BG = colors["popover_bg"]
+    SESSION_FILTER_BG = colors["session_filter_bg"]
+    SESSION_FILTER_HOVER_BG = colors["session_filter_hover_bg"]
+    SESSION_FILTER_ACTIVE_FG = colors["session_filter_active_fg"]
+    SESSION_ROW_HOVER_BG = colors["session_row_hover_bg"]
+    SESSION_ROW_ACTIVE_BG = colors["session_row_active_bg"]
+    STATUS_DOT_ENDED = colors["status_dot_ended"]
+    STATUS_DOT_ARCHIVED = colors["status_dot_archived"]
+    CONTEXT_TROUGH_BG = colors["context_trough_bg"]
+    SESSION_META_TIME = colors["session_meta_time"]
+
+    accent_r, accent_g, accent_b = accent_rgb
+    ACCENT_RGBA_035 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.35)"
+    ACCENT_RGBA_03 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.3)"
+    ACCENT_RGBA_025 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.25)"
+    ACCENT_RGBA_02 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.2)"
+    ACCENT_RGBA_018 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.18)"
+    ACCENT_RGBA_045 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.45)"
+    ACCENT_RGBA_012 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.12)"
+    ACCENT_RGBA_011 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.11)"
+    ACCENT_RGBA_034 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.34)"
+    accent_soft_r, accent_soft_g, accent_soft_b = accent_soft_rgb
+    ACCENT_SOFT_RGBA_045 = (
+        f"rgba({accent_soft_r}, {accent_soft_g}, {accent_soft_b}, 0.45)"
+    )
+    ACCENT_SOFT_RGBA_04 = (
+        f"rgba({accent_soft_r}, {accent_soft_g}, {accent_soft_b}, 0.4)"
+    )
+    ACCENT_SOFT_RGBA_018 = (
+        f"rgba({accent_soft_r}, {accent_soft_g}, {accent_soft_b}, 0.18)"
+    )
+
+    return f"""
 window,
 .app-root {{
     background-color: {WINDOW_BG};
@@ -29,7 +74,7 @@ window,
 }}
 
 .header-shell {{
-    background: linear-gradient(180deg, {HEADER_BG}, #252520);
+    background: linear-gradient(180deg, {HEADER_BG}, {HEADER_GRADIENT_END});
     border-bottom: 1px solid {BORDER_SOFT};
 }}
 
@@ -94,7 +139,7 @@ window,
 .sidebar-toggle-gtk:focus,
 .new-session-button:focus,
 .session-menu-button:focus {{
-    box-shadow: 0 0 0 2px rgba(212, 132, 90, 0.35);
+    box-shadow: 0 0 0 2px {ACCENT_RGBA_035};
 }}
 
 .new-session-button {{
@@ -103,17 +148,34 @@ window,
 
 .new-session-button {{
     min-height: 38px;
-    background: #31312b;
-    border-color: #3f3f38;
+    background: {NEW_SESSION_BG};
+    border-color: {NEW_SESSION_BORDER};
     color: {FOREGROUND};
     font-weight: 600;
     padding: 0 12px;
 }}
 
 .sidebar-toggle-gtk {{
-    min-height: 30px;
-    min-width: 30px;
+    min-height: 34px;
+    min-width: 34px;
     padding: 0;
+    border-radius: 10px;
+}}
+
+.sidebar-toggle-gtk.sidebar-toggle-expanded {{
+    background-color: {NEW_SESSION_BG};
+}}
+
+.sidebar-toggle-gtk.sidebar-toggle-collapsed {{
+    background-color: {SIDEBAR_TOGGLE_COLLAPSED_BG};
+    border-color: {ACCENT_SOFT_RGBA_045};
+}}
+
+.sidebar-toggle-glyph {{
+    color: {FOREGROUND};
+    font-size: 16px;
+    font-weight: 700;
+    opacity: 0.92;
 }}
 
 .bottom-combo button,
@@ -137,7 +199,7 @@ window,
 
 .bottom-combo button:focus,
 .recent-combo button:focus {{
-    box-shadow: 0 0 0 2px rgba(212, 132, 90, 0.35);
+    box-shadow: 0 0 0 2px {ACCENT_RGBA_035};
 }}
 
 .bottom-combo button:active,
@@ -163,7 +225,7 @@ window,
 }}
 
 menu {{
-    background-color: #34342e;
+    background-color: {MENU_BG};
     border: 1px solid {BORDER};
     border-radius: 10px;
     padding: 4px;
@@ -176,7 +238,7 @@ menuitem {{
 }}
 
 menuitem:hover {{
-    background-color: rgba(212, 132, 90, 0.2);
+    background-color: {ACCENT_RGBA_02};
 }}
 
 menuitem:disabled {{
@@ -196,6 +258,8 @@ menuitem:disabled {{
 
 .sidebar.sidebar-collapsed {{
     padding: 12px 4px;
+    border-right-color: transparent;
+    background: transparent;
 }}
 
 .sidebar-header-toggle {{
@@ -203,6 +267,29 @@ menuitem:disabled {{
     min-width: 30px;
     padding: 0;
     border-radius: 10px;
+}}
+
+.provider-switch-button {{
+    min-height: 30px;
+    padding: 0 10px;
+    border-radius: 10px;
+    border: 1px solid {ACCENT_SOFT_RGBA_045};
+    background: {ACCENT_RGBA_012};
+    color: {ACCENT_SOFT};
+    font-size: 11px;
+    font-weight: 700;
+}}
+
+.provider-switch-button:hover {{
+    border-color: {ACCENT_SOFT};
+    background: {ACCENT_RGBA_018};
+    color: {FOREGROUND};
+}}
+
+.provider-switch-button:disabled {{
+    color: {FOREGROUND_MUTED};
+    border-color: {BORDER_SOFT};
+    background: transparent;
 }}
 
 .sidebar-section-title {{
@@ -226,7 +313,7 @@ menuitem:disabled {{
 
 .project-path-entry:focus {{
     border-color: {ACCENT_SOFT};
-    box-shadow: 0 0 0 2px rgba(212, 132, 90, 0.3);
+    box-shadow: 0 0 0 2px {ACCENT_RGBA_03};
 }}
 
 .project-path-bar {{
@@ -249,11 +336,11 @@ menuitem:disabled {{
 }}
 
 .project-path-browse-button:focus {{
-    box-shadow: 0 0 0 2px rgba(212, 132, 90, 0.35);
+    box-shadow: 0 0 0 2px {ACCENT_RGBA_035};
 }}
 
 popover.path-suggestion-popover {{
-    background-color: #30302a;
+    background-color: {POPOVER_BG};
     border: 1px solid {BORDER};
     border-radius: 10px;
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
@@ -270,7 +357,7 @@ popover.path-suggestion-popover {{
 }}
 
 .path-suggestion-list row:selected {{
-    background-color: rgba(212, 132, 90, 0.18);
+    background-color: {ACCENT_RGBA_018};
 }}
 
 .path-suggestion-item {{
@@ -293,14 +380,14 @@ popover.path-suggestion-popover {{
     padding: 0 10px;
     border-radius: 999px;
     border: 1px solid {BORDER_SOFT};
-    background-color: #31312b;
+    background-color: {SESSION_FILTER_BG};
     color: {FOREGROUND_MUTED};
     font-size: 11px;
     font-weight: 600;
 }}
 
 .session-filter-pill:hover {{
-    background-color: #3a3a33;
+    background-color: {SESSION_FILTER_HOVER_BG};
     border-color: {ACCENT_SOFT};
     color: {FOREGROUND};
 }}
@@ -308,7 +395,7 @@ popover.path-suggestion-popover {{
 .session-filter-pill.session-filter-pill-active {{
     background-color: {ACCENT};
     border-color: {ACCENT};
-    color: #f7efe9;
+    color: {SESSION_FILTER_ACTIVE_FG};
 }}
 
 .session-search-entry {{
@@ -323,7 +410,7 @@ popover.path-suggestion-popover {{
 
 .session-search-entry:focus {{
     border-color: {ACCENT_SOFT};
-    box-shadow: 0 0 0 2px rgba(212, 132, 90, 0.25);
+    box-shadow: 0 0 0 2px {ACCENT_RGBA_025};
 }}
 
 .session-list {{
@@ -350,13 +437,13 @@ popover.path-suggestion-popover {{
 }}
 
 .session-row:hover {{
-    background-color: #34342f;
+    background-color: {SESSION_ROW_HOVER_BG};
 }}
 
 .session-row.session-row-active {{
-    background-color: #3a3a34;
-    border-color: rgba(224, 150, 112, 0.4);
-    box-shadow: inset 0 0 0 1px rgba(224, 150, 112, 0.18);
+    background-color: {SESSION_ROW_ACTIVE_BG};
+    border-color: {ACCENT_SOFT_RGBA_04};
+    box-shadow: inset 0 0 0 1px {ACCENT_SOFT_RGBA_018};
 }}
 
 .session-open-button {{
@@ -374,7 +461,7 @@ popover.path-suggestion-popover {{
 }}
 
 .session-open-button:focus {{
-    box-shadow: 0 0 0 2px rgba(212, 132, 90, 0.35);
+    box-shadow: 0 0 0 2px {ACCENT_RGBA_035};
 }}
 
 .session-title {{
@@ -395,11 +482,11 @@ popover.path-suggestion-popover {{
 }}
 
 .session-status-dot.session-status-ended {{
-    background-color: #7b7b70;
+    background-color: {STATUS_DOT_ENDED};
 }}
 
 .session-status-dot.session-status-archived {{
-    background-color: #585850;
+    background-color: {STATUS_DOT_ARCHIVED};
 }}
 
 .session-status-dot.session-status-error {{
@@ -429,13 +516,13 @@ popover.path-suggestion-popover {{
 }}
 
 .session-popover button:hover {{
-    border-color: rgba(212, 132, 90, 0.45);
-    background-color: rgba(212, 132, 90, 0.12);
+    border-color: {ACCENT_RGBA_045};
+    background-color: {ACCENT_RGBA_012};
 }}
 
 .chat-wrap {{
     padding: 10px 10px 8px;
-    background: radial-gradient(circle at top left, rgba(212, 132, 90, 0.11), transparent 35%), {CHAT_OUTER_BG};
+    background: radial-gradient(circle at top left, {ACCENT_RGBA_011}, transparent 35%), {CHAT_OUTER_BG};
 }}
 
 .chat-shell {{
@@ -448,7 +535,7 @@ popover.path-suggestion-popover {{
 
 .chat-shell.chat-focused {{
     border-color: {ACCENT};
-    box-shadow: 0 0 0 1px rgba(212, 132, 90, 0.34), 0 14px 28px rgba(0, 0, 0, 0.28);
+    box-shadow: 0 0 0 1px {ACCENT_RGBA_034}, 0 14px 28px rgba(0, 0, 0, 0.28);
 }}
 
 .chat-overlay-toggle {{
@@ -457,7 +544,7 @@ popover.path-suggestion-popover {{
 }}
 
 .bottom-bar {{
-    background: linear-gradient(180deg, {STATUS_BG}, #252520);
+    background: linear-gradient(180deg, {STATUS_BG}, {BOTTOM_GRADIENT_END});
     border-top: 1px solid {BORDER_SOFT};
     min-height: 30px;
     padding: 4px 10px;
@@ -518,7 +605,7 @@ popover.path-suggestion-popover {{
 .context-progress trough {{
     min-height: 6px;
     border-radius: 999px;
-    background-color: #3a3a34;
+    background-color: {CONTEXT_TROUGH_BG};
 }}
 
 .context-progress progress {{
@@ -542,6 +629,20 @@ popover.path-suggestion-popover {{
     opacity: 0.65;
 }}
 
+.session-meta {{
+    font-size: 10px;
+    font-weight: 500;
+    opacity: 0.76;
+}}
+
+.session-meta-time {{
+    color: {SESSION_META_TIME};
+}}
+
+.session-meta-path {{
+    color: {FOREGROUND_MUTED};
+}}
+
 .usage-limit-label {{
     color: {FOREGROUND_MUTED};
     font-size: 11px;
@@ -556,3 +657,10 @@ popover.path-suggestion-popover {{
     color: {ERROR};
 }}
 """
+
+
+CSS_STYLES = build_gtk_css(
+    PROVIDERS["claude"].colors,
+    PROVIDERS["claude"].accent_rgb,
+    PROVIDERS["claude"].accent_soft_rgb,
+)
