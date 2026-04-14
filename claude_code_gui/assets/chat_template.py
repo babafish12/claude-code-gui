@@ -3,9 +3,13 @@
 from __future__ import annotations
 from pathlib import Path
 
+from claude_code_gui.assets.glass_tokens_web import glass_tokens_style_block
+
 VENDOR_DIR = Path(__file__).parent / "vendor"
 HIGHLIGHT_JS = (VENDOR_DIR / "highlight.min.js").read_text(encoding="utf-8").replace("</script>", "<\\/script>")
 HIGHLIGHT_CSS = (VENDOR_DIR / "highlight-dracula.min.css").read_text(encoding="utf-8").replace("</style>", "<\\/style>")
+MOTION_ONE_JS = (VENDOR_DIR / "motion.min.js").read_text(encoding="utf-8").replace("</script>", "<\\/script>")
+GLASS_STYLE_SNIPPET = glass_tokens_style_block("dark")
 
 CHAT_WEBVIEW_HTML = (
 r"""
@@ -20,6 +24,10 @@ __INLINE_HIGHLIGHT_CSS__
 <script>
 __INLINE_HIGHLIGHT_JS__
 </script>
+<script>
+__INLINE_MOTION_ONE_JS__
+</script>
+__GLASS_STYLE_SNIPPET__
 <style>
 :root {
     --bg: #2f2f2a;
@@ -113,6 +121,8 @@ a:hover {
 button:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
+    box-shadow:
+        0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 button:disabled {
@@ -152,7 +162,11 @@ button:disabled {
 .welcome-icon {
     width: 42px;
     height: 42px;
-    color: var(--accent);
+    object-fit: contain;
+    display: block;
+    border-radius: 9px;
+    margin: 2px 0;
+    background: transparent;
 }
 
 .welcome-title {
@@ -164,6 +178,9 @@ button:disabled {
 }
 
 .welcome-provider-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     border-radius: 999px;
     border: 1px solid var(--chip-border);
     background: var(--accent-rgba-012);
@@ -171,6 +188,18 @@ button:disabled {
     font-size: 12px;
     font-weight: 700;
     padding: 5px 10px;
+}
+
+.welcome-provider-icon {
+    width: 14px;
+    height: 14px;
+    object-fit: contain;
+    vertical-align: middle;
+    display: none;
+}
+
+.welcome-provider-icon.visible {
+    display: inline-block;
 }
 
 .welcome-onboarding {
@@ -227,8 +256,9 @@ button:disabled {
 }
 
 .composer-input:focus-visible {
-    outline: 2px solid var(--accent) !important;
-    outline-offset: 2px;
+    outline: none !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
 }
 
 .control-row {
@@ -237,6 +267,12 @@ button:disabled {
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+}
+
+.control-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .control-right {
@@ -268,6 +304,19 @@ button:disabled {
 
 .folder-path-icon {
     flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 12px;
+}
+
+.folder-path-icon svg {
+    width: 12px;
+    height: 12px;
+    fill: currentColor;
+    stroke: currentColor;
+    stroke-width: 1.5;
 }
 
 .folder-path-text {
@@ -282,6 +331,7 @@ button:disabled {
     margin-bottom: 8px;
     flex-wrap: wrap;
     gap: 8px;
+    align-items: stretch;
 }
 
 .attachment-strip.has-items {
@@ -291,13 +341,14 @@ button:disabled {
 .attachment-chip {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    border-radius: 999px;
+    gap: 10px;
+    border-radius: 12px;
     border: 1px solid var(--chip-border);
     background: var(--surface-card-soft);
-    padding: 3px 10px 3px 5px;
+    padding: 6px 8px 6px 6px;
     font-size: 12px;
-    max-width: 280px;
+    max-width: min(320px, 100%);
+    min-height: 56px;
     transition: border-color var(--motion-fast) var(--ease-standard);
 }
 
@@ -305,12 +356,36 @@ button:disabled {
     border-color: var(--accent-rgba-072);
 }
 
-.attachment-thumb {
-    width: 26px;
-    height: 26px;
-    border-radius: 8px;
-    object-fit: cover;
+.attachment-preview {
+    flex: none;
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    overflow: hidden;
     border: 1px solid var(--chip-border);
+    background: var(--surface-overlay);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.attachment-thumb {
+    width: 44px;
+    height: 44px;
+    object-fit: cover;
+    display: block;
+}
+
+.attachment-file-marker {
+    font-size: 17px;
+    line-height: 1;
+}
+
+.attachment-meta {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
 }
 
 .attachment-name {
@@ -318,6 +393,18 @@ button:disabled {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    color: var(--text);
+    max-width: 180px;
+}
+
+.attachment-path {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 11px;
+    max-width: 180px;
 }
 
 .attachment-remove {
@@ -336,6 +423,7 @@ button:disabled {
 }
 
 .plus-btn,
+.artifacts-toggle-btn,
 .selector-btn,
 .permission-btn,
 .action-btn,
@@ -354,12 +442,71 @@ button:disabled {
     width: 30px;
     height: 30px;
     border-radius: 999px;
-    font-size: 18px;
-    line-height: 1;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
 }
 
+.artifacts-toggle-btn {
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.artifacts-toggle-btn:hover {
+    background-color: var(--accent-rgba-012);
+    border-color: var(--accent-rgba-072);
+}
+
+.artifacts-toggle-btn.active {
+    background-color: var(--accent-rgba-012);
+    border-color: var(--accent-rgba-072);
+}
+
+.plus-btn-icon,
+.artifacts-toggle-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+.plus-btn-icon svg,
+.artifacts-toggle-icon svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.toggle-track {
+    fill: transparent;
+    stroke: currentColor;
+    stroke-width: 1.5;
+}
+
+.toggle-knob {
+    fill: currentColor;
+    stroke: none;
+    transition: transform var(--motion-fast) var(--glass-spring-standard);
+}
+
+.artifacts-toggle-btn.active .toggle-knob {
+    transform: translateX(6px);
+}
+
 .plus-btn:hover,
+.artifacts-toggle-btn:hover,
 .selector-btn:hover,
 .permission-btn:hover,
 .chip:hover,
@@ -410,14 +557,18 @@ button:disabled {
     position: absolute;
     right: 0;
     bottom: calc(100% + 10px);
-    width: 280px;
-    border-radius: 16px;
-    border: 1px solid var(--input-border);
-    background: var(--surface-panel);
-    box-shadow: 0 18px 34px rgba(0, 0, 0, 0.34);
-    padding: 6px;
+    width: auto;
+    min-width: 140px;
+    max-width: 320px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: var(--glass-tint-interactive);
+    backdrop-filter: blur(12px) saturate(150%) brightness(1.02);
+    -webkit-backdrop-filter: blur(12px) saturate(150%) brightness(1.02);
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.18);
+    padding: 3px;
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(6px);
     pointer-events: none;
     transition: opacity var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
     z-index: 40;
@@ -431,7 +582,7 @@ button:disabled {
 
 .popup-menu.closing {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(6px);
     pointer-events: none;
     transition: opacity var(--motion-fast) var(--ease-exit), transform var(--motion-fast) var(--ease-exit);
 }
@@ -439,11 +590,12 @@ button:disabled {
 .popup-option {
     width: 100%;
     border: 1px solid transparent;
-    border-radius: 12px;
+    border-radius: 10px;
     background: transparent;
     color: var(--text);
     text-align: left;
-    padding: 10px 10px;
+    padding: 7px 10px;
+    white-space: nowrap;
     cursor: pointer;
     transition:
         border-color var(--motion-fast) var(--ease-standard),
@@ -456,12 +608,152 @@ button:disabled {
 }
 
 .popup-option:hover {
-    background: var(--surface-overlay);
+    background: rgba(var(--accent-rgb), 0.075);
+    border-color: rgba(var(--accent-rgb), 0.18);
 }
 
 .popup-option.active {
-    background: rgba(var(--accent-rgb), 0.13);
-    border-color: var(--accent-rgba-055);
+    background: rgba(var(--accent-rgb), 0.11);
+    border-color: rgba(var(--accent-rgb), 0.28);
+}
+
+.folder-path-btn,
+.plus-btn,
+.artifacts-toggle-btn,
+.selector-btn,
+.permission-btn,
+.permission-selector,
+.assistant-action,
+.action-btn,
+.code-copy-btn,
+.chip,
+.quick-chip,
+.artifact-action-btn,
+.stop-process-btn,
+.example-prompt {
+    position: relative;
+    overflow: hidden;
+    border-radius: var(--glass-radius-control);
+    background: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: none;
+    transition-property: transform, box-shadow, background-color, border-color;
+    transition-duration: var(--motion-fast);
+    transition-timing-function: var(--glass-spring-standard);
+    will-change: transform;
+}
+
+.folder-path-btn:hover,
+.plus-btn:hover,
+.artifacts-toggle-btn:hover,
+.selector-btn:hover,
+.permission-btn:hover,
+.permission-selector:hover,
+.assistant-action:hover,
+.action-btn:hover,
+.code-copy-btn:hover,
+.chip:hover,
+.quick-chip:hover,
+.artifact-action-btn:hover,
+.stop-process-btn:hover,
+.example-prompt:hover {
+    background: var(--glass-tint-interactive-hover);
+    border-color: var(--glass-border-highlight);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+    backdrop-filter: blur(12px) saturate(150%) brightness(1.02);
+    -webkit-backdrop-filter: blur(12px) saturate(150%) brightness(1.02);
+    transform: scale(1.02);
+    transition-timing-function: var(--glass-spring-hover);
+    transition-duration: var(--motion-hover);
+}
+
+.folder-path-btn::before,
+.plus-btn::before,
+.artifacts-toggle-btn::before,
+.selector-btn::before,
+.permission-btn::before,
+.permission-selector::before,
+.assistant-action::before,
+.action-btn::before,
+.code-copy-btn::before,
+.chip::before,
+.quick-chip::before,
+.artifact-action-btn::before,
+.stop-process-btn::before,
+.example-prompt::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--glass-specular-gradient);
+    pointer-events: none;
+    transition: opacity var(--motion-hover) var(--glass-spring-hover);
+    opacity: 0;
+}
+
+.folder-path-btn:hover::before,
+.plus-btn:hover::before,
+.artifacts-toggle-btn:hover::before,
+.selector-btn:hover::before,
+.permission-btn:hover::before,
+.permission-selector:hover::before,
+.assistant-action:hover::before,
+.action-btn:hover::before,
+.code-copy-btn:hover::before,
+.chip:hover::before,
+.quick-chip:hover::before,
+.artifact-action-btn:hover::before,
+.stop-process-btn:hover::before,
+.example-prompt:hover::before {
+    opacity: 0.72;
+}
+
+.folder-path-btn:active,
+.plus-btn:active,
+.artifacts-toggle-btn:active,
+.selector-btn:active,
+.permission-btn:active,
+.permission-selector:active,
+.assistant-action:active,
+.action-btn:active,
+.code-copy-btn:active,
+.chip:active,
+.quick-chip:active,
+.artifact-action-btn:active,
+.stop-process-btn:active,
+.example-prompt:active {
+    transform: scale(0.98);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+    transition-timing-function: var(--glass-spring-press);
+    transition-duration: var(--motion-press);
+}
+
+.folder-path-btn,
+.plus-btn,
+.artifacts-toggle-btn,
+.selector-btn,
+.permission-btn,
+.permission-selector,
+.assistant-action,
+.action-btn,
+.code-copy-btn,
+.chip,
+.quick-chip,
+.artifact-action-btn,
+.stop-process-btn,
+.example-prompt {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+.popup-option {
+    position: relative;
+    overflow: hidden;
+}
+
+.popup-option:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 .popup-title {
@@ -486,13 +778,13 @@ button:disabled {
     margin-bottom: 6px;
     max-height: 320px;
     overflow-y: auto;
-    border-radius: 16px;
-    border: 1px solid var(--input-border);
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
     background: var(--surface-panel);
-    box-shadow: 0 -12px 36px rgba(0, 0, 0, 0.34);
-    padding: 6px;
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.18);
+    padding: 3px;
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(6px);
     pointer-events: none;
     transition: opacity var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
     z-index: 50;
@@ -505,22 +797,22 @@ button:disabled {
 }
 
 .slash-dropdown-header {
-    padding: 8px 10px 6px;
-    font-size: 11px;
-    font-weight: 600;
+    padding: 5px 10px 4px;
+    font-size: 10px;
+    font-weight: 500;
     color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    text-transform: none;
+    letter-spacing: 0.1px;
 }
 
 .slash-dropdown-item {
     width: 100%;
     border: 1px solid transparent;
-    border-radius: 12px;
+    border-radius: 10px;
     background: transparent;
     color: var(--text);
     text-align: left;
-    padding: 8px 10px;
+    padding: 6px 10px;
     cursor: pointer;
     transition:
         border-color var(--motion-fast) var(--ease-standard),
@@ -528,7 +820,7 @@ button:disabled {
         color var(--motion-fast) var(--ease-standard);
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
 }
 
 .slash-dropdown-item + .slash-dropdown-item {
@@ -537,12 +829,13 @@ button:disabled {
 
 .slash-dropdown-item:hover,
 .slash-dropdown-item.selected {
-    background: var(--surface-overlay);
+    background: rgba(var(--accent-rgb), 0.075);
+    border-color: rgba(var(--accent-rgb), 0.18);
 }
 
 .slash-dropdown-item.selected {
-    background: rgba(var(--accent-rgb), 0.13);
-    border-color: var(--accent-rgba-055);
+    background: rgba(var(--accent-rgb), 0.11);
+    border-color: rgba(var(--accent-rgb), 0.28);
 }
 
 .slash-dropdown-icon {
@@ -552,9 +845,11 @@ button:disabled {
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 8px;
-    background: var(--accent-rgba-012);
-    font-size: 14px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.02);
+    color: var(--muted);
+    font-size: 13px;
 }
 
 .slash-dropdown-info {
@@ -2590,11 +2885,15 @@ button:disabled {
 }
 
 .stop-process-slot {
+    display: none;
     min-height: 38px;
-    display: flex;
     justify-content: center;
     align-items: flex-start;
     margin: 0 auto 10px;
+}
+
+.stop-process-slot.is-visible {
+    display: flex;
 }
 
 .stop-process-btn {
@@ -2630,6 +2929,37 @@ button:disabled {
     *, *::before, *::after {
         animation-duration: 0.01ms !important;
         transition-duration: 0.01ms !important;
+    }
+}
+
+body.reduced-motion *,
+body.reduced-motion *::before,
+body.reduced-motion *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    transform: none !important;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+    .folder-path-btn,
+    .plus-btn,
+    .artifacts-toggle-btn,
+    .selector-btn,
+    .permission-btn,
+    .permission-selector,
+    .assistant-action,
+    .action-btn,
+    .code-copy-btn,
+    .chip,
+    .quick-chip,
+    .artifact-action-btn,
+    .stop-process-btn,
+    .example-prompt,
+    .popup-menu {
+        --glass-tint-interactive: var(--surface-panel);
+        --glass-tint-interactive-hover: var(--surface-panel-elevated, var(--surface-panel));
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
     }
 }
 
@@ -2704,52 +3034,35 @@ button:disabled {
 <div id="app">
     <section id="welcomeView">
         <div id="welcomeScreen" class="welcome-shell">
-            <div id="welcomeIcon" class="welcome-icon" aria-hidden="true">
-                <svg width="42" height="42" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <g transform="translate(50,50)">
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(0)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(30)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(60)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(90)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(120)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(150)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(180)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(210)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(240)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(270)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(300)"/></g>
-                        <g><rect x="-5" y="-42" width="10" height="42" rx="5" fill="currentColor" transform="rotate(330)"/></g>
-                    </g>
-                </svg>
-            </div>
+            <img id="welcomeScreenIcon" class="welcome-icon" alt="" aria-hidden="true" hidden>
             <h1 id="welcomeTitle" class="welcome-title">Back at it</h1>
-            <section class="welcome-onboarding" aria-label="Getting started">
-                <h2 class="welcome-onboarding-title">Getting started</h2>
-                <div class="onboarding-steps">
-                    <div class="onboarding-step">
-                        <span class="onboarding-step-number">1.</span>
-                        <span>Select a project folder in the sidebar</span>
-                    </div>
-                    <div class="onboarding-step">
-                        <span class="onboarding-step-number">2.</span>
-                        <span>Choose a model and permission mode</span>
-                    </div>
-                    <div class="onboarding-step">
-                        <span class="onboarding-step-number">3.</span>
-                        <span>Type your first prompt below (try /help)</span>
-                    </div>
-                </div>
-                <div id="examplePromptsTitle" class="example-prompts-title">Example prompts for Claude</div>
-                <div id="welcomeExamplePrompts" class="example-prompts" role="list"></div>
-            </section>
-            <div id="welcomeProviderBadge" class="welcome-provider-badge">✺ Claude</div>
+            <div id="welcomeProviderBadge" class="welcome-provider-badge">
+                <img id="welcomeProviderIcon" class="welcome-provider-icon" alt="" aria-hidden="true">
+                <span id="welcomeProviderName">Claude</span>
+            </div>
 
-            <div class="composer-card" style="position:relative;">
-                <div id="welcomeSlashDropdown" class="slash-dropdown" role="listbox" aria-label="Skills"></div>
-                <div id="welcomeAttachments" class="attachment-strip"></div>
-                <textarea id="welcomeInput" class="composer-input" rows="1" placeholder="Type / for skills" title="Enter to send, Shift+Enter for newline, / for slash commands"></textarea>
-                <div class="control-row">
-                    <button class="plus-btn" type="button" aria-label="Add">+</button>
+                <div class="composer-card" style="position:relative;">
+                    <div id="welcomeSlashDropdown" class="slash-dropdown" role="listbox" aria-label="Skills"></div>
+                    <div id="welcomeAttachments" class="attachment-strip"></div>
+                    <textarea id="welcomeInput" class="composer-input" rows="1" placeholder="Type / for skills" title="Enter to send, Shift+Enter for newline, / for slash commands"></textarea>
+                    <div class="control-row">
+                        <div class="control-left">
+                            <button class="plus-btn" type="button" aria-label="Attach files">
+                                <span class="plus-btn-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M12 5v14M5 12h14" />
+                                    </svg>
+                                </span>
+                            </button>
+                            <button class="artifacts-toggle-btn" type="button" aria-label="Toggle artifacts panel" aria-pressed="false" title="Toggle artifacts panel">
+                                <span class="artifacts-toggle-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <rect class="toggle-track" x="3" y="6" width="18" height="12" rx="6" />
+                                        <circle class="toggle-knob" cx="9" cy="12" r="4" />
+                                    </svg>
+                                </span>
+                            </button>
+                        </div>
                     <div class="control-right">
                         <div class="selector-group">
                             <button class="selector-btn model-selector" type="button" aria-haspopup="true" aria-expanded="false">
@@ -2778,7 +3091,12 @@ button:disabled {
                     </div>
                 </div>
                 <button class="folder-path-btn" type="button" title="Change project folder">
-                    <span class="folder-path-icon" aria-hidden="true">📁</span>
+                    <span class="folder-path-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M3 6h5.5l1.5 2H21v10H3V6z" />
+                            <path d="M4 8h16" />
+                        </svg>
+                    </span>
                     <span class="folder-path-text">~</span>
                 </button>
             </div>
@@ -2853,7 +3171,7 @@ button:disabled {
         </aside>
 
         <div id="chatComposer">
-            <div class="stop-process-slot">
+            <div id="stopProcessSlot" class="stop-process-slot">
                 <button id="stopBtn" class="stop-process-btn" type="button" title="Stop generating (Esc)">Stop generating</button>
             </div>
             <div class="composer-card" style="position:relative;">
@@ -2861,7 +3179,23 @@ button:disabled {
                 <div id="chatAttachments" class="attachment-strip"></div>
                 <textarea id="chatInput" class="composer-input" rows="1" placeholder="Reply..." title="Enter to send, Shift+Enter for newline, / for slash commands"></textarea>
                 <div class="control-row">
-                    <button class="plus-btn" type="button" aria-label="Add">+</button>
+                    <div class="control-left">
+                        <button class="plus-btn" type="button" aria-label="Attach files">
+                            <span class="plus-btn-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M12 5v14M5 12h14" />
+                                </svg>
+                            </span>
+                        </button>
+                        <button class="artifacts-toggle-btn" type="button" aria-label="Toggle artifacts panel" aria-pressed="false" title="Toggle artifacts panel">
+                            <span class="artifacts-toggle-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <rect class="toggle-track" x="3" y="6" width="18" height="12" rx="6" />
+                                    <circle class="toggle-knob" cx="9" cy="12" r="4" />
+                                </svg>
+                            </span>
+                        </button>
+                    </div>
                     <div class="control-right">
                         <div class="selector-group">
                             <button class="selector-btn model-selector" type="button" aria-haspopup="true" aria-expanded="false">
@@ -2890,7 +3224,12 @@ button:disabled {
                     </div>
                 </div>
                 <button class="folder-path-btn" type="button" title="Change project folder">
-                    <span class="folder-path-icon" aria-hidden="true">📁</span>
+                    <span class="folder-path-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M3 6h5.5l1.5 2H21v10H3V6z" />
+                            <path d="M4 8h16" />
+                        </svg>
+                    </span>
                     <span class="folder-path-text">~</span>
                 </button>
             </div>
@@ -2925,7 +3264,7 @@ button:disabled {
         },
     ];
 
-    const REASONING_OPTIONS = [
+    let REASONING_OPTIONS = [
         {
             value: "low",
             title: "Low",
@@ -2962,6 +3301,7 @@ button:disabled {
     ];
 
     const DEFAULT_SLASH_COMMANDS = [
+        { name: "/agent", icon: "\u25A7", description: "Main chat only: create/focus/close agent panes", providers: ["claude", "codex"] },
         { name: "/help", icon: "?", description: "Show available commands and usage tips", providers: ["claude", "codex"] },
         { name: "/clear", icon: "\u2716", description: "Clear the current conversation", providers: ["claude", "codex"] },
         { name: "/compact", icon: "\u25A3", description: "Compact conversation to save context", providers: ["claude"] },
@@ -2973,8 +3313,8 @@ button:disabled {
         { name: "/memory", icon: "\u2601", description: "Edit CLAUDE.md memory files", providers: ["claude"] },
         { name: "/model", icon: "\u269B", description: "Switch the AI model", providers: ["claude", "codex"] },
         { name: "/permissions", icon: "\u26A0", description: "View or update tool permissions", providers: ["claude"] },
-        { name: "/pr-review", icon: "\u2714", description: "Review a GitHub pull request", providers: ["claude"] },
-        { name: "/review", icon: "\u2606", description: "Review code changes", providers: ["claude"] },
+        { name: "/pr-review", icon: "\u2714", description: "Review a GitHub pull request", providers: ["claude", "codex"] },
+        { name: "/review", icon: "\u2606", description: "Review code changes", providers: ["claude", "codex"] },
         { name: "/status", icon: "\u2139", description: "Show session and git status", providers: ["claude"] },
         { name: "/terminal-setup", icon: "\u2328", description: "Install Shift+Enter key binding", providers: ["claude"] },
         { name: "/vim", icon: "V", description: "Toggle vim mode for input", providers: ["claude"] },
@@ -2996,7 +3336,10 @@ button:disabled {
     const appEl = document.getElementById("app");
     const welcomeViewEl = document.getElementById("welcomeView");
     const welcomeTitleEl = document.getElementById("welcomeTitle");
+    const welcomeScreenIconEl = document.getElementById("welcomeScreenIcon");
     const welcomeProviderBadgeEl = document.getElementById("welcomeProviderBadge");
+    const welcomeProviderIconEl = document.getElementById("welcomeProviderIcon");
+    const welcomeProviderNameEl = document.getElementById("welcomeProviderName");
     const examplePromptsTitleEl = document.getElementById("examplePromptsTitle");
     const welcomeExamplePromptsEl = document.getElementById("welcomeExamplePrompts");
     const chatViewEl = document.getElementById("chatView");
@@ -3010,6 +3353,7 @@ button:disabled {
     const welcomeAttachmentsEl = document.getElementById("welcomeAttachments");
     const chatAttachmentsEl = document.getElementById("chatAttachments");
     const stopBtnEl = document.getElementById("stopBtn");
+    const stopProcessSlotEl = document.getElementById("stopProcessSlot");
     const imageLightboxEl = document.getElementById("imageLightbox");
     const lightboxImageEl = document.getElementById("lightboxImage");
     const lightboxCloseBtnEl = document.getElementById("lightboxCloseBtn");
@@ -3045,6 +3389,7 @@ button:disabled {
     const reasoningPopups = Array.from(document.querySelectorAll(".reasoning-popup"));
     const permissionPopups = Array.from(document.querySelectorAll(".permission-popup"));
     const plusButtons = Array.from(document.querySelectorAll(".plus-btn"));
+    const artifactsToggleButtons = Array.from(document.querySelectorAll(".artifacts-toggle-btn"));
     const quickChips = Array.from(document.querySelectorAll(".quick-chip"));
     const folderPathButtons = Array.from(document.querySelectorAll(".folder-path-btn"));
     const folderPathTexts = Array.from(document.querySelectorAll(".folder-path-text"));
@@ -3106,7 +3451,6 @@ button:disabled {
     let reasoningVisible = true;
     let activeProviderId = "claude";
     let activeProviderName = "Claude";
-    let activeProviderIcon = "✺";
     let activePopup = null;
     let lastUserPayload = null;
     let currentFolderDisplay = "~";
@@ -3211,11 +3555,47 @@ button:disabled {
         yml: "yaml",
     });
 
+    function compactDisplayPath(pathValue, maxLength) {
+        const normalizedRaw = String(pathValue || "").trim();
+        if (!normalizedRaw) {
+            return "~";
+        }
+        const limit = Math.max(10, Number(maxLength) || 44);
+        if (normalizedRaw.length <= limit) {
+            return normalizedRaw;
+        }
+
+        const normalized = normalizedRaw.replace(/\\/g, "/");
+        const parts = normalized.split("/").filter(function (part) {
+            return part.length > 0;
+        });
+        const startsWithTilde = normalized.indexOf("~/") === 0;
+        const startsWithSlash = normalized.charAt(0) === "/";
+        const prefix = startsWithTilde ? "~/" : startsWithSlash ? "/" : "";
+
+        if (parts.length <= 1) {
+            return normalizedRaw.slice(0, limit - 1) + "…";
+        }
+        const first = parts[0];
+        const last = parts[parts.length - 1];
+        let compact = prefix + first + "/…/" + last;
+        if (compact.length > limit) {
+            const tailBudget = Math.max(8, limit - prefix.length - 3);
+            compact = prefix + "…/" + last.slice(Math.max(0, last.length - tailBudget));
+        }
+        if (compact.length > limit) {
+            return compact.slice(0, limit - 1) + "…";
+        }
+        return compact;
+    }
+
     function updateFolderDisplay(pathValue) {
         const nextValue = String(pathValue || "").trim() || "~";
         currentFolderDisplay = nextValue;
+        const compactValue = compactDisplayPath(currentFolderDisplay, 52);
         folderPathTexts.forEach(function (label) {
-            label.textContent = currentFolderDisplay;
+            label.textContent = compactValue;
+            label.setAttribute("title", currentFolderDisplay);
         });
         folderPathButtons.forEach(function (button) {
             button.setAttribute("title", "Change project folder (" + currentFolderDisplay + ")");
@@ -3988,9 +4368,23 @@ button:disabled {
         if (artifactsPanelEl) {
             artifactsPanelEl.setAttribute("aria-hidden", artifactsPanelOpen ? "false" : "true");
         }
+        if (artifactsToggleButtons.length) {
+            artifactsToggleButtons.forEach(function (button) {
+                button.classList.toggle("active", artifactsPanelOpen);
+                button.setAttribute("aria-pressed", artifactsPanelOpen ? "true" : "false");
+                button.setAttribute("title", artifactsPanelOpen ? "Hide artifacts panel" : "Show artifacts panel");
+            });
+        }
         if (artifactsToggleBtnEl) {
             artifactsToggleBtnEl.classList.toggle("active", artifactsPanelOpen);
             artifactsToggleBtnEl.setAttribute("aria-expanded", artifactsPanelOpen ? "true" : "false");
+        }
+    }
+
+    function toggleArtifactsPanel() {
+        setArtifactsPanelOpen(!artifactsPanelOpen);
+        if (artifactsPanelOpen && !selectedArtifactId && artifacts.length) {
+            selectArtifact(artifacts[0].id, artifacts[0].version);
         }
     }
 
@@ -4289,42 +4683,8 @@ button:disabled {
         return record;
     }
 
-    function createArtifactIndicator(artifact) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "artifact-indicator";
-        button.setAttribute("data-artifact-id", artifact.id);
-        button.setAttribute("data-artifact-version", String(artifact.version));
-
-        const icon = document.createElement("span");
-        icon.className = "artifact-indicator-icon";
-        icon.textContent = artifactIconForType(artifact.type);
-        button.appendChild(icon);
-
-        const label = document.createElement("span");
-        label.textContent = "Open in Artifacts • " + artifact.title;
-        button.appendChild(label);
-        return button;
-    }
-
     function appendArtifactIndicator(anchorEl, artifact) {
-        if (!anchorEl || !artifact) {
-            return;
-        }
-
-        const existing = anchorEl.nextElementSibling;
-        if (
-            existing
-            && existing.classList
-            && existing.classList.contains("artifact-indicator")
-            && existing.getAttribute("data-artifact-id") === artifact.id
-        ) {
-            existing.setAttribute("data-artifact-version", String(artifact.version));
-            return;
-        }
-
-        const indicator = createArtifactIndicator(artifact);
-        anchorEl.insertAdjacentElement("afterend", indicator);
+        return;
     }
 
     function extractCodeFences(rawText) {
@@ -4349,24 +4709,23 @@ button:disabled {
         if (!block) {
             return null;
         }
-        const language = normalizeLanguage(block.lang || languageFromFilename(block.filename));
-        const content = String(block.code || "");
-        const title = String(block.filename || "").trim();
-        const structured = isLikelyStructured(language, content);
-        const hasMeta = !!(title || language);
-
-        if (!hasMeta && !structured) {
+        const rawCode = String(block.code || "");
+        if (!rawCode.trim()) {
             return null;
         }
-
+        const language = normalizeLanguage(block.lang || languageFromFilename(block.filename));
+        const title = String(block.filename || "").trim();
+        const content = rawCode.trim();
+        const structured = isLikelyStructured(language, content);
+        const detectedLanguage = language || detectStructuredLanguage(content);
         const type = title ? "file" : (structured ? "data" : "code");
         const fallbackTitle = type === "data"
-            ? ((language || detectStructuredLanguage(content) || "data") + "-output")
-            : ((language || "code") + "-snippet-" + (index + 1));
+            ? ((detectedLanguage || "data") + "-output")
+            : ((detectedLanguage || "code") + "-snippet-" + (index + 1));
         return {
             type: type,
             title: title || fallbackTitle,
-            language: language || detectStructuredLanguage(content),
+            language: detectedLanguage,
             content: content,
             key: title ? ("file:" + title.toLowerCase()) : "",
         };
@@ -4989,6 +5348,29 @@ button:disabled {
         });
     }
 
+    function toReasoningOptions(rawValue) {
+        const payload = parseHostPayload(rawValue);
+        if (!Array.isArray(payload)) {
+            return [];
+        }
+        return payload.map(function (entry, index) {
+            if (Array.isArray(entry)) {
+                return {
+                    value: String(entry[1] || "").trim(),
+                    title: String(entry[0] || "Reasoning " + (index + 1)),
+                    description: String(entry[2] || "Reasoning option"),
+                };
+            }
+            return {
+                value: String(entry && entry.value ? entry.value : "").trim(),
+                title: String(entry && entry.title ? entry.title : "Reasoning " + (index + 1)),
+                description: String(entry && entry.description ? entry.description : "Reasoning option"),
+            };
+        }).filter(function (option) {
+            return option.value.length > 0;
+        });
+    }
+
     function normalizeModelValue(rawValue) {
         const value = String(rawValue || "").trim();
         const valid = MODEL_OPTIONS.some(function (option) {
@@ -5011,6 +5393,17 @@ button:disabled {
         return PERMISSION_OPTIONS.length > 0 ? PERMISSION_OPTIONS[0].value : "";
     }
 
+    function normalizeReasoningValue(rawValue) {
+        const value = String(rawValue || "").trim();
+        const valid = REASONING_OPTIONS.some(function (option) {
+            return option.value === value;
+        });
+        if (valid) {
+            return value;
+        }
+        return REASONING_OPTIONS.length > 0 ? REASONING_OPTIONS[0].value : "";
+    }
+
     function findModelMeta(value) {
         const model = MODEL_OPTIONS.find(function (option) {
             return option.value === value;
@@ -5026,10 +5419,17 @@ button:disabled {
     }
 
     function findReasoningMeta(value) {
+        if (!REASONING_OPTIONS.length) {
+            return {
+                value: "medium",
+                title: "Medium",
+                description: "Balanced reasoning.",
+            };
+        }
         var reasoning = REASONING_OPTIONS.find(function (option) {
             return option.value === value;
         });
-        return reasoning || REASONING_OPTIONS[1];
+        return reasoning || REASONING_OPTIONS[0];
     }
 
     function renderSelectorLabels() {
@@ -5211,11 +5611,14 @@ button:disabled {
             ? nextPhase
             : ASSISTANT_PHASE.IDLE;
         assistantPhase = normalizedPhase;
+        const showStopButton =
+            assistantPhase === ASSISTANT_PHASE.SENDING
+            || assistantPhase === ASSISTANT_PHASE.WAITING_FIRST_TOKEN
+            || assistantPhase === ASSISTANT_PHASE.STREAMING;
+        if (stopProcessSlotEl) {
+            stopProcessSlotEl.classList.toggle("is-visible", showStopButton);
+        }
         if (stopBtnEl) {
-            const showStopButton =
-                assistantPhase === ASSISTANT_PHASE.SENDING
-                || assistantPhase === ASSISTANT_PHASE.WAITING_FIRST_TOKEN
-                || assistantPhase === ASSISTANT_PHASE.STREAMING;
             stopBtnEl.classList.toggle("is-visible", showStopButton);
         }
     }
@@ -5510,8 +5913,21 @@ button:disabled {
         if (!payload || typeof payload !== "object") {
             return null;
         }
-        const name = String(payload.name || "attachment").trim() || "attachment";
+
+        const rawPath = String(payload.path || "").trim();
+        const normalizedPath = rawPath.replace(/\\/g, "/");
         const type = String(payload.type || "application/octet-stream").trim() || "application/octet-stream";
+        let name = String(payload.name || "").trim();
+        if (!name && normalizedPath) {
+            const pathParts = normalizedPath.split("/").filter(function (segment) {
+                return segment.length > 0;
+            });
+            name = pathParts.length ? pathParts[pathParts.length - 1] : "";
+        }
+        if (!name) {
+            const extension = type.split("/")[1] || "bin";
+            name = "attachment." + extension.replace(/[^a-z0-9.+_-]/gi, "");
+        }
         const data = String(payload.data || "").trim();
         if (!data) {
             return null;
@@ -5522,6 +5938,7 @@ button:disabled {
             name: name,
             type: type,
             data: data,
+            path: normalizedPath,
         };
     }
 
@@ -5531,6 +5948,7 @@ button:disabled {
                 name: String(item.name || "attachment"),
                 type: String(item.type || "application/octet-stream"),
                 data: String(item.data || ""),
+                path: String(item.path || "").trim(),
             };
         }).filter(function (item) {
             return item.data.length > 0;
@@ -5552,22 +5970,45 @@ button:disabled {
             const chip = document.createElement("div");
             chip.className = "attachment-chip";
 
+            const preview = document.createElement("div");
+            preview.className = "attachment-preview";
             if (attachment.type.indexOf("image/") === 0) {
                 const thumb = document.createElement("img");
                 thumb.className = "attachment-thumb";
                 thumb.src = attachment.data;
                 thumb.alt = attachment.name;
-                chip.appendChild(thumb);
+                thumb.addEventListener("click", function () {
+                    openImageLightbox(attachment.data, attachment.name);
+                });
+                preview.appendChild(thumb);
             } else {
                 const marker = document.createElement("span");
+                marker.className = "attachment-file-marker";
                 marker.textContent = "📄";
-                chip.appendChild(marker);
+                preview.appendChild(marker);
             }
+            chip.appendChild(preview);
+
+            const meta = document.createElement("div");
+            meta.className = "attachment-meta";
 
             const name = document.createElement("span");
             name.className = "attachment-name";
             name.textContent = attachment.name;
-            chip.appendChild(name);
+            meta.appendChild(name);
+
+            const attachmentPath = String(attachment.path || "").trim();
+            if (attachmentPath) {
+                const path = document.createElement("span");
+                path.className = "attachment-path";
+                path.textContent = compactDisplayPath(attachmentPath, 44);
+                path.setAttribute("title", attachmentPath);
+                meta.appendChild(path);
+                chip.setAttribute("title", attachmentPath);
+            } else {
+                chip.setAttribute("title", attachment.name);
+            }
+            chip.appendChild(meta);
 
             const removeButton = document.createElement("button");
             removeButton.type = "button";
@@ -5616,9 +6057,15 @@ button:disabled {
                 reject(new Error("Could not read file"));
             };
             reader.onload = function () {
+                const mimeType = file.type || "application/octet-stream";
+                let name = String(file.name || "").trim();
+                if (!name) {
+                    const extension = (mimeType.split("/")[1] || "bin").replace(/[^a-z0-9.+_-]/gi, "");
+                    name = "pasted-image-" + Date.now() + "." + extension;
+                }
                 resolve({
-                    name: file.name || "attachment",
-                    type: file.type || "application/octet-stream",
+                    name: name,
+                    type: mimeType,
                     data: String(reader.result || ""),
                 });
             };
@@ -5634,6 +6081,43 @@ button:disabled {
         Promise.all(files.map(fileToAttachment)).then(function (newAttachments) {
             newAttachments.forEach(addAttachment);
         }).catch(function () {});
+    }
+
+    function extractClipboardImageFiles(clipboardData) {
+        const files = [];
+        const seen = new Set();
+
+        function remember(file) {
+            if (!file || !file.type || file.type.indexOf("image/") !== 0) {
+                return;
+            }
+            const key = [
+                String(file.name || ""),
+                String(file.type || ""),
+                String(file.size || 0),
+                String(file.lastModified || 0),
+            ].join("|");
+            if (seen.has(key)) {
+                return;
+            }
+            seen.add(key);
+            files.push(file);
+        }
+
+        if (clipboardData && clipboardData.items) {
+            Array.from(clipboardData.items).forEach(function (item) {
+                if (!item || !item.type || item.type.indexOf("image/") !== 0) {
+                    return;
+                }
+                remember(item.getAsFile());
+            });
+        }
+        if (clipboardData && clipboardData.files) {
+            Array.from(clipboardData.files).forEach(function (file) {
+                remember(file);
+            });
+        }
+        return files;
     }
 
     function autoResizeInput(inputEl) {
@@ -7425,7 +7909,11 @@ button:disabled {
         }
 
         if (currentAssistantBody) {
+            if (!hasMessages) {
+                setChatState(true);
+            }
             renderAssistantContent(false);
+            registerAssistantArtifacts(currentAssistantBody, currentAssistantRaw);
             if (!currentAssistantRaw.trim() && currentAssistantRow) {
                 currentAssistantRow.remove();
             }
@@ -7610,6 +8098,164 @@ button:disabled {
             button.textContent = button.dataset.originalLabel || "Copy";
             button._copyFeedbackTimer = null;
         }, 2000);
+    }
+
+var GLASS_BUTTON_SELECTOR = [
+    ".folder-path-btn",
+    ".plus-btn",
+    ".artifacts-toggle-btn",
+    ".selector-btn",
+    ".permission-btn",
+        ".permission-selector",
+        ".assistant-action",
+        ".action-btn",
+        ".code-copy-btn",
+        ".chip",
+        ".quick-chip",
+        ".artifact-action-btn",
+        ".stop-process-btn",
+        ".example-prompt",
+        ".popup-menu",
+    ];
+    var GLASS_REDUCED_MOTION_CLASS = "reduced-motion";
+    var GLASS_ACTIVE_ANIMATIONS = typeof WeakMap === "function" ? new WeakMap() : new Map();
+
+    function setReducedMotionState(isReduced) {
+        if (!document.body) {
+            return;
+        }
+        if (isReduced) {
+            document.body.classList.add(GLASS_REDUCED_MOTION_CLASS);
+            return;
+        }
+        document.body.classList.remove(GLASS_REDUCED_MOTION_CLASS);
+    }
+
+    window.setReducedMotion = function (isReduced) {
+        setReducedMotionState(!!isReduced);
+    };
+
+    function glassHover(target, isHover) {
+        if (!target || !target.classList) {
+            return;
+        }
+        var reduced = document.body && document.body.classList.contains(GLASS_REDUCED_MOTION_CLASS);
+        if (reduced) {
+            target.style.willChange = "auto";
+            target.style.transform = isHover ? "scale(1.02)" : "";
+            return;
+        }
+
+        if (!window.Motion || !window.Motion.animate) {
+            target.style.transform = isHover ? "scale(1.02)" : "";
+            return;
+        }
+
+        var existing = GLASS_ACTIVE_ANIMATIONS.get(target);
+        if (existing && typeof existing.stop === "function") {
+            existing.stop();
+        }
+
+        target.style.willChange = "transform";
+        var animation = window.Motion.animate(
+            target,
+            { transform: isHover ? [1, 1.02] : [1.02, 1] },
+            {
+                duration: 0.22,
+                easing: window.Motion.spring(240, 22, 1),
+            },
+        );
+        GLASS_ACTIVE_ANIMATIONS.set(target, animation);
+        animation.finished.then(function () {
+            if (GLASS_ACTIVE_ANIMATIONS.get(target) === animation) {
+                target.style.willChange = "auto";
+                GLASS_ACTIVE_ANIMATIONS.delete(target);
+            }
+        });
+    }
+
+    function glassPress(target) {
+        if (!target || !target.classList) {
+            return;
+        }
+
+        if (document.body && document.body.classList.contains(GLASS_REDUCED_MOTION_CLASS)) {
+            target.style.transform = "scale(0.96)";
+            window.setTimeout(function () {
+                target.style.transform = "";
+            }, 80);
+            return;
+        }
+        if (!window.Motion || !window.Motion.animate) {
+            target.style.transform = "scale(0.96)";
+            return;
+        }
+
+        var existing = GLASS_ACTIVE_ANIMATIONS.get(target);
+        if (existing && typeof existing.stop === "function") {
+            existing.stop();
+        }
+
+        target.style.willChange = "transform";
+        var pressed = window.Motion.animate(
+            target,
+            { transform: [1, 0.96, 1] },
+            {
+                duration: 0.28,
+                easing: window.Motion.spring(200, 24, 1),
+            },
+        );
+        GLASS_ACTIVE_ANIMATIONS.set(target, pressed);
+        pressed.finished.then(function () {
+            if (GLASS_ACTIVE_ANIMATIONS.get(target) !== pressed) {
+                return;
+            }
+            target.style.willChange = "auto";
+            GLASS_ACTIVE_ANIMATIONS.delete(target);
+            target.style.transform = "";
+        });
+    }
+
+    function wireGlassButtons() {
+        var reducedMotionQuery = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+        if (reducedMotionQuery && typeof reducedMotionQuery.matches !== "undefined") {
+            setReducedMotionState(!!reducedMotionQuery.matches);
+            if (typeof reducedMotionQuery.addEventListener === "function") {
+                reducedMotionQuery.addEventListener("change", function (event) {
+                    setReducedMotionState(!!event.matches);
+                });
+            } else if (typeof reducedMotionQuery.addListener === "function") {
+                reducedMotionQuery.addListener(function (event) {
+                    setReducedMotionState(!!event.matches);
+                });
+            }
+        }
+
+        var selectors = GLASS_BUTTON_SELECTOR.join(", ");
+        var pressHandler = function (event) {
+            var target = event.target.closest(selectors);
+            if (!target) {
+                return;
+            }
+            if (!event.button || event.button === 0 || event.type === "pointerdown") {
+                glassPress(target);
+            }
+        };
+        var hoverHandler = function (event) {
+            var target = event.target.closest(selectors);
+            if (!target) {
+                return;
+            }
+            if (event.type === "pointerover") {
+                glassHover(target, true);
+                return;
+            }
+            glassHover(target, false);
+        };
+
+        document.body.addEventListener("pointerdown", pressHandler, true);
+        document.body.addEventListener("pointerover", hoverHandler, true);
+        document.body.addEventListener("pointerout", hoverHandler, true);
     }
 
     function markActionPressed(button) {
@@ -7903,23 +8549,37 @@ button:disabled {
 
         inputEl.addEventListener("paste", function (event) {
             const clipboard = event.clipboardData;
-            if (!clipboard || !clipboard.items) {
+            const imageFiles = extractClipboardImageFiles(clipboard);
+            if (imageFiles.length) {
+                event.preventDefault();
+                addFilesFromList(imageFiles);
                 return;
             }
-            const imageItems = Array.from(clipboard.items).filter(function (item) {
-                return item && item.type && item.type.indexOf("image/") === 0;
-            });
-            if (!imageItems.length) {
-                return;
+
+            if (navigator.clipboard && typeof navigator.clipboard.read === "function") {
+                navigator.clipboard.read().then(function (items) {
+                    if (!Array.isArray(items)) {
+                        return;
+                    }
+                    items.forEach(function (item, itemIndex) {
+                        const imageType = (item.types || []).find(function (type) {
+                            return String(type || "").indexOf("image/") === 0;
+                        });
+                        if (!imageType) {
+                            return;
+                        }
+                        item.getType(imageType).then(function (blob) {
+                            if (!blob) {
+                                return;
+                            }
+                            const extension = imageType.split("/")[1] || "png";
+                            const name = "pasted-image-" + Date.now() + "-" + itemIndex + "." + extension;
+                            const file = new File([blob], name, { type: imageType });
+                            fileToAttachment(file).then(addAttachment).catch(function () {});
+                        }).catch(function () {});
+                    });
+                }).catch(function () {});
             }
-            event.preventDefault();
-            imageItems.forEach(function (item) {
-                const file = item.getAsFile();
-                if (!file) {
-                    return;
-                }
-                fileToAttachment(file).then(addAttachment).catch(function () {});
-            });
         });
 
         inputEl.addEventListener("blur", function () {
@@ -8015,12 +8675,15 @@ button:disabled {
 
     if (artifactsToggleBtnEl) {
         artifactsToggleBtnEl.addEventListener("click", function () {
-            setArtifactsPanelOpen(!artifactsPanelOpen);
-            if (artifactsPanelOpen && !selectedArtifactId && artifacts.length) {
-                selectArtifact(artifacts[0].id, artifacts[0].version);
-            }
+            toggleArtifactsPanel();
         });
     }
+
+    artifactsToggleButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+            toggleArtifactsPanel();
+        });
+    });
 
     if (artifactsCloseBtnEl) {
         artifactsCloseBtnEl.addEventListener("click", function () {
@@ -8265,17 +8928,6 @@ button:disabled {
             return;
         }
 
-        const artifactButton = event.target.closest(".artifact-indicator");
-        if (artifactButton) {
-            const artifactId = String(artifactButton.getAttribute("data-artifact-id") || "");
-            const artifactVersion = Number(artifactButton.getAttribute("data-artifact-version") || 0);
-            if (artifactId) {
-                setArtifactsPanelOpen(true);
-                selectArtifact(artifactId, artifactVersion);
-            }
-            return;
-        }
-
         const userActionButton = event.target.closest(".user-action");
         if (userActionButton) {
             const action = userActionButton.getAttribute("data-action");
@@ -8435,6 +9087,16 @@ button:disabled {
         selectedPermission = normalizePermissionValue(selectedPermission);
     };
 
+    window.setReasoningOptions = function (optionsJson) {
+        const nextOptions = toReasoningOptions(optionsJson);
+        if (nextOptions.length === 0) {
+            return;
+        }
+        REASONING_OPTIONS = nextOptions;
+        selectedReasoning = normalizeReasoningValue(selectedReasoning);
+        renderSelectorLabels();
+    };
+
     window.setProviderBranding = function (payload) {
         const data = parseHostPayload(payload);
         if (!data || typeof data !== "object") {
@@ -8442,13 +9104,35 @@ button:disabled {
         }
         activeProviderId = String(data.id || activeProviderId).trim().toLowerCase() || activeProviderId;
         activeProviderName = String(data.name || activeProviderName).trim() || activeProviderName;
-        activeProviderIcon = String(data.icon || activeProviderIcon).trim() || activeProviderIcon;
         const welcomeTitle = String(data.welcomeTitle || (activeProviderName + " is ready"));
+        const iconUrl = String(data.iconUrl || "").trim();
         if (welcomeTitleEl) {
             welcomeTitleEl.textContent = welcomeTitle;
         }
-        if (welcomeProviderBadgeEl) {
-            welcomeProviderBadgeEl.textContent = activeProviderIcon + " " + activeProviderName;
+        if (welcomeScreenIconEl) {
+            if (iconUrl) {
+                welcomeScreenIconEl.src = iconUrl;
+                welcomeScreenIconEl.setAttribute("aria-label", activeProviderName + " logo");
+            } else {
+                welcomeScreenIconEl.removeAttribute("src");
+            }
+            welcomeScreenIconEl.hidden = !iconUrl;
+        }
+        if (welcomeProviderIconEl) {
+            if (iconUrl) {
+                welcomeProviderIconEl.src = iconUrl;
+                welcomeProviderIconEl.setAttribute("aria-label", activeProviderName + " logo");
+                welcomeProviderIconEl.classList.add("visible");
+            } else {
+                welcomeProviderIconEl.removeAttribute("src");
+                welcomeProviderIconEl.classList.remove("visible");
+            }
+            welcomeProviderIconEl.hidden = !iconUrl;
+        }
+        if (welcomeProviderNameEl) {
+            welcomeProviderNameEl.textContent = activeProviderName;
+        } else if (welcomeProviderBadgeEl) {
+            welcomeProviderBadgeEl.textContent = activeProviderName;
         }
         Array.from(document.querySelectorAll(".ci-fix-btn")).forEach(function (button) {
             button.textContent = activeProviderName + " can try to fix this";
@@ -8464,7 +9148,7 @@ button:disabled {
     };
 
     window.updateReasoningLevel = function (value) {
-        selectedReasoning = value;
+        selectedReasoning = normalizeReasoningValue(value);
         renderSelectorLabels();
     };
 
@@ -8512,9 +9196,16 @@ button:disabled {
             welcomeInputEl.focus();
         }
     };
+    window.hostSendMessage = function (textValue) {
+        sendPayload({
+            text: String(textValue || "").trim(),
+            attachments: [],
+        });
+    };
     window.updateFolder = function (pathValue) {
         updateFolderDisplay(pathValue);
     };
+    wireGlassButtons();
 
     resetToolTurnState();
     setChatState(false);
@@ -8534,4 +9225,6 @@ button:disabled {
 """
     .replace("__INLINE_HIGHLIGHT_CSS__", HIGHLIGHT_CSS)
     .replace("__INLINE_HIGHLIGHT_JS__", HIGHLIGHT_JS)
+    .replace("__INLINE_MOTION_ONE_JS__", MOTION_ONE_JS)
+    .replace("__GLASS_STYLE_SNIPPET__", GLASS_STYLE_SNIPPET)
 )
