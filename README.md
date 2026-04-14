@@ -6,21 +6,23 @@ This repository contains a GTK/WebKit based desktop interface for Claude Code.
 
 ### Chat composer controls
 
-- Added a compact **artifacts toggle button** next to the file attach (`+`) button in the composer control row.
-- Updated the plus button visual to a stable SVG icon.
+- The left control cluster in the composer now has:
+  - `+` **Attach files** button that opens a file chooser and adds selected files.
+  - An adjacent **agent-mode toggle** button (no longer wired to the artifacts panel).
+- Added a project-folder button action in both composer views that opens a native folder chooser.
 - Replaced the folder path button emoji with an SVG folder icon for the project path button.
-- Kept both welcome and chat composer rows in sync so behavior matches in both views.
+- Removed the sidebar `+ New Agent` button; agent mode is now controlled only via the composer toggle.
 
 ### Behavior
 
-- Both new toggle buttons share the same logic and stay in sync with the current artifact panel state.
-- The toggle updates `aria-pressed` for accessibility and keeps the top toolbar button behavior unchanged.
-- Folder and plus buttons continue to open existing host actions (`changeFolder`, `attachFile`).
+- Both toggle buttons in welcome/chat composers target the same host handler and stay synchronized.
+- The webview now syncs agent-mode state on load and after any toggle change.
+- Folder and plus buttons are both wired to host handlers (`changeFolder`, `attachFile`).
 
 ### Refactor performed
 
-- Small refactor in `claude_code_gui/assets/chat_template.py` to centralize artifact panel toggle behavior in one helper (`toggleArtifactsPanel`).
+- Small refactor in `claude_code_gui/ui/window.py` to centralize agent mode persistence/sync in `_persist_agent_mode_preference`.
 
 ## Notes
 
-- No functional regressions were flagged in the review.
+- No functional regressions were flagged after local review of the requested changes.

@@ -3054,7 +3054,7 @@ body.reduced-motion *::after {
                                     </svg>
                                 </span>
                             </button>
-                            <button class="artifacts-toggle-btn" type="button" aria-label="Toggle artifacts panel" aria-pressed="false" title="Toggle artifacts panel">
+                            <button class="artifacts-toggle-btn" type="button" aria-label="Enable agent mode" aria-pressed="false" title="Agent mode is disabled">
                                 <span class="artifacts-toggle-icon" aria-hidden="true">
                                     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <rect class="toggle-track" x="3" y="6" width="18" height="12" rx="6" />
@@ -3187,7 +3187,7 @@ body.reduced-motion *::after {
                                 </svg>
                             </span>
                         </button>
-                        <button class="artifacts-toggle-btn" type="button" aria-label="Toggle artifacts panel" aria-pressed="false" title="Toggle artifacts panel">
+                        <button class="artifacts-toggle-btn" type="button" aria-label="Enable agent mode" aria-pressed="false" title="Agent mode is disabled">
                             <span class="artifacts-toggle-icon" aria-hidden="true">
                                 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                     <rect class="toggle-track" x="3" y="6" width="18" height="12" rx="6" />
@@ -3389,7 +3389,7 @@ body.reduced-motion *::after {
     const reasoningPopups = Array.from(document.querySelectorAll(".reasoning-popup"));
     const permissionPopups = Array.from(document.querySelectorAll(".permission-popup"));
     const plusButtons = Array.from(document.querySelectorAll(".plus-btn"));
-    const artifactsToggleButtons = Array.from(document.querySelectorAll(".artifacts-toggle-btn"));
+    const agentModeToggleButtons = Array.from(document.querySelectorAll(".artifacts-toggle-btn"));
     const quickChips = Array.from(document.querySelectorAll(".quick-chip"));
     const folderPathButtons = Array.from(document.querySelectorAll(".folder-path-btn"));
     const folderPathTexts = Array.from(document.querySelectorAll(".folder-path-text"));
@@ -3466,6 +3466,7 @@ body.reduced-motion *::after {
     let activeToolTurn = null;
     let lastPRUrl = "";
     let artifactsPanelOpen = false;
+    let agentModeEnabled = false;
     let artifactCounter = 0;
     let selectedArtifactId = "";
     let selectedArtifactVersion = 0;
@@ -4368,16 +4369,21 @@ body.reduced-motion *::after {
         if (artifactsPanelEl) {
             artifactsPanelEl.setAttribute("aria-hidden", artifactsPanelOpen ? "false" : "true");
         }
-        if (artifactsToggleButtons.length) {
-            artifactsToggleButtons.forEach(function (button) {
-                button.classList.toggle("active", artifactsPanelOpen);
-                button.setAttribute("aria-pressed", artifactsPanelOpen ? "true" : "false");
-                button.setAttribute("title", artifactsPanelOpen ? "Hide artifacts panel" : "Show artifacts panel");
-            });
-        }
         if (artifactsToggleBtnEl) {
             artifactsToggleBtnEl.classList.toggle("active", artifactsPanelOpen);
             artifactsToggleBtnEl.setAttribute("aria-expanded", artifactsPanelOpen ? "true" : "false");
+        }
+    }
+
+    function setAgentModeEnabled(isEnabled) {
+        agentModeEnabled = !!isEnabled;
+        if (agentModeToggleButtons.length) {
+            agentModeToggleButtons.forEach(function (button) {
+                button.classList.toggle("active", agentModeEnabled);
+                button.setAttribute("aria-pressed", agentModeEnabled ? "true" : "false");
+                button.setAttribute("title", agentModeEnabled ? "Agent mode is enabled" : "Agent mode is disabled");
+                button.setAttribute("aria-label", agentModeEnabled ? "Disable agent mode" : "Enable agent mode");
+            });
         }
     }
 
@@ -4386,6 +4392,10 @@ body.reduced-motion *::after {
         if (artifactsPanelOpen && !selectedArtifactId && artifacts.length) {
             selectArtifact(artifacts[0].id, artifacts[0].version);
         }
+    }
+
+    function toggleAgentMode() {
+        postToHost("toggleAgentMode", agentModeEnabled ? "off" : "on");
     }
 
     function updateArtifactsToggleButton() {
@@ -8679,9 +8689,9 @@ var GLASS_BUTTON_SELECTOR = [
         });
     }
 
-    artifactsToggleButtons.forEach(function (button) {
+    agentModeToggleButtons.forEach(function (button) {
         button.addEventListener("click", function () {
-            toggleArtifactsPanel();
+            toggleAgentMode();
         });
     });
 
@@ -9085,6 +9095,10 @@ var GLASS_BUTTON_SELECTOR = [
         }
         PERMISSION_OPTIONS = nextOptions;
         selectedPermission = normalizePermissionValue(selectedPermission);
+    };
+
+    window.setAgentModeEnabled = function (isEnabled) {
+        setAgentModeEnabled(!!isEnabled);
     };
 
     window.setReasoningOptions = function (optionsJson) {

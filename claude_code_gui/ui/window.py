@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import base64
 from contextlib import contextmanager
+import copy
 import json
 import logging
 import math
 import mimetypes
 import os
 import re
+import shlex
 import subprocess
 import time
 import uuid
@@ -17,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit2
+from claude_code_gui.gi_runtime import Gdk, Gio, GLib, Gtk, Pango, WebKit, GTK4
 
 from claude_code_gui.app.constants import (
     APP_DEFAULT_HEIGHT,
@@ -31,7 +33,6 @@ from claude_code_gui.app.constants import (
     CONNECTION_ERROR,
     CONNECTION_STARTING,
     CONTEXT_MAX_TOKENS,
-    REASONING_LEVEL_OPTIONS,
     SESSION_STATUS_ACTIVE,
     SESSION_STATUS_ARCHIVED,
     SESSION_STATUS_ENDED,
@@ -43,6 +44,11 @@ from claude_code_gui.app.constants import (
     STATUS_INFO,
     STATUS_MUTED,
     STATUS_WARNING,
+)
+from claude_code_gui.domain.app_settings import (
+    get_reasoning_options,
+    load_settings,
+    save_settings,
 )
 from claude_code_gui.assets.chat_template import CHAT_WEBVIEW_HTML
 from claude_code_gui.assets.gtk_css import build_gtk_css
@@ -57,6 +63,7 @@ from claude_code_gui.domain.provider import (
     DEFAULT_PROVIDER_ID,
     PROVIDERS,
     ProviderConfig,
+    refresh_provider_registry,
     normalize_provider_id,
 )
 from claude_code_gui.domain.session import SessionRecord
@@ -70,8 +77,10 @@ from claude_code_gui.services.attachment_service import (
 )
 from claude_code_gui.services.binary_probe import (
     binary_exists,
+    CliCapabilities,
     detect_cli_flag_support,
     find_provider_binary,
+    detect_provider_model_options,
     is_codex_authenticated,
 )
 from claude_code_gui.storage.config_paths import RECENT_FOLDERS_LIMIT
@@ -84,6 +93,58 @@ from claude_code_gui.storage.sessions_store import load_sessions, save_sessions
 
 logger = logging.getLogger(__name__)
 
+_AGENTCTL_HINT = (
+    "You are the main orchestrator for this chat. To delegate work, control panes by emitting "
+    "lines starting with '/agent', 'agent', or '@agentctl'. Commands: new <name>, list, focus <target>, "
+    "send <target> <prompt>, summarize <target> <source1> <source2>..., close <target>. "
+    "Emit commands only when needed."
+)
+_AGENTCTL_COMMAND_KEYWORDS = {
+    "?",
+    "add",
+    "ask",
+    "close",
+    "create",
+    "focus",
+    "go",
+    "goto",
+    "help",
+    "h",
+    "kill",
+    "list",
+    "ls",
+    "merge",
+    "new",
+    "previous",
+    "prev",
+    "remove",
+    "run",
+    "send",
+    "spawn",
+    "summarize",
+    "summary",
+    "switch",
+}
+
+_ICONS_DIR = Path(__file__).resolve().parents[2] / "icons"
+
+
+def _resolve_icons_dir() -> Path:
+    """Resolve the icons directory from likely source layouts."""
+    for candidate in (
+        Path(__file__).resolve().parent.parent.parent / "icons",
+        Path(__file__).resolve().parent.parent / "icons",
+        Path(__file__).resolve().parent / "icons",
+        _ICONS_DIR,
+        Path.cwd() / "icons",
+    ):
+        if candidate.is_dir():
+            return candidate
+    return _ICONS_DIR
+
+
+_ICONS_DIR = _resolve_icons_dir()
+
 
 class PaneController:
     """Encapsulates one pane's WebView, process and request state."""
@@ -94,8 +155,8 @@ class PaneController:
         self._close_button: Gtk.Button | None = None
         self._title_label: Gtk.Label | None = None
         self._session_label: Gtk.Label | None = None
-        self._webview: WebKit2.WebView | None = None
-        self._webview_user_content_manager: WebKit2.UserContentManager | None = None
+        self._webview: WebKit.WebView | None = None
+        self._webview_user_content_manager: WebKit.UserContentManager | None = None
         self._webview_ready = False
         self._pending_webview_scripts: list[str] = []
         self._chat_shell: Gtk.EventBox | None = None
@@ -110,6 +171,8 @@ class PaneController:
         self._allowed_tools: set[str] = set()
         self._has_messages = False
         self._last_request_failed = False
+        self._is_agent = False
+        self._agent_name: str | None = None
 
 
 class ClaudeCodeWindow(Gtk.Window):
@@ -122,6 +185,7 @@ class ClaudeCodeWindow(Gtk.Window):
             provider_id: find_provider_binary(list(provider.binary_names))
             for provider_id, provider in PROVIDERS.items()
         }
+        self._agentctl_auto_enabled = bool(load_settings().get("agentctl_auto_enabled", True))
         self.set_decorated(True)
         self.set_default_size(APP_DEFAULT_WIDTH, APP_DEFAULT_HEIGHT)
         self.set_size_request(APP_MIN_WIDTH, APP_MIN_HEIGHT)
@@ -132,11 +196,15 @@ class ClaudeCodeWindow(Gtk.Window):
         self._workspace_host: Gtk.Box | None = None
         self._pane_context_id: str | None = None
         self._pane_id_counter = 0
+        self._agent_counter = 0
         self._max_panes = 4
 
         self._sidebar_container: Gtk.Box | None = None
         self._sidebar_toggle_button: Gtk.Button | None = None
         self._provider_toggle_button: Gtk.Button | None = None
+        self._provider_toggle_button_icon: Gtk.Image | None = None
+        self._provider_toggle_button_label: Gtk.Label | None = None
+        self._settings_button: Gtk.Button | None = None
         self._sidebar_current_width = float(SIDEBAR_OPEN_WIDTH)
         self._sidebar_expanded = True
         self._sidebar_animation_id: int | None = None
@@ -183,31 +251,30 @@ class ClaudeCodeWindow(Gtk.Window):
         self._context_char_count = 0
         self._session_cost_usd = 0.0
         self._session_tokens = 0
+        self._gtk_settings_notify_id: int | None = None
 
         self._model_options: list[tuple[str, str]] = list(self._active_provider.model_options)
         self._permission_options: list[tuple[str, str, bool]] = list(self._active_provider.permission_options)
         self._selected_model_index = 1 if len(self._model_options) > 1 else 0
         self._selected_permission_index = 0
-        self._selected_reasoning_index = 1
+        self._reasoning_options: list[tuple[str, str, str]] = get_reasoning_options()
+        self._selected_reasoning_index = self._reasoning_index_from_value("medium")
 
         self._project_folder = normalize_folder(os.getcwd())
         self._recent_folders = load_recent_folders(self._project_folder)
 
         self._binary_path = self._provider_binaries.get(self._active_provider_id)
-        self._supports_model_flag = False
-        self._supports_permission_flag = False
-        self._supports_reasoning_flag = False
-        self._supports_output_format_flag = False
-        self._supports_stream_json = False
-        self._supports_json = False
-        self._supports_include_partial_messages = False
+        self._provider_cli_caps: dict[str, CliCapabilities] = {}
+        self._provider_cli_probe_inflight: set[str] = set()
         self._stream_json_requires_verbose = True
+        self._provider_model_probe_done: set[str] = set()
 
         self._session_started_us = GLib.get_monotonic_time()
         self._session_timer_id: int | None = None
         self._sessions: list[SessionRecord] = []
 
         self._set_dark_theme_preference()
+        self._bind_gtk_animation_setting()
         self._install_css()
         self._build_ui()
         self._apply_provider_branding()
@@ -217,33 +284,91 @@ class ClaudeCodeWindow(Gtk.Window):
         GLib.idle_add(self._refresh_session_list_idle)
 
         self.connect("destroy", self._on_destroy)
-        self.connect("map-event", self._on_map_event)
-        self.connect("focus-in-event", self._on_window_focus_in)
-        self.connect("focus-out-event", self._on_window_focus_out)
-        self.connect("key-press-event", self._on_window_key_press)
+        if not self._connect_optional_signal(self, "map-event", self._on_map_event):
+            GLib.idle_add(self._on_window_mapped_fallback)
+        if not self._connect_optional_signal(self, "focus-in-event", self._on_window_focus_in):
+            self.connect("notify::is-active", self._on_window_active_changed)
+        self._connect_optional_signal(self, "focus-out-event", self._on_window_focus_out)
+        if not self._connect_optional_signal(self, "key-press-event", self._on_window_key_press):
+            self._install_window_key_controller()
+
+        if self._active_session_id is None:
+            self._set_status_message("No active session. Click + New Chat to start.", STATUS_INFO)
+        else:
+            self._set_status_message("Session ready. Type a message below.", STATUS_MUTED)
 
         if self._binary_path is None:
             self._set_connection_state(CONNECTION_DISCONNECTED)
             self._set_status_message(f"{self._active_provider.name} CLI not found", STATUS_ERROR)
             self._set_active_session_status(SESSION_STATUS_ERROR)
             self._show_missing_binary_error()
-            self._start_status_fade_in()
-            return
-
-        self._set_connection_state(CONNECTION_CONNECTED)
-        if self._active_session_id is None:
-            self._set_status_message("No active session. Click + New Chat to start.", STATUS_INFO)
         else:
-            self._set_status_message("Session ready. Type a message below.", STATUS_MUTED)
+            self._set_connection_state(CONNECTION_CONNECTED)
+
+        for provider_id, binary_path in self._provider_binaries.items():
+            self._detect_provider_models_async(binary_path, provider_id)
+            self._detect_cli_flag_support_async(binary_path, provider_id)
 
         self._start_status_fade_in()
-        self._detect_cli_flag_support_async(self._binary_path)
+        self._refresh_connection_state()
 
     @staticmethod
     def _set_dark_theme_preference() -> None:
         settings = Gtk.Settings.get_default()
         if settings is not None:
             settings.set_property("gtk-application-prefer-dark-theme", True)
+
+    @staticmethod
+    def _connect_optional_signal(widget: Gtk.Widget, signal_name: str, callback: Any) -> bool:
+        try:
+            widget.connect(signal_name, callback)
+            return True
+        except TypeError:
+            return False
+
+    def _on_window_mapped_fallback(self) -> bool:
+        self._on_map_event(self, None)
+        return False
+
+    def _on_window_active_changed(self, _widget: Gtk.Widget, _param: Any) -> None:
+        try:
+            self._window_has_focus = bool(self.is_active())
+        except Exception:
+            self._window_has_focus = True
+
+    def _install_window_key_controller(self) -> None:
+        if not GTK4:
+            return
+        controller = Gtk.EventControllerKey.new()
+        controller.connect("key-pressed", self._on_window_key_pressed_controller)
+        self.add_controller(controller)
+
+    def _on_window_key_pressed_controller(
+        self,
+        _controller: Gtk.EventControllerKey,
+        keyval: int,
+        _keycode: int,
+        state: Gdk.ModifierType,
+    ) -> bool:
+        return self._handle_window_key_press(keyval, state)
+
+    def _bind_gtk_animation_setting(self) -> None:
+        settings = Gtk.Settings.get_default()
+        if settings is None:
+            return
+        self._gtk_settings_notify_id = settings.connect(
+            "notify::gtk-enable-animations",
+            self._on_gtk_enable_animations_changed,
+        )
+
+    def _on_gtk_enable_animations_changed(self, _settings: Gtk.Settings, _param: Any) -> None:
+        provider = self._active_provider
+        self._swap_css(
+            provider.colors,
+            provider.accent_rgb,
+            provider.accent_soft_rgb,
+            reduced_motion=self._reduced_motion_from_gtk(),
+        )
 
     @property
     def _active_provider(self) -> ProviderConfig:
@@ -258,7 +383,145 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _provider_button_label(self, provider_id: str | None = None) -> str:
         provider = PROVIDERS[normalize_provider_id(provider_id or self._active_provider_id)]
-        return f"{provider.icon} {provider.name}"
+        if self._provider_icon_path(provider.id) is not None:
+            return provider.name
+        return provider.name
+
+    def _provider_icon_path(self, provider_id: str | None = None) -> Path | None:
+        provider_key = normalize_provider_id(provider_id or self._active_provider_id)
+        provider = PROVIDERS[provider_key]
+        icon_value = provider.icon.strip()
+        icon_value_lower = icon_value.lower()
+        has_explicit_path = any(sep in icon_value for sep in ("/", "\\")) or icon_value.startswith(".")
+        icon_name = Path(icon_value).name.lower()
+
+        if not has_explicit_path:
+            if provider_key == "claude" and (
+                icon_value_lower in {
+                    "claude",
+                    "claude.svg",
+                    "claude-color.svg",
+                    "claude-text.svg",
+                    "read",
+                    "✺",
+                    "claude (1).svg",
+                    "claude-color (1).svg",
+                    "claude-text (1).svg",
+                }
+                or icon_name.startswith("claude-text")
+            ):
+                icon_value = "claude-color.svg"
+            elif provider_key == "codex" and (
+                icon_value_lower in {
+                    "codex",
+                    "codex.svg",
+                    "codex-color.svg",
+                    "codex-text.svg",
+                    "codex-white.svg",
+                    "read",
+                    "⌘",
+                    "codex-text (1).svg",
+                    "codex (1).svg",
+                }
+                or icon_name.startswith("codex-text")
+            ):
+                icon_value = "codex-white.svg"
+
+        icon_candidates: list[Path] = []
+        if icon_value:
+            icon_candidates.append(Path(icon_value))
+
+        if provider_key == "claude":
+            icon_candidates.extend(
+                [
+                    Path("claude-color.svg"),
+                    Path("claude.svg"),
+                    Path("claude-text.svg"),
+                    Path("claude.webp"),
+                ],
+            )
+        elif provider_key == "codex":
+            icon_candidates.extend(
+                [
+                    Path("codex-white.svg"),
+                    Path("codex-text.svg"),
+                    Path("codex-text (1).svg"),
+                    Path("codex-color.svg"),
+                    Path("codex.svg"),
+                    Path("codex.webp"),
+                ],
+            )
+        else:
+            icon_candidates.append(_ICONS_DIR / f"{provider_key}.svg")
+
+        seen: set[str] = set()
+        unique_candidates: list[Path] = []
+        for candidate in icon_candidates:
+            candidate_key = candidate.name.lower()
+            if candidate_key in seen:
+                continue
+            seen.add(candidate_key)
+            unique_candidates.append(candidate)
+
+        for candidate in unique_candidates:
+            if candidate.is_absolute():
+                icon_path = candidate
+            else:
+                explicit_relative_path = Path(__file__).resolve().parent / candidate
+                if candidate.parent != Path(".") and explicit_relative_path.exists():
+                    icon_path = explicit_relative_path
+                elif candidate.exists():
+                    icon_path = candidate
+                else:
+                    icon_path = _ICONS_DIR / candidate.name
+            if icon_path.exists() and icon_path.is_file():
+                return icon_path
+
+        for suffix in (".svg", ".png", ".webp"):
+            candidate = _ICONS_DIR / f"{provider_key}{suffix}"
+            if candidate.exists() and candidate.is_file():
+                return candidate
+
+        for suffix in (".svg", ".png", ".webp"):
+            candidate = _ICONS_DIR / f"{provider_key}-color{suffix}"
+            if candidate.exists() and candidate.is_file():
+                return candidate
+
+        for candidate in _ICONS_DIR.glob(f"{provider_key}.*"):
+            if candidate.is_file() and candidate.suffix.lower() in {".svg", ".png", ".webp"}:
+                return candidate
+        return None
+
+    def _provider_icon_data_uri(self, provider_id: str | None = None) -> str | None:
+        icon_path = self._provider_icon_path(provider_id)
+        if icon_path is None:
+            return None
+        try:
+            icon_bytes = icon_path.read_bytes()
+        except OSError:
+            return None
+
+        mime_type = mimetypes.guess_type(str(icon_path))[0] or ""
+        if not mime_type:
+            if icon_path.suffix.lower() == ".svg":
+                mime_type = "image/svg+xml"
+            else:
+                mime_type = "application/octet-stream"
+        return f"data:{mime_type};base64,{base64.b64encode(icon_bytes).decode('ascii')}"
+
+    def _provider_switch_icon_path(self, provider_id: str | None = None) -> Path | None:
+        provider_key = normalize_provider_id(provider_id or self._active_provider_id)
+        if provider_key == "claude":
+            for name in ("claude-switch.svg", "claude.svg", "claude-color.svg", "claude-text.svg"):
+                preferred = _ICONS_DIR / name
+                if preferred.exists() and preferred.is_file():
+                    return preferred
+        if provider_key == "codex":
+            for name in ("codex-switch.svg", "codex.svg", "codex-white.svg", "codex-text.svg", "codex-color.svg"):
+                preferred = _ICONS_DIR / name
+                if preferred.exists() and preferred.is_file():
+                    return preferred
+        return self._provider_icon_path(provider_key)
 
     def _provider_window_title(self, provider_id: str | None = None) -> str:
         return f"{self._provider_display_name(provider_id)} Code"
@@ -298,23 +561,23 @@ class ClaudeCodeWindow(Gtk.Window):
             self._pane_context_id = previous
 
     @property
-    def _webview(self) -> WebKit2.WebView | None:
+    def _webview(self) -> WebKit.WebView | None:
         pane = self._state_pane()
         return pane._webview if pane is not None else None
 
     @_webview.setter
-    def _webview(self, value: WebKit2.WebView | None) -> None:
+    def _webview(self, value: WebKit.WebView | None) -> None:
         pane = self._state_pane()
         if pane is not None:
             pane._webview = value
 
     @property
-    def _webview_user_content_manager(self) -> WebKit2.UserContentManager | None:
+    def _webview_user_content_manager(self) -> WebKit.UserContentManager | None:
         pane = self._state_pane()
         return pane._webview_user_content_manager if pane is not None else None
 
     @_webview_user_content_manager.setter
-    def _webview_user_content_manager(self, value: WebKit2.UserContentManager | None) -> None:
+    def _webview_user_content_manager(self, value: WebKit.UserContentManager | None) -> None:
         pane = self._state_pane()
         if pane is not None:
             pane._webview_user_content_manager = value
@@ -470,30 +733,63 @@ class ClaudeCodeWindow(Gtk.Window):
             provider.colors,
             provider.accent_rgb,
             provider.accent_soft_rgb,
+            reduced_motion=self._reduced_motion_from_gtk(),
         )
+
+    def _reduced_motion_from_gtk(self) -> bool:
+        settings = Gtk.Settings.get_default()
+        if settings is None:
+            return False
+        try:
+            return not bool(settings.get_property("gtk-enable-animations"))
+        except Exception:
+            return False
+
+    def _sync_reduced_motion_to_webviews(self) -> None:
+        reduced_motion = self._reduced_motion_from_gtk()
+        for pane_id in list(self._pane_registry.keys()):
+            self._call_js_in_pane(pane_id, "setReducedMotion", reduced_motion)
 
     def _swap_css(
         self,
         colors: dict[str, str],
         accent_rgb: tuple[int, int, int],
         accent_soft_rgb: tuple[int, int, int],
+        reduced_motion: bool = False,
     ) -> None:
-        css = build_gtk_css(colors, accent_rgb, accent_soft_rgb)
+        css = build_gtk_css(
+            colors,
+            accent_rgb,
+            accent_soft_rgb,
+            reduced_motion=reduced_motion,
+        )
         new_provider = Gtk.CssProvider()
         new_provider.load_from_data(css.encode("utf-8"))
 
-        screen = Gdk.Screen.get_default()
-        if screen is None:
-            return
-
-        Gtk.StyleContext.add_provider_for_screen(
-            screen,
-            new_provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-        )
-        if self._css_provider is not None:
-            Gtk.StyleContext.remove_provider_for_screen(screen, self._css_provider)
+        if GTK4:
+            display = Gdk.Display.get_default()
+            if display is None:
+                return
+            Gtk.StyleContext.add_provider_for_display(
+                display,
+                new_provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+            )
+            if self._css_provider is not None:
+                Gtk.StyleContext.remove_provider_for_display(display, self._css_provider)
+        else:
+            screen = Gdk.Screen.get_default()
+            if screen is None:
+                return
+            Gtk.StyleContext.add_provider_for_screen(
+                screen,
+                new_provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+            )
+            if self._css_provider is not None:
+                Gtk.StyleContext.remove_provider_for_screen(screen, self._css_provider)
         self._css_provider = new_provider
+        self._sync_reduced_motion_to_webviews()
 
     def _build_ui(self) -> None:
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -597,6 +893,23 @@ class ClaudeCodeWindow(Gtk.Window):
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         header.set_hexpand(True)
         header.get_style_context().add_class("pane-header")
+        if GTK4 and hasattr(Gtk, "GestureClick"):
+            header_click = Gtk.GestureClick.new()
+            header_click.connect(
+                "pressed",
+                lambda _gesture, _n_press, _x, _y, pid=pane_id: self._set_active_pane(pid, grab_focus=True),
+            )
+            header.add_controller(header_click)
+        else:
+            def _on_header_press(_widget: Gtk.Widget, _event: Gdk.EventButton, pid: str = pane_id) -> bool:
+                self._set_active_pane(pid, grab_focus=True)
+                return False
+
+            self._connect_optional_signal(
+                header,
+                "button-press-event",
+                _on_header_press,
+            )
         pane_box.pack_start(header, False, False, 0)
 
         title_label = Gtk.Label(label="Pane")
@@ -615,7 +928,8 @@ class ClaudeCodeWindow(Gtk.Window):
         close_button.set_relief(Gtk.ReliefStyle.NONE)
         close_button.get_style_context().add_class("pane-close-button")
         close_button.connect("clicked", lambda _button, pid=pane_id: self._close_pane(pid))
-        header.pack_end(close_button, False, False, 0)
+        close_button.set_visible(False)
+        header.pack_start(close_button, False, False, 0)
         pane._close_button = close_button
 
         overlay = Gtk.Overlay()
@@ -630,10 +944,20 @@ class ClaudeCodeWindow(Gtk.Window):
         shell.get_style_context().add_class("chat-shell")
         overlay.add(shell)
         pane._chat_shell = shell
-        self._chat_reveal_widgets.append((shell, 60.0))
-        shell.set_opacity(0.0)
+        is_initial_pane = self._workspace_container is None and len(self._pane_registry) <= 1
+        if is_initial_pane:
+            self._chat_reveal_widgets.append((shell, 60.0))
+            shell.set_opacity(0.0)
+        else:
+            shell.set_opacity(1.0)
 
-        manager = WebKit2.UserContentManager()
+        if hasattr(WebKit.WebView, "new_with_user_content_manager"):
+            manager = WebKit.UserContentManager()
+            webview = WebKit.WebView.new_with_user_content_manager(manager)
+        else:
+            webview = WebKit.WebView.new()
+            manager = webview.get_user_content_manager()
+
         for handler_name in (
             "sendMessage",
             "changeModel",
@@ -641,6 +965,7 @@ class ClaudeCodeWindow(Gtk.Window):
             "changeReasoning",
             "changeFolder",
             "attachFile",
+            "toggleAgentMode",
             "permissionResponse",
             "stopProcess",
             "refreshSlashCommands",
@@ -671,6 +996,10 @@ class ClaudeCodeWindow(Gtk.Window):
             lambda manager, result, pid=pane_id: self._on_js_attach_file(pid, manager, result),
         )
         manager.connect(
+            "script-message-received::toggleAgentMode",
+            lambda manager, result, pid=pane_id: self._on_js_toggle_agent_mode(pid, manager, result),
+        )
+        manager.connect(
             "script-message-received::permissionResponse",
             lambda manager, result, pid=pane_id: self._on_js_permission_response(pid, manager, result),
         )
@@ -684,27 +1013,31 @@ class ClaudeCodeWindow(Gtk.Window):
         )
         pane._webview_user_content_manager = manager
 
-        webview = WebKit2.WebView.new_with_user_content_manager(manager)
         webview.set_hexpand(True)
         webview.set_vexpand(True)
         webview.connect(
             "load-changed",
             lambda webview, load_event, pid=pane_id: self._on_webview_load_changed(pid, webview, load_event),
         )
-        webview.connect(
+        self._connect_optional_signal(
+            webview,
             "focus-in-event",
             lambda webview, event, pid=pane_id: self._on_webview_focus_in(pid, webview, event),
         )
-        webview.connect(
+        self._connect_optional_signal(
+            webview,
             "focus-out-event",
             lambda webview, event, pid=pane_id: self._on_webview_focus_out(pid, webview, event),
         )
 
         settings = webview.get_settings()
         if settings is not None:
-            settings.set_enable_write_console_messages_to_stdout(False)
-            settings.set_enable_developer_extras(False)
-            settings.set_enable_javascript(True)
+            if hasattr(settings, "set_enable_write_console_messages_to_stdout"):
+                settings.set_enable_write_console_messages_to_stdout(False)
+            if hasattr(settings, "set_enable_developer_extras"):
+                settings.set_enable_developer_extras(False)
+            if hasattr(settings, "set_enable_javascript"):
+                settings.set_enable_javascript(True)
 
         webview.load_html(CHAT_WEBVIEW_HTML, "")
         shell.add(webview)
@@ -729,6 +1062,19 @@ class ClaudeCodeWindow(Gtk.Window):
 
         walk(self._workspace_container)
         return ordered
+
+    def _first_pane_id_in_widget(self, widget: Gtk.Widget | None) -> str | None:
+        if widget is None:
+            return None
+        pane_id = getattr(widget, "_pane_id", None)
+        if isinstance(pane_id, str) and pane_id in self._pane_registry:
+            return pane_id
+        if isinstance(widget, Gtk.Paned):
+            left = self._first_pane_id_in_widget(widget.get_child1())
+            if left is not None:
+                return left
+            return self._first_pane_id_in_widget(widget.get_child2())
+        return None
 
     def _sync_window_chrome_for_active_pane(self) -> None:
         pane = self._pane_by_id(self._active_pane_id)
@@ -767,7 +1113,10 @@ class ClaudeCodeWindow(Gtk.Window):
         if pane is None:
             return
         if pane._title_label is not None:
-            pane._title_label.set_text(f"Pane {pane_id.split('-')[-1]}")
+            if pane._is_agent:
+                pane._title_label.set_text(pane._agent_name or f"Agent {pane_id.split('-')[-1]}")
+            else:
+                pane._title_label.set_text(f"Pane {pane_id.split('-')[-1]}")
         if pane._session_label is not None:
             session = self._find_session(pane._active_session_id)
             if session is None:
@@ -780,21 +1129,81 @@ class ClaudeCodeWindow(Gtk.Window):
             self._update_pane_header(pane_id)
 
     def _update_pane_close_buttons(self) -> None:
-        closable = len(self._pane_registry) > 1
-        for pane in self._pane_registry.values():
+        can_close_any = len(self._pane_registry) > 1
+        primary = self._primary_pane_id()
+        for pane_id, pane in self._pane_registry.items():
             if pane._close_button is not None:
+                closable = can_close_any and pane_id != primary
+                pane._close_button.set_visible(closable)
                 pane._close_button.set_sensitive(closable)
 
-    def _split_active_pane(self, orientation: Gtk.Orientation) -> None:
-        if self._active_pane_id is None:
+    @staticmethod
+    def _detach_from_paned(paned: Gtk.Paned, child: Gtk.Widget | None) -> None:
+        if child is None:
             return
+        if GTK4 and hasattr(paned, "get_start_child"):
+            if paned.get_start_child() == child:
+                paned.set_start_child(None)
+                return
+            if paned.get_end_child() == child:
+                paned.set_end_child(None)
+                return
+        if hasattr(paned, "remove"):
+            paned.remove(child)
+
+    def _schedule_split_position(
+        self,
+        split: Gtk.Paned,
+        orientation: Gtk.Orientation,
+        *,
+        min_new_pane: int,
+    ) -> None:
+        attempts = 0
+
+        def _apply_split_position() -> bool:
+            nonlocal attempts
+            attempts += 1
+            allocation = split.get_allocation()
+            span = int(
+                getattr(allocation, "width" if orientation == Gtk.Orientation.HORIZONTAL else "height", 0) or 0,
+            )
+            if span <= 0:
+                if attempts < 20:
+                    return True
+                span = min_new_pane * 2
+
+            position = max(120, span - min_new_pane) if span > min_new_pane else max(1, span // 2)
+            try:
+                split.set_position(position)
+            except Exception:
+                pass
+            return False
+
+        GLib.timeout_add(30, _apply_split_position)
+
+    def _split_active_pane(self, orientation: Gtk.Orientation) -> str | None:
+        if self._active_pane_id is None:
+            return None
         if len(self._pane_registry) >= self._max_panes:
             self._add_system_message("Pane limit reached (max 4). Close one pane before splitting again.")
             self._set_status_message("Pane limit reached (4)", STATUS_WARNING)
-            return
+            return None
         current = self._pane_by_id(self._active_pane_id)
         if current is None or current._container is None:
-            return
+            return None
+
+        current_allocation = current._container.get_allocation()
+        if orientation == Gtk.Orientation.HORIZONTAL:
+            span = int(getattr(current_allocation, "width", 0) or 0)
+            fallback = 900
+            min_new_pane = 340
+        else:
+            span = int(getattr(current_allocation, "height", 0) or 0)
+            fallback = 680
+            min_new_pane = 220
+        if span <= 0:
+            span = fallback
+        split_position = max(120, span - min_new_pane) if span > min_new_pane else max(1, span // 2)
 
         new_pane_id = self._new_pane_id()
         new_pane = self._create_pane_controller(new_pane_id)
@@ -807,7 +1216,7 @@ class ClaudeCodeWindow(Gtk.Window):
         split.set_wide_handle(True)
         if isinstance(old_parent, Gtk.Paned):
             current_is_first = old_parent.get_child1() == current._container
-            old_parent.remove(current._container)
+            self._detach_from_paned(old_parent, current._container)
             split.pack1(current._container, True, False)
             split.pack2(new_view, True, False)
             if current_is_first:
@@ -832,9 +1241,430 @@ class ClaudeCodeWindow(Gtk.Window):
                 self._start_new_session(self._project_folder)
 
         split.show_all()
+        try:
+            split.set_position(split_position)
+        except Exception:
+            pass
+        self._schedule_split_position(split, orientation, min_new_pane=min_new_pane)
         self._update_pane_close_buttons()
         self._update_all_pane_headers()
         self._set_active_pane(new_pane_id, grab_focus=True)
+        return new_pane_id
+
+    def _next_agent_name(self) -> str:
+        self._agent_counter += 1
+        return f"Agent {self._agent_counter}"
+
+    def _pane_display_name(self, pane_id: str) -> str:
+        pane = self._pane_by_id(pane_id)
+        if pane is None:
+            return pane_id
+        if pane._is_agent:
+            return pane._agent_name or f"Agent {pane_id.split('-')[-1]}"
+        return f"Pane {pane_id.split('-')[-1]}"
+
+    def _primary_pane_id(self) -> str | None:
+        ordered = self._ordered_pane_ids() or list(self._pane_registry.keys())
+        if not ordered:
+            return None
+
+        def pane_rank(pid: str) -> tuple[int, str]:
+            match = re.search(r"(\d+)$", pid)
+            return (int(match.group(1)) if match else 10**9, pid)
+
+        return min(ordered, key=pane_rank)
+
+    def _is_primary_pane(self, pane_id: str | None) -> bool:
+        if not pane_id:
+            return False
+        primary = self._primary_pane_id()
+        return primary is not None and pane_id == primary
+
+    def _last_assistant_message_for_pane(self, pane_id: str) -> str:
+        pane = self._pane_by_id(pane_id)
+        if pane is None:
+            return ""
+        session = self._find_session(pane._active_session_id)
+        if session is None or not session.history:
+            return ""
+        for msg in reversed(session.history):
+            if str(msg.get("role") or "").strip().lower() == "assistant":
+                return str(msg.get("content") or "").strip()
+        return ""
+
+    def _send_prompt_to_pane(self, target_pane_id: str, prompt: str, *, keep_focus_on: str | None = None) -> bool:
+        text = str(prompt or "").strip()
+        if not text:
+            return False
+        if target_pane_id not in self._pane_registry:
+            return False
+        self._call_js_in_pane(target_pane_id, "hostSendMessage", text)
+        if keep_focus_on and keep_focus_on in self._pane_registry and keep_focus_on != target_pane_id:
+            def _restore_focus() -> bool:
+                if keep_focus_on in self._pane_registry:
+                    self._set_active_pane(keep_focus_on, grab_focus=True)
+                return False
+
+            GLib.timeout_add(120, _restore_focus)
+        return True
+
+    @staticmethod
+    def _extract_agentctl_commands(assistant_text: str) -> list[str]:
+        text = str(assistant_text or "")
+        commands: list[str] = []
+        seen: set[str] = set()
+
+        for block_match in re.finditer(r"```(agentctl|agent)\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL):
+            block_body = str(block_match.group(2) or "")
+            for raw_line in block_body.splitlines():
+                command = ClaudeCodeWindow._normalize_agentctl_line(raw_line, allow_prefixless=True)
+                if not command:
+                    continue
+                line = command
+                key = line.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                commands.append(line)
+
+        for raw_line in text.splitlines():
+            command = ClaudeCodeWindow._normalize_agentctl_line(raw_line)
+            if not command:
+                continue
+            key = command.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            commands.append(command)
+        return commands
+
+    @staticmethod
+    def _normalize_agentctl_line(raw_line: str, *, allow_prefixless: bool = False) -> str | None:
+        line = str(raw_line or "").strip()
+        if not line:
+            return None
+        line = line.strip(" \t`")
+        if not line:
+            return None
+        line = re.sub(r"^\s*[-*+]\s*", "", line)
+        line = re.sub(r"^\s*\d+[.)]\s*", "", line)
+        if not line:
+            return None
+
+        match = re.match(
+            r"^(?P<prefix>@agentctl|/agent|agentctl|agent)\b\s*(?P<body>.*)$",
+            line,
+            re.IGNORECASE,
+        )
+        if match:
+            prefix = match.group("prefix").lower()
+            body = str(match.group("body") or "").strip(" :")
+            if prefix == "/agent":
+                command = f"/agent {body}".strip()
+            else:
+                command = f"/agent {body}".strip() if body else "/agent"
+        elif allow_prefixless:
+            tokens = line.split(maxsplit=1)
+            if not tokens:
+                return None
+            if tokens[0].lower() not in _AGENTCTL_COMMAND_KEYWORDS:
+                return None
+            command = f"/agent {line}".strip()
+        else:
+            return None
+
+        command = command.strip()
+        if not command:
+            return None
+
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = command.split()
+
+        if not tokens or tokens[0].lower() not in {"/agent", "/pane"}:
+            return None
+        if len(tokens) == 1:
+            return "/agent"
+        if tokens[1].lower() not in _AGENTCTL_COMMAND_KEYWORDS:
+            return None
+        if tokens[1].lower() in {"send", "ask", "run"} and len(tokens) < 3:
+            return None
+        if tokens[1].lower() in {"summarize", "summary", "merge"} and len(tokens) < 4:
+            return None
+        return command
+
+    def _execute_agentctl_from_assistant(self, pane_id: str, assistant_text: str) -> int:
+        commands = self._extract_agentctl_commands(assistant_text)
+        if not commands:
+            return 0
+
+        executed = 0
+        for command in commands[:12]:
+            target_command = command if command.startswith("/agent") else f"/agent {command}"
+            if self._handle_agent_command(pane_id, target_command, allow_non_primary=True):
+                executed += 1
+        if executed:
+            self._add_system_message(f"Executed {executed} agent control command(s) from assistant output.")
+        return executed
+
+    def _collapse_to_primary_pane(self) -> str | None:
+        primary = self._primary_pane_id()
+        if primary is None:
+            return None
+        for pane_id in list(self._pane_registry.keys()):
+            if pane_id == primary:
+                continue
+            self._close_pane(pane_id)
+        pane = self._pane_by_id(primary)
+        if pane is not None:
+            pane._is_agent = False
+            pane._agent_name = None
+            self._update_pane_header(primary)
+        self._set_active_pane(primary, grab_focus=True)
+        return primary
+
+    def _resolve_pane_target(self, reference: str | None, *, current_pane_id: str) -> str | None:
+        ordered = self._ordered_pane_ids()
+        if not ordered:
+            ordered = list(self._pane_registry.keys())
+        if not ordered:
+            return None
+
+        current = current_pane_id if current_pane_id in ordered else (self._active_pane_id or ordered[0])
+        ref = str(reference or "").strip().lower()
+        if not ref or ref in {"current", "this", "here", "active"}:
+            return current
+
+        if ref in {"next", "n"}:
+            index = ordered.index(current)
+            return ordered[(index + 1) % len(ordered)]
+        if ref in {"prev", "previous", "p"}:
+            index = ordered.index(current)
+            return ordered[(index - 1) % len(ordered)]
+
+        if ref in self._pane_registry:
+            return ref
+
+        if ref.isdigit():
+            index = int(ref) - 1
+            if 0 <= index < len(ordered):
+                return ordered[index]
+            return None
+
+        pane_match = re.fullmatch(r"pane[-_ ]?(\d+)", ref)
+        if pane_match:
+            index = int(pane_match.group(1)) - 1
+            if 0 <= index < len(ordered):
+                return ordered[index]
+            return None
+
+        agent_match = re.fullmatch(r"agent[-_ ]?(\d+)", ref)
+        if agent_match:
+            agents = [pid for pid in ordered if (self._pane_by_id(pid) and self._pane_by_id(pid)._is_agent)]
+            index = int(agent_match.group(1)) - 1
+            if 0 <= index < len(agents):
+                return agents[index]
+            return None
+
+        exact_matches = [pid for pid in ordered if self._pane_display_name(pid).lower() == ref]
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+
+        prefix_matches = [pid for pid in ordered if self._pane_display_name(pid).lower().startswith(ref)]
+        if len(prefix_matches) == 1:
+            return prefix_matches[0]
+        return None
+
+    def _handle_agent_command(self, pane_id: str, message: str, *, allow_non_primary: bool = False) -> bool:
+        text = str(message or "").strip()
+        if not text:
+            return False
+        if not (text.startswith("/agent") or text.startswith("/pane")):
+            return False
+        if (not allow_non_primary) and (not self._is_primary_pane(pane_id)):
+            self._add_system_message("Use /agent commands from the main chat pane only.")
+            self._set_status_message("Agent control is restricted to the main chat pane.", STATUS_WARNING)
+            return True
+
+        try:
+            tokens = shlex.split(text)
+        except ValueError:
+            self._add_system_message("Invalid /agent command syntax.")
+            return True
+
+        if not tokens:
+            return False
+        root = tokens[0].lower()
+        if root not in {"/agent", "/pane"}:
+            return False
+
+        subcommand = tokens[1].lower() if len(tokens) > 1 else "help"
+        if subcommand in {"help", "h", "?"}:
+            self._add_system_message(
+                "Agent commands:\n"
+                "/agent new [name] - create a new agent pane\n"
+                "/agent list - list panes and agents\n"
+                "/agent focus <target> - focus pane (target: 1, pane-2, next, prev, Agent 1)\n"
+                "/agent send <target> <prompt> - send prompt to pane without leaving main chat\n"
+                "/agent summarize <target> <source...> - create summary from source agent outputs\n"
+                "/agent close [target] - close pane (default: current)\n"
+                "/agent help - show this help",
+            )
+            return True
+
+        if subcommand in {"new", "create", "add", "spawn"}:
+            custom_name = " ".join(tokens[2:]).strip() if len(tokens) > 2 else ""
+            self._create_agent_pane(name=custom_name or None)
+            return True
+
+        if subcommand in {"list", "ls"}:
+            ordered = self._ordered_pane_ids() or list(self._pane_registry.keys())
+            lines: list[str] = []
+            for index, target_pane_id in enumerate(ordered, start=1):
+                pane = self._pane_by_id(target_pane_id)
+                if pane is None:
+                    continue
+                session = self._find_session(pane._active_session_id)
+                session_text = self._truncate_text(session.title or "No session", 28) if session else "No session"
+                marker = "*" if target_pane_id == self._active_pane_id else " "
+                role = "agent" if pane._is_agent else "pane"
+                lines.append(
+                    f"{marker}{index}. {self._pane_display_name(target_pane_id)} [{role}] "
+                    f"({target_pane_id}) - {session_text}",
+                )
+            self._add_system_message("Panes:\n" + ("\n".join(lines) if lines else "No panes available."))
+            return True
+
+        if subcommand in {"focus", "switch", "goto", "go"}:
+            target_ref = tokens[2] if len(tokens) > 2 else ""
+            target_pane_id = self._resolve_pane_target(target_ref, current_pane_id=pane_id)
+            if target_pane_id is None:
+                self._add_system_message("Unknown pane target. Use /agent list.")
+                return True
+            self._set_active_pane(target_pane_id, grab_focus=True)
+            self._focus_chat_input_in_pane(target_pane_id)
+            self._set_status_message(f"Focused {self._pane_display_name(target_pane_id)}.", STATUS_INFO)
+            return True
+
+        if subcommand in {"send", "ask", "run"}:
+            if len(tokens) < 4:
+                self._add_system_message("Usage: /agent send <target> <prompt>")
+                return True
+            target_ref = tokens[2]
+            prompt_text = " ".join(tokens[3:]).strip()
+            target_pane_id = self._resolve_pane_target(target_ref, current_pane_id=pane_id)
+            if target_pane_id is None:
+                self._add_system_message("Unknown pane target. Use /agent list.")
+                return True
+            if not self._send_prompt_to_pane(target_pane_id, prompt_text, keep_focus_on=pane_id):
+                self._add_system_message("Could not dispatch prompt to target pane.")
+                return True
+            self._set_status_message(f"Prompt sent to {self._pane_display_name(target_pane_id)}.", STATUS_INFO)
+            return True
+
+        if subcommand in {"summarize", "summary", "merge"}:
+            if len(tokens) < 5:
+                self._add_system_message("Usage: /agent summarize <target> <source1> <source2> [sourceN]")
+                return True
+            target_ref = tokens[2]
+            target_pane_id = self._resolve_pane_target(target_ref, current_pane_id=pane_id)
+            if target_pane_id is None:
+                self._add_system_message("Unknown target pane. Use /agent list.")
+                return True
+
+            source_pane_ids: list[str] = []
+            for ref in tokens[3:]:
+                resolved = self._resolve_pane_target(ref, current_pane_id=pane_id)
+                if resolved is None:
+                    self._add_system_message(f"Unknown source pane target '{ref}'.")
+                    return True
+                if resolved == target_pane_id:
+                    continue
+                if resolved not in source_pane_ids:
+                    source_pane_ids.append(resolved)
+            if not source_pane_ids:
+                self._add_system_message("No valid source panes provided.")
+                return True
+
+            source_blocks: list[str] = []
+            missing_sources: list[str] = []
+            for source_pane_id in source_pane_ids:
+                last_output = self._last_assistant_message_for_pane(source_pane_id)
+                source_name = self._pane_display_name(source_pane_id)
+                if not last_output:
+                    missing_sources.append(source_name)
+                    continue
+                source_blocks.append(f"[{source_name}]\n{last_output}")
+
+            if not source_blocks:
+                self._add_system_message("No assistant output available in selected source panes yet.")
+                return True
+
+            prompt_lines = [
+                "You are a synthesis agent.",
+                "Summarize and reconcile the following agent outputs.",
+                "Provide: 1) key findings 2) conflicts/uncertainties 3) recommended next actions.",
+                "",
+                "\n\n".join(source_blocks),
+            ]
+            if missing_sources:
+                prompt_lines.append("")
+                prompt_lines.append("Sources without assistant output yet: " + ", ".join(missing_sources))
+            summary_prompt = "\n".join(prompt_lines).strip()
+
+            if not self._send_prompt_to_pane(target_pane_id, summary_prompt, keep_focus_on=pane_id):
+                self._add_system_message("Could not dispatch summarize prompt.")
+                return True
+            self._set_status_message(
+                f"Summary requested from {self._pane_display_name(target_pane_id)}.",
+                STATUS_INFO,
+            )
+            return True
+
+        if subcommand in {"close", "kill", "remove"}:
+            target_ref = tokens[2] if len(tokens) > 2 else "current"
+            target_pane_id = self._resolve_pane_target(target_ref, current_pane_id=pane_id)
+            if target_pane_id is None:
+                self._add_system_message("Unknown pane target. Use /agent list.")
+                return True
+            if self._is_primary_pane(target_pane_id):
+                self._set_status_message("Main pane cannot be closed.", STATUS_WARNING)
+                return True
+            if len(self._pane_registry) <= 1:
+                self._set_status_message("Cannot close the last pane.", STATUS_WARNING)
+                return True
+            target_label = self._pane_display_name(target_pane_id)
+            self._close_pane(target_pane_id)
+            self._set_status_message(f"Closed {target_label}.", STATUS_INFO)
+            return True
+
+        self._add_system_message("Unknown /agent command. Use /agent help.")
+        return True
+
+    def _create_agent_pane(self, *, name: str | None = None) -> str | None:
+        try:
+            new_pane_id = self._split_active_pane(Gtk.Orientation.HORIZONTAL)
+            if new_pane_id is None:
+                return None
+            pane = self._pane_by_id(new_pane_id)
+            if pane is None:
+                return None
+            pane._is_agent = True
+            custom_name = str(name or "").strip()
+            pane._agent_name = custom_name or self._next_agent_name()
+            self._update_pane_header(new_pane_id)
+            with self._pane_context(new_pane_id):
+                self._add_system_message(
+                    f"{pane._agent_name} ready. Use this pane to chat directly with this agent.",
+                )
+            self._set_status_message(f"{pane._agent_name} created.", STATUS_INFO)
+            self._focus_chat_input_in_pane(new_pane_id)
+            return new_pane_id
+        except Exception:
+            logger.exception("Could not create agent pane.")
+            self._set_status_message("Could not create agent pane.", STATUS_ERROR)
+            return None
 
     def _cycle_pane_focus(self, *, forward: bool) -> None:
         ordered = self._ordered_pane_ids()
@@ -851,6 +1681,61 @@ class ClaudeCodeWindow(Gtk.Window):
             target = ordered[(index - 1) % len(ordered)]
         self._set_active_pane(target, grab_focus=True)
 
+    def _prune_chat_reveal_widgets(self) -> None:
+        live_widgets = {
+            pane._chat_shell
+            for pane in self._pane_registry.values()
+            if pane._chat_shell is not None
+        }
+        self._chat_reveal_widgets = [
+            (widget, delay_ms)
+            for widget, delay_ms in self._chat_reveal_widgets
+            if widget in live_widgets
+        ]
+
+    def _rebuild_workspace_layout(self, pane_order: list[str]) -> None:
+        if self._workspace_host is None:
+            return
+
+        # Detach current tree in one step to avoid GTK focus warnings when mutating nested paneds.
+        self._clear_box(self._workspace_host)
+
+        ordered_ids = [pane_id for pane_id in pane_order if pane_id in self._pane_registry]
+        for pane_id in ordered_ids:
+            pane = self._pane_registry[pane_id]
+            if pane._container is None:
+                continue
+            parent = pane._container.get_parent()
+            if isinstance(parent, Gtk.Paned):
+                self._detach_from_paned(parent, pane._container)
+            elif isinstance(parent, Gtk.Box):
+                try:
+                    parent.remove(pane._container)
+                except Exception:
+                    pass
+
+        root: Gtk.Widget | None = None
+        for pane_id in ordered_ids:
+            pane = self._pane_registry[pane_id]
+            if pane._container is None:
+                continue
+            if root is None:
+                root = pane._container
+                continue
+            split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+            split.set_wide_handle(True)
+            split.pack1(root, True, False)
+            split.pack2(pane._container, True, False)
+            root = split
+
+        if root is None:
+            self._workspace_container = None
+            return
+
+        self._workspace_host.pack_start(root, True, True, 0)
+        self._workspace_container = root
+        root.show_all()
+
     def _close_active_pane(self) -> None:
         if self._active_pane_id is None:
             return
@@ -858,6 +1743,9 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _close_pane(self, pane_id: str) -> None:
         if pane_id not in self._pane_registry:
+            return
+        if self._is_primary_pane(pane_id):
+            self._set_status_message("Main pane cannot be closed.", STATUS_WARNING)
             return
         if len(self._pane_registry) <= 1:
             self._set_status_message("Cannot close the last pane.", STATUS_WARNING)
@@ -874,42 +1762,40 @@ class ClaudeCodeWindow(Gtk.Window):
                 cleanup_temp_paths(paths)
             pane._request_temp_files.clear()
 
-        parent = pane._container.get_parent()
-        sibling: Gtk.Widget | None = None
-        if isinstance(parent, Gtk.Paned):
-            sibling = parent.get_child2() if parent.get_child1() == pane._container else parent.get_child1()
-        if sibling is None:
-            return
-
-        if isinstance(parent, Gtk.Paned):
-            parent.remove(pane._container)
-            parent.remove(sibling)
-            grandparent = parent.get_parent()
-            if isinstance(grandparent, Gtk.Paned):
-                if grandparent.get_child1() == parent:
-                    grandparent.remove(parent)
-                    grandparent.pack1(sibling, True, False)
-                else:
-                    grandparent.remove(parent)
-                    grandparent.pack2(sibling, True, False)
-            elif isinstance(grandparent, Gtk.Box):
-                grandparent.remove(parent)
-                grandparent.pack_start(sibling, True, True, 0)
-                self._workspace_container = sibling
+        current_order = self._ordered_pane_ids() or list(self._pane_registry.keys())
+        desired_active = self._active_pane_id
+        if desired_active == pane_id:
+            desired_active = None
+            if pane_id in current_order:
+                index = current_order.index(pane_id)
+                for candidate in current_order[index + 1 :] + list(reversed(current_order[:index])):
+                    if candidate in self._pane_registry and candidate != pane_id:
+                        desired_active = candidate
+                        break
 
         del self._pane_registry[pane_id]
+        remaining_order = [candidate for candidate in current_order if candidate in self._pane_registry]
+        if not remaining_order:
+            remaining_order = list(self._pane_registry.keys())
+        self._rebuild_workspace_layout(remaining_order)
+        self._prune_chat_reveal_widgets()
         self._update_pane_close_buttons()
         self._update_all_pane_headers()
 
-        ordered = self._ordered_pane_ids()
-        if not ordered:
+        if not self._pane_registry:
             self._active_pane_id = None
             return
-        self._set_active_pane(ordered[0], grab_focus=True)
+
+        if desired_active not in self._pane_registry:
+            desired_active = remaining_order[0] if remaining_order else self._primary_pane_id()
+        if desired_active is None:
+            desired_active = next(iter(self._pane_registry.keys()))
+        self._set_active_pane(desired_active, grab_focus=True)
 
     def _on_window_key_press(self, _widget: Gtk.Widget, event: Gdk.EventKey) -> bool:
-        keyval = event.keyval
-        state = event.state
+        return self._handle_window_key_press(event.keyval, event.state)
+
+    def _handle_window_key_press(self, keyval: int, state: Gdk.ModifierType) -> bool:
         ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
         shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
 
@@ -918,6 +1804,9 @@ class ClaudeCodeWindow(Gtk.Window):
             return True
         if ctrl and shift and keyval in (Gdk.KEY_E, Gdk.KEY_e):
             self._split_active_pane(Gtk.Orientation.VERTICAL)
+            return True
+        if ctrl and shift and keyval in (Gdk.KEY_A, Gdk.KEY_a):
+            self._create_agent_pane()
             return True
         if ctrl and keyval == Gdk.KEY_w:
             self._close_active_pane()
@@ -1007,14 +1896,35 @@ class ClaudeCodeWindow(Gtk.Window):
         sidebar_top.pack_start(toggle_button, False, False, 0)
         self._sidebar_toggle_button = toggle_button
 
-        provider_button = Gtk.Button(label=self._provider_button_label())
+        provider_button = Gtk.Button()
         provider_button.set_relief(Gtk.ReliefStyle.NONE)
         provider_button.set_halign(Gtk.Align.START)
         provider_button.get_style_context().add_class("provider-switch-button")
         provider_button._drag_blocker = True
         provider_button.connect("clicked", self._on_provider_toggle_clicked)
+        provider_button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        provider_button_icon = Gtk.Image()
+        provider_button_icon.set_pixel_size(16)
+        provider_button_icon.get_style_context().add_class("provider-switch-icon")
+        provider_button_label = Gtk.Label(label="")
+        provider_button_label.set_xalign(0.0)
+        provider_button_box.pack_start(provider_button_icon, False, False, 0)
+        provider_button_box.pack_start(provider_button_label, False, False, 0)
+        provider_button.add(provider_button_box)
+        self._provider_toggle_button_icon = provider_button_icon
+        self._provider_toggle_button_label = provider_button_label
         sidebar_top.pack_start(provider_button, False, False, 0)
         self._provider_toggle_button = provider_button
+
+        settings_button = Gtk.Button(label="Settings")
+        settings_button.set_relief(Gtk.ReliefStyle.NONE)
+        settings_button.set_halign(Gtk.Align.START)
+        settings_button.get_style_context().add_class("provider-switch-button")
+        settings_button.set_tooltip_text("Open settings to edit colors, models, themes and reasoning options.")
+        settings_button._drag_blocker = True
+        settings_button.connect("clicked", self._on_settings_button_clicked)
+        sidebar_top.pack_start(settings_button, False, False, 0)
+        self._settings_button = settings_button
 
         new_session_button = Gtk.Button(label="+ New Chat")
         new_session_button.set_relief(Gtk.ReliefStyle.NONE)
@@ -1101,8 +2011,9 @@ class ClaudeCodeWindow(Gtk.Window):
         project_entry.get_style_context().add_class("project-path-entry")
         project_entry.connect("changed", self._on_project_path_entry_changed)
         project_entry.connect("activate", self._on_project_path_entry_activate)
-        project_entry.connect("key-press-event", self._on_project_path_entry_key_press)
-        project_entry.connect("focus-in-event", self._on_project_path_entry_focus_in)
+        self._connect_optional_signal(project_entry, "key-press-event", self._on_project_path_entry_key_press)
+        self._connect_optional_signal(project_entry, "focus-in-event", self._on_project_path_entry_focus_in)
+        project_entry.connect("notify::has-focus", self._on_project_path_entry_has_focus_changed)
         path_bar.pack_start(project_entry, True, True, 0)
         self._project_path_entry = project_entry
 
@@ -1115,7 +2026,11 @@ class ClaudeCodeWindow(Gtk.Window):
         browse_button.connect("clicked", self._on_choose_folder_clicked)
         path_bar.pack_start(browse_button, False, False, 0)
 
-        suggestion_popover = Gtk.Popover.new(project_entry)
+        if GTK4:
+            suggestion_popover = Gtk.Popover()
+            suggestion_popover.set_parent(project_entry)
+        else:
+            suggestion_popover = Gtk.Popover.new(project_entry)
         suggestion_popover.set_position(Gtk.PositionType.BOTTOM)
         suggestion_popover.set_modal(False)
         suggestion_popover.get_style_context().add_class("path-suggestion-popover")
@@ -1123,12 +2038,18 @@ class ClaudeCodeWindow(Gtk.Window):
         suggestion_scroll = Gtk.ScrolledWindow()
         suggestion_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         suggestion_scroll.set_shadow_type(Gtk.ShadowType.NONE)
-        suggestion_scroll.set_size_request(560, 220)
+        suggestion_scroll.set_size_request(300, 220)
+        if hasattr(suggestion_scroll, "set_can_focus"):
+            suggestion_scroll.set_can_focus(False)
         suggestion_popover.add(suggestion_scroll)
 
         suggestion_list = Gtk.ListBox()
         suggestion_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
         suggestion_list.set_activate_on_single_click(True)
+        if hasattr(suggestion_list, "set_can_focus"):
+            suggestion_list.set_can_focus(False)
+        if hasattr(suggestion_list, "set_focus_on_click"):
+            suggestion_list.set_focus_on_click(False)
         suggestion_list.get_style_context().add_class("path-suggestion-list")
         suggestion_list.connect("row-selected", self._on_project_path_suggestion_selected)
         suggestion_list.connect("row-activated", self._on_project_path_suggestion_activated)
@@ -1263,10 +2184,95 @@ class ClaudeCodeWindow(Gtk.Window):
         return 0
 
     def _reasoning_index_from_value(self, value: str) -> int:
-        for i, (_, v) in enumerate(REASONING_LEVEL_OPTIONS):
-            if v == value:
+        if not self._reasoning_options:
+            return 0
+
+        target = str(value or "").strip()
+        for i, (_, v, _) in enumerate(self._reasoning_options):
+            if v == target:
                 return i
-        return 1
+        return 0
+
+    def _reasoning_value_from_index(self, index: int) -> str:
+        if not self._reasoning_options:
+            return "medium"
+        safe_index = max(0, min(index, len(self._reasoning_options) - 1))
+        return self._reasoning_options[safe_index][1]
+
+    def _provider_reasoning_option_payload(self) -> list[dict[str, str]]:
+        payload: list[dict[str, str]] = []
+        for title, value, description in self._reasoning_options:
+            payload.append(
+                {
+                    "title": title,
+                    "value": value,
+                    "description": description or f"{title} reasoning option",
+                }
+            )
+        if not payload:
+            payload.append({"title": "Medium", "value": "medium", "description": "Balanced reasoning."})
+        return payload
+
+    def _settings_dialog_size_constraints(self) -> tuple[int, int, int, int, int, int]:
+        desired_width = 720
+        desired_height = 540
+        base_min_width = 380
+        base_min_height = 280
+        hard_min_width = 360
+        hard_min_height = 260
+        max_width_cap = 760
+        max_height_cap = 620
+        workarea_margin = 64
+
+        max_width = desired_width
+        max_height = desired_height
+
+        if GTK4:
+            display = Gdk.Display.get_default()
+            if display is not None:
+                monitors = display.get_monitors()
+                if monitors.get_n_items() > 0:
+                    monitor = monitors.get_item(0)
+                    if monitor is not None:
+                        workarea = monitor.get_geometry()
+                        max_width = max(
+                            hard_min_width,
+                            min(int(workarea.width) - workarea_margin, max_width_cap),
+                        )
+                        max_height = max(
+                            hard_min_height,
+                            min(int(workarea.height) - workarea_margin, max_height_cap),
+                        )
+        else:
+            screen = self.get_screen()
+            if screen is not None:
+                monitor_index = screen.get_primary_monitor()
+                if monitor_index < 0:
+                    monitor_index = 0
+                window = self.get_window()
+                if window is not None:
+                    monitor_index = screen.get_monitor_at_window(window)
+                workarea = Gdk.Rectangle()
+                try:
+                    screen.get_monitor_workarea(monitor_index, workarea)
+                except TypeError:
+                    returned_workarea = screen.get_monitor_workarea(monitor_index)
+                    if returned_workarea:
+                        workarea = returned_workarea
+                max_width = max(
+                    hard_min_width,
+                    min(int(workarea.width) - workarea_margin, max_width_cap),
+                )
+                max_height = max(
+                    hard_min_height,
+                    min(int(workarea.height) - workarea_margin, max_height_cap),
+                )
+
+        min_width = min(base_min_width, max_width)
+        min_height = min(base_min_height, max_height)
+        default_width = max(min_width, min(desired_width, max_width))
+        default_height = max(min_height, min(desired_height, max_height))
+        return default_width, default_height, min_width, min_height, max_width, max_height
 
     def _save_sessions_safe(self, context: str) -> bool:
         try:
@@ -1312,6 +2318,13 @@ class ClaudeCodeWindow(Gtk.Window):
                 self._call_js("finishAssistantMessage")
             elif role == "system":
                 self._call_js("addSystemMessage", content)
+
+    def _replay_active_session_if_present(self) -> None:
+        active_session = self._get_active_session()
+        if active_session is None or not active_session.history:
+            return
+        self._conversation_id = active_session.conversation_id
+        self._replay_history(active_session.history)
 
     def _add_to_history(self, role: str, content: str) -> None:
         if not content:
@@ -1408,7 +2421,7 @@ class ClaudeCodeWindow(Gtk.Window):
 
         self._call_js("setReasoningVisible", self._active_provider.supports_reasoning)
         if self._active_provider.supports_reasoning:
-            _, reasoning_value = REASONING_LEVEL_OPTIONS[self._selected_reasoning_index]
+            reasoning_value = self._reasoning_value_from_index(self._selected_reasoning_index)
             self._call_js("updateReasoningLevel", reasoning_value)
 
     def _build_session_title(self, folder: str, timestamp: str) -> str:
@@ -1606,46 +2619,53 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _discover_custom_slash_commands(self) -> list[dict[str, Any]]:
         commands: list[dict[str, Any]] = []
-        seen: set[str] = set()
+        commands_by_key: dict[str, dict[str, Any]] = {}
 
         def normalize_providers(providers: list[str] | tuple[str, ...]) -> list[str]:
             normalized: list[str] = []
             for provider_id in providers:
-                candidate = normalize_provider_id(provider_id)
-                if candidate not in normalized:
+                candidate = str(provider_id or "").strip().lower()
+                if candidate and candidate in PROVIDERS and candidate not in normalized:
                     normalized.append(candidate)
-            return normalized or [DEFAULT_PROVIDER_ID]
+            return normalized
 
         def add_command(name: str, icon: str, description: str, providers: list[str] | tuple[str, ...]) -> None:
             safe_name = self._safe_slash_name(name)
             if not safe_name:
                 return
-            key = safe_name.casefold()
-            if key in seen:
-                return
             provider_list = normalize_providers(providers)
-            seen.add(key)
-            commands.append(
-                {
-                    "name": safe_name,
-                    "icon": icon,
-                    "description": self._truncate_text(description, 96),
-                    "providers": provider_list,
-                }
-            )
+            if not provider_list:
+                return
+            key = safe_name.casefold()
+            existing = commands_by_key.get(key)
+            if existing is not None:
+                merged_providers = list(existing.get("providers") or [])
+                for provider_id in provider_list:
+                    if provider_id not in merged_providers:
+                        merged_providers.append(provider_id)
+                existing["providers"] = merged_providers
+                return
+
+            payload = {
+                "name": safe_name,
+                "icon": icon,
+                "description": self._truncate_text(description, 96),
+                "providers": provider_list,
+            }
+            commands_by_key[key] = payload
+            commands.append(payload)
 
         project_root = Path(self._project_folder)
+        codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
+        all_provider_ids: tuple[str, ...] = tuple(PROVIDERS.keys()) or (DEFAULT_PROVIDER_ID,)
         command_roots: list[tuple[Path, tuple[str, ...]]] = [
             (project_root / ".claude" / "commands", ("claude",)),
             (Path.home() / ".claude" / "commands", ("claude",)),
+            (project_root / ".codex" / "commands", ("codex",)),
+            (codex_home / "commands", ("codex",)),
+            (project_root / ".agents" / "commands", all_provider_ids),
+            (Path.home() / ".agents" / "commands", all_provider_ids),
         ]
-        if self._active_provider_id == "codex":
-            command_roots.extend(
-                [
-                    (project_root / ".codex" / "commands", ("codex",)),
-                    (Path.home() / ".codex" / "commands", ("codex",)),
-                ]
-            )
         for root, providers in command_roots:
             if not root.is_dir():
                 continue
@@ -1662,24 +2682,27 @@ class ClaudeCodeWindow(Gtk.Window):
                 summary = self._read_markdown_summary(command_file) or "Custom slash command"
                 add_command(slash_name, "C", f"Custom command: {summary}", providers)
 
-        if self._active_provider_id == "codex":
-            skill_roots: list[tuple[Path, tuple[str, ...]]] = [
-                (project_root / ".codex" / "skills", ("codex",)),
-                (Path.home() / ".codex" / "skills", ("codex",)),
-            ]
-        else:
-            skill_roots = [
-                (project_root / ".agents" / "skills", ("claude",)),
-                (Path.home() / ".agents" / "skills", ("claude",)),
-            ]
+        skill_doc_names = ("SKILL.md", "skill.md", "skill.markdown")
+        skill_roots: list[tuple[Path, tuple[str, ...]]] = [
+            (project_root / ".agents" / "skills", all_provider_ids),
+            (Path.home() / ".agents" / "skills", all_provider_ids),
+            (project_root / ".codex" / "skills", ("codex",)),
+            (codex_home / "skills", ("codex",)),
+            (project_root / ".claude" / "skills", ("claude",)),
+            (Path.home() / ".claude" / "skills", ("claude",)),
+        ]
         for root, providers in skill_roots:
             if not root.is_dir():
                 continue
-            for skill_dir in sorted(root.iterdir(), key=lambda p: p.name.casefold()):
-                if not skill_dir.is_dir() or skill_dir.name.startswith("."):
-                    continue
-                skill_doc = skill_dir / "SKILL.md"
+            discovered_docs: list[Path] = []
+            for doc_name in skill_doc_names:
+                discovered_docs.extend(root.rglob(doc_name))
+
+            for skill_doc in sorted(discovered_docs, key=lambda p: str(p).casefold()):
                 if not skill_doc.is_file():
+                    continue
+                skill_dir = skill_doc.parent
+                if skill_dir == root or skill_dir.name.startswith("."):
                     continue
                 summary = self._read_markdown_summary(skill_doc) or "Custom skill"
                 add_command(skill_dir.name, "S", f"Custom skill: {summary}", providers)
@@ -1754,40 +2777,93 @@ class ClaudeCodeWindow(Gtk.Window):
         open_button.add(label_box)
         row.pack_start(open_button, True, True, 0)
 
-        menu_button = Gtk.MenuButton(label="⋯")
+        menu_button = Gtk.Button(label="...")
         menu_button.set_relief(Gtk.ReliefStyle.NONE)
         menu_button.get_style_context().add_class("session-menu-button")
         menu_button._drag_blocker = True
+        active_popover: Gtk.Popover | None = None
 
-        popover = Gtk.Popover.new(menu_button)
-        popover.get_style_context().add_class("session-popover")
-        menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        menu_box.set_border_width(6)
+        def _close_active_popover() -> None:
+            nonlocal active_popover
+            if active_popover is None:
+                return
+            pop = active_popover
+            active_popover = None
+            try:
+                pop.popdown()
+            except Exception:
+                pop.set_visible(False)
+            try:
+                parent = pop.get_parent() if hasattr(pop, "get_parent") else None
+                if parent is not None and hasattr(pop, "unparent"):
+                    pop.unparent()
+            except Exception:
+                pass
+            if hasattr(pop, "destroy"):
+                try:
+                    pop.destroy()
+                except Exception:
+                    pass
 
-        archive_button = Gtk.ModelButton(label="Archive")
-        archive_button.connect("clicked", lambda _button, sid=session.id: self._archive_session(sid))
-        menu_box.pack_start(archive_button, False, False, 0)
+        def _build_popover() -> Gtk.Popover:
+            if GTK4:
+                popover = Gtk.Popover.new()
+                popover.set_parent(menu_button)
+            else:
+                popover = Gtk.Popover.new(menu_button)
+            popover.get_style_context().add_class("session-popover")
 
-        delete_button = Gtk.ModelButton(label="Delete")
-        delete_button.connect("clicked", lambda _button, sid=session.id: self._delete_session(sid))
-        menu_box.pack_start(delete_button, False, False, 0)
+            menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            menu_box.set_border_width(6)
 
-        popover.add(menu_box)
-        menu_box.show_all()
-        menu_button.set_popover(popover)
+            archive_button = Gtk.ModelButton(label="Archive")
+            archive_button.connect(
+                "clicked",
+                lambda _button, sid=session.id: (
+                    self._archive_session(sid),
+                    _close_active_popover(),
+                ),
+            )
+            menu_box.pack_start(archive_button, False, False, 0)
+
+            delete_button = Gtk.ModelButton(label="Delete")
+            delete_button.connect(
+                "clicked",
+                lambda _button, sid=session.id: (
+                    self._delete_session(sid),
+                    _close_active_popover(),
+                ),
+            )
+            menu_box.pack_start(delete_button, False, False, 0)
+
+            popover.add(menu_box)
+            menu_box.show_all()
+            return popover
+
+        def _toggle_session_popover() -> None:
+            nonlocal active_popover
+            if active_popover is not None:
+                _close_active_popover()
+                return
+            active_popover = _build_popover()
+            try:
+                active_popover.popup()
+            except Exception:
+                active_popover.show_all()
+                active_popover.set_visible(True)
+
+        menu_button.connect("clicked", lambda _button: _toggle_session_popover())
+        menu_button.connect("destroy", lambda _button: _close_active_popover())
         row.pack_end(menu_button, False, False, 0)
 
         def on_row_button_press(_widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
             if event.type == Gdk.EventType.BUTTON_PRESS and event.button == 3:
-                try:
-                    menu_button.popup()
-                except Exception:
-                    logger.exception("Could not show session row context menu via popup(); using fallback.")
-                    popover.show_all()
+                _toggle_session_popover()
                 return True
             return False
 
-        row.connect("button-press-event", on_row_button_press)
+        self._connect_optional_signal(row, "button-press-event", on_row_button_press)
+        row.connect("destroy", lambda _row: _close_active_popover())
 
         return row
 
@@ -1947,7 +3023,7 @@ class ClaudeCodeWindow(Gtk.Window):
     def _delete_session(self, session_id: str) -> None:
         self._mutate_session_and_reconcile_active(session_id, "delete")
 
-    def _start_new_session(self, folder: str) -> None:
+    def _start_new_session(self, folder: str, *, reset_conversation: bool = True) -> None:
         normalized = normalize_folder(folder)
         if not os.path.isdir(normalized):
             self._set_status_message("Selected path is not a folder", STATUS_ERROR)
@@ -1965,7 +3041,8 @@ class ClaudeCodeWindow(Gtk.Window):
         self._refresh_session_list()
         self._save_sessions_safe("Could not save sessions")
 
-        self._reset_conversation_state("New session started")
+        if reset_conversation:
+            self._reset_conversation_state("New session started")
 
         if self._binary_path is None:
             self._set_connection_state(CONNECTION_DISCONNECTED)
@@ -2009,7 +3086,20 @@ class ClaudeCodeWindow(Gtk.Window):
             prefix = os.path.basename(expanded)
 
         if not os.path.isdir(parent):
-            return []
+            # If the user typed deeper than existing folders, walk up to the nearest
+            # existing directory and keep the nearest missing segment as prefix.
+            probe = expanded.rstrip(os.sep)
+            fallback_prefix = prefix
+            while probe and not os.path.isdir(probe):
+                fallback_prefix = os.path.basename(probe) or fallback_prefix
+                next_probe = os.path.dirname(probe)
+                if not next_probe or next_probe == probe:
+                    break
+                probe = next_probe
+            if not os.path.isdir(probe):
+                return []
+            parent = probe
+            prefix = fallback_prefix
 
         matches: list[str] = []
         prefix_lower = prefix.casefold()
@@ -2041,6 +3131,10 @@ class ClaudeCodeWindow(Gtk.Window):
         for suggestion in suggestions:
             row = Gtk.ListBoxRow()
             row._completion_path = suggestion
+            if hasattr(row, "set_can_focus"):
+                row.set_can_focus(False)
+            if hasattr(row, "set_focus_on_click"):
+                row.set_focus_on_click(False)
             label = Gtk.Label(label=format_path(suggestion))
             label.set_xalign(0.0)
             label.set_single_line_mode(True)
@@ -2076,14 +3170,27 @@ class ClaudeCodeWindow(Gtk.Window):
             self._hide_project_path_suggestions()
             return
 
-        if show_popover and self._project_path_entry.is_focus():
-            self._project_path_popover.show_all()
+        if show_popover:
+            self._show_project_path_suggestions()
+
+    def _show_project_path_suggestions(self) -> None:
+        if self._project_path_popover is None or self._project_path_entry is None:
+            return
+        self._project_path_popover.show_all()
+        try:
             self._project_path_popover.popup()
+        except Exception:
+            self._project_path_popover.set_visible(True)
+        # Keep typing in the path entry; the suggestion list should never steal keyboard focus.
+        self._project_path_entry.grab_focus()
 
     def _hide_project_path_suggestions(self) -> None:
         if self._project_path_popover is None:
             return
-        self._project_path_popover.popdown()
+        try:
+            self._project_path_popover.popdown()
+        except Exception:
+            self._project_path_popover.set_visible(False)
 
     def _get_selected_project_path_suggestion(self) -> str | None:
         if not self._project_path_suggestions:
@@ -2181,6 +3288,16 @@ class ClaudeCodeWindow(Gtk.Window):
     def _on_project_path_entry_focus_in(self, _entry: Gtk.Entry, _event: Gdk.Event) -> bool:
         self._refresh_project_path_suggestions(show_popover=True)
         return False
+
+    def _on_project_path_entry_has_focus_changed(self, entry: Gtk.Entry, _param: Any) -> None:
+        try:
+            has_focus = bool(entry.get_property("has-focus"))
+        except Exception:
+            has_focus = False
+        if has_focus:
+            self._refresh_project_path_suggestions(show_popover=True)
+        else:
+            self._hide_project_path_suggestions()
 
     def _on_project_path_suggestion_selected(
         self,
@@ -2372,41 +3489,92 @@ class ClaudeCodeWindow(Gtk.Window):
             self._last_request_failed = False
             self._refresh_connection_state()
 
-    def _detect_cli_flag_support_async(self, binary_path: str) -> None:
-        if not binary_path:
-            self._set_cli_caps(None)
+    def _cli_caps_for(self, provider_id: str | None = None) -> CliCapabilities:
+        normalized_provider_id = normalize_provider_id(provider_id or self._active_provider_id)
+        return self._provider_cli_caps.get(normalized_provider_id, CliCapabilities())
+
+    def _set_cli_caps(self, provider_id: str, caps: CliCapabilities | None) -> None:
+        normalized_provider_id = normalize_provider_id(provider_id)
+        self._provider_cli_caps[normalized_provider_id] = caps or CliCapabilities()
+
+    def _detect_cli_flag_support_async(self, binary_path: str, provider_id: str) -> None:
+        normalized_provider_id = normalize_provider_id(provider_id)
+        if not binary_path or normalized_provider_id not in PROVIDERS:
+            self._set_cli_caps(normalized_provider_id, None)
+            self._provider_cli_probe_inflight.discard(normalized_provider_id)
+            if normalized_provider_id == self._active_provider_id:
+                self._refresh_connection_state()
+            return
+
+        if normalized_provider_id in self._provider_cli_probe_inflight:
             return
 
         import threading
 
+        self._provider_cli_probe_inflight.add(normalized_provider_id)
+
         def _probe() -> None:
             caps = detect_cli_flag_support(binary_path)
-            GLib.idle_add(self._apply_cli_caps, caps)
+            GLib.idle_add(self._apply_cli_caps, normalized_provider_id, caps)
 
         threading.Thread(target=_probe, daemon=True).start()
 
-    def _set_cli_caps(self, caps: "CliCapabilities | None") -> None:
-        if caps is None:
-            self._supports_model_flag = False
-            self._supports_permission_flag = False
-            self._supports_reasoning_flag = False
-            self._supports_output_format_flag = False
-            self._supports_stream_json = False
-            self._supports_json = False
-            self._supports_include_partial_messages = False
+    def _detect_provider_models_async(self, binary_path: str | None, provider_id: str) -> None:
+        normalized_provider_id = normalize_provider_id(provider_id)
+        if (
+            not binary_path
+            or normalized_provider_id in self._provider_model_probe_done
+            or normalized_provider_id not in PROVIDERS
+        ):
             return
 
-        self._supports_model_flag = caps.supports_model_flag
-        self._supports_permission_flag = caps.supports_permission_flag
-        self._supports_reasoning_flag = caps.supports_reasoning_flag and self._active_provider.supports_reasoning
-        self._supports_output_format_flag = caps.supports_output_format_flag
-        self._supports_stream_json = caps.supports_stream_json
-        self._supports_json = caps.supports_json
-        self._supports_include_partial_messages = caps.supports_include_partial_messages
+        import threading
 
-    def _apply_cli_caps(self, caps: "CliCapabilities") -> bool:
-        self._set_cli_caps(caps)
-        self._refresh_connection_state()
+        def _probe_models() -> None:
+            discovered_models = detect_provider_model_options(binary_path, normalized_provider_id)
+            if not discovered_models:
+                self._provider_model_probe_done.discard(normalized_provider_id)
+                return
+            GLib.idle_add(
+                self._apply_detected_models,
+                normalized_provider_id,
+                discovered_models,
+            )
+
+        self._provider_model_probe_done.add(normalized_provider_id)
+        threading.Thread(target=_probe_models, daemon=True).start()
+
+    def _apply_detected_models(
+        self,
+        provider_id: str,
+        detected_model_options: tuple[tuple[str, str], ...],
+    ) -> bool:
+        if not detected_model_options:
+            return False
+
+        refresh_provider_registry(load_settings(), detected_model_options={provider_id: detected_model_options})
+        self._provider_binaries = {
+            pid: find_provider_binary(list(provider.binary_names))
+            for pid, provider in PROVIDERS.items()
+        }
+
+        if self._active_provider_id == provider_id:
+            previous_model = ""
+            if 0 <= self._selected_model_index < len(self._model_options):
+                previous_model = self._model_options[self._selected_model_index][1]
+            self._set_provider_option_lists(provider_id, preferred_model=previous_model)
+            self._update_status_model_and_permission()
+            self._sync_provider_state_to_webview()
+            self._update_session_filter_buttons()
+
+        return False
+
+    def _apply_cli_caps(self, provider_id: str, caps: CliCapabilities | None) -> bool:
+        normalized_provider_id = normalize_provider_id(provider_id)
+        self._provider_cli_probe_inflight.discard(normalized_provider_id)
+        self._set_cli_caps(normalized_provider_id, caps)
+        if normalized_provider_id == self._active_provider_id:
+            self._refresh_connection_state()
         return False
 
     def _show_missing_binary_error(self) -> None:
@@ -2418,11 +3586,11 @@ class ClaudeCodeWindow(Gtk.Window):
 
         dialog = Gtk.MessageDialog(
             transient_for=self,
-            flags=Gtk.DialogFlags.MODAL,
             message_type=Gtk.MessageType.ERROR,
             buttons=Gtk.ButtonsType.CLOSE,
             text=f"{provider.name} CLI not found",
         )
+        dialog.set_modal(True)
         dialog.format_secondary_text(
             f"Install {provider.name} CLI and ensure one of these executables is available: {binary_names}."
         )
@@ -2450,7 +3618,7 @@ class ClaudeCodeWindow(Gtk.Window):
         if self._project_path_entry is None:
             return
         self._project_path_entry.grab_focus()
-        self._project_path_entry.select_region(0, -1)
+        self._project_path_entry.set_position(-1)
         self._refresh_project_path_suggestions(show_popover=True)
         self._set_status_message("Type a project folder path and press Enter", STATUS_INFO)
 
@@ -2493,12 +3661,15 @@ class ClaudeCodeWindow(Gtk.Window):
     def _on_js_change_folder(
         self,
         pane_id: str,
-        _manager: WebKit2.UserContentManager,
-        _js_result: WebKit2.JavascriptResult,
+        _manager: WebKit.UserContentManager,
+        _js_result: WebKit.JavascriptResult,
     ) -> None:
         self._set_active_pane(pane_id)
-        with self._pane_context(pane_id):
-            self._prompt_for_project_folder()
+        selected = self._choose_project_folder_with_dialog()
+        if selected is None:
+            return
+        self._set_project_path_entry_text(selected)
+        self._set_project_folder(selected, restart_session=self._active_session_id is not None)
 
     def _apply_session_option(self, kind: str, index: int) -> None:
         if kind == "model":
@@ -2506,11 +3677,13 @@ class ClaudeCodeWindow(Gtk.Window):
             selected_index = self._selected_model_index
             running_change_reason = "Model changed"
             status_message = "Model updated"
+            should_reset_conversation = True
         elif kind == "permission":
             options = self._permission_options
             selected_index = self._selected_permission_index
             running_change_reason = "Permission mode changed"
             status_message = "Permission mode updated"
+            should_reset_conversation = False
         else:
             return
 
@@ -2529,14 +3702,20 @@ class ClaudeCodeWindow(Gtk.Window):
         self._update_status_model_and_permission()
         self._update_context_indicator()
         active_session = self._get_active_session()
+        had_conversation = False
         if active_session is not None and active_session.status != SESSION_STATUS_ARCHIVED:
+            had_conversation = active_session.conversation_id is not None
             if kind == "model":
                 active_session.model = self._model_options[index][1]
+                if had_conversation:
+                    active_session.conversation_id = None
             else:
                 active_session.permission_mode = self._permission_options[index][1]
             active_session.last_used_at = current_timestamp()
             self._save_sessions_safe("Could not save sessions")
             self._refresh_session_list()
+            if should_reset_conversation and had_conversation:
+                self._reset_conversation_state("Conversation reset for model change")
         if self._has_messages and self._claude_process.is_running():
             self._interrupt_running_process(running_change_reason)
         self._set_status_message(status_message, STATUS_INFO)
@@ -2544,8 +3723,43 @@ class ClaudeCodeWindow(Gtk.Window):
     def _on_new_session_clicked(self, _button: Gtk.Button) -> None:
         if not os.path.isdir(self._project_folder):
             self._set_status_message("Current project folder is not available", STATUS_ERROR)
+            self._prompt_for_project_folder()
             return
         self._start_new_session(self._project_folder)
+
+    def _on_new_agent_clicked(self, _button: Gtk.Button) -> None:
+        self._create_agent_pane()
+
+    def _persist_agent_mode_preference(self) -> None:
+        try:
+            settings_payload = load_settings()
+            settings_payload["agentctl_auto_enabled"] = self._agentctl_auto_enabled
+            save_settings(settings_payload)
+        except Exception as error:
+            logger.exception("Could not persist auto agent control preference")
+            self._set_status_message(
+                f"Could not save auto agent controls preference: {error}",
+                STATUS_WARNING,
+            )
+
+    def _sync_agent_mode_to_webviews(self, *, pane_id: str | None = None) -> None:
+        target_panes = [pane_id] if pane_id is not None else list(self._pane_registry.keys())
+        for target in target_panes:
+            if target not in self._pane_registry:
+                continue
+            with self._pane_context(target):
+                self._call_js("setAgentModeEnabled", self._agentctl_auto_enabled)
+
+    def _on_agentctl_auto_toggle(self, toggle: Gtk.ToggleButton) -> None:
+        self._agentctl_auto_enabled = bool(toggle.get_active())
+        if self._agentctl_auto_enabled:
+            toggle.set_tooltip_text("Auto-create agent controls in main chat (on)")
+            self._set_status_message("Auto agent controls enabled.", STATUS_INFO)
+        else:
+            toggle.set_tooltip_text("Auto-create agent controls in main chat (off)")
+            self._set_status_message("Auto agent controls disabled.", STATUS_INFO)
+        self._persist_agent_mode_preference()
+        self._sync_agent_mode_to_webviews()
 
     @staticmethod
     def _provider_order() -> list[str]:
@@ -2579,8 +3793,8 @@ class ClaudeCodeWindow(Gtk.Window):
             binary_list = ", ".join(provider.binary_names)
             return f"{provider.name} CLI was not found (expected: {binary_list})."
 
-        if normalized_provider_id == "codex" and check_auth and not is_codex_authenticated():
-            return "Codex is not logged in. Run `codex login` and retry."
+        if check_auth and normalized_provider_id == "codex" and not is_codex_authenticated():
+            return "Codex is not authenticated (run `codex login`)."
 
         return None
 
@@ -2592,11 +3806,11 @@ class ClaudeCodeWindow(Gtk.Window):
 
         dialog = Gtk.MessageDialog(
             transient_for=self,
-            flags=Gtk.DialogFlags.MODAL,
             message_type=Gtk.MessageType.ERROR,
             buttons=Gtk.ButtonsType.CLOSE,
             text=title,
         )
+        dialog.set_modal(True)
         dialog.format_secondary_text(reason)
         dialog.run()
         dialog.destroy()
@@ -2605,8 +3819,22 @@ class ClaudeCodeWindow(Gtk.Window):
         if self._provider_toggle_button is None:
             return
 
-        self._provider_toggle_button.set_label(self._provider_button_label())
+        active_provider = PROVIDERS[normalize_provider_id(self._active_provider_id)]
         next_provider_id = self._next_provider_id()
+        display_provider = active_provider
+        if next_provider_id is not None:
+            display_provider = PROVIDERS[normalize_provider_id(next_provider_id)]
+
+        icon_path = self._provider_switch_icon_path(display_provider.id)
+        if self._provider_toggle_button_icon is not None and self._provider_toggle_button_label is not None:
+            if icon_path is None:
+                self._provider_toggle_button_icon.set_visible(False)
+                self._provider_toggle_button_label.set_text(display_provider.name)
+            else:
+                self._provider_toggle_button_icon.set_from_file(str(icon_path))
+                self._provider_toggle_button_icon.set_pixel_size(16)
+                self._provider_toggle_button_icon.set_visible(True)
+                self._provider_toggle_button_label.set_text(display_provider.name)
         if next_provider_id is None:
             self._provider_toggle_button.set_sensitive(False)
             self._provider_toggle_button.set_tooltip_text("No additional providers available")
@@ -2724,23 +3952,833 @@ class ClaudeCodeWindow(Gtk.Window):
             if target not in self._pane_registry:
                 continue
             with self._pane_context(target):
+                self._call_js("setReducedMotion", self._reduced_motion_from_gtk())
                 self._call_js("applyProviderTheme", self._provider_theme_variables(provider))
                 self._call_js("setModelOptions", self._provider_model_option_payload(provider))
                 self._call_js("setPermissionOptions", self._provider_permission_option_payload(provider))
+                self._call_js("setReasoningOptions", self._provider_reasoning_option_payload())
                 self._call_js(
                     "setProviderBranding",
                     {
                         "id": provider.id,
                         "name": provider.name,
-                        "icon": provider.icon,
+                        "iconUrl": self._provider_icon_data_uri(provider.id),
                         "welcomeTitle": f"{provider.name} is ready",
                     },
                 )
                 self._call_js("setReasoningVisible", provider.supports_reasoning)
                 self._update_status_model_and_permission()
                 if provider.supports_reasoning:
-                    _, reasoning_value = REASONING_LEVEL_OPTIONS[self._selected_reasoning_index]
+                    reasoning_value = self._reasoning_value_from_index(self._selected_reasoning_index)
                     self._call_js("updateReasoningLevel", reasoning_value)
+
+    def _apply_settings_payload(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            payload = load_settings()
+
+        refresh_provider_registry(payload)
+        self._reasoning_options = get_reasoning_options(payload)
+
+        self._provider_binaries = {
+            provider_id: find_provider_binary(list(provider.binary_names))
+            for provider_id, provider in PROVIDERS.items()
+        }
+        self._provider_model_probe_done.clear()
+        self._provider_cli_caps.clear()
+        self._provider_cli_probe_inflight.clear()
+        for provider_id, binary_path in self._provider_binaries.items():
+            self._detect_provider_models_async(binary_path, provider_id)
+            self._detect_cli_flag_support_async(binary_path, provider_id)
+
+        normalized_provider_id = normalize_provider_id(self._active_provider_id)
+        self._active_provider_id = normalized_provider_id
+        self._binary_path = self._provider_binaries.get(self._active_provider_id)
+        active_session = self._get_active_session()
+        if active_session is not None and normalize_provider_id(active_session.provider) != self._active_provider_id:
+            self._active_session_id = None
+
+        self._set_provider_option_lists(self._active_provider_id)
+        self._ensure_active_session_for_provider(reset_conversation=False)
+
+        active_session = self._get_active_session()
+        if active_session is None:
+            self._selected_reasoning_index = self._reasoning_index_from_value("medium")
+            self._update_status_model_and_permission()
+        else:
+            if self._active_provider.supports_reasoning:
+                self._selected_reasoning_index = self._reasoning_index_from_value(active_session.reasoning_level)
+            else:
+                self._selected_reasoning_index = self._reasoning_index_from_value("medium")
+            self._update_status_model_and_permission()
+
+        self._update_session_filter_buttons()
+        self._update_provider_toggle_button()
+        self._apply_provider_branding()
+        self._swap_css(
+            self._active_provider.colors,
+            self._active_provider.accent_rgb,
+            self._active_provider.accent_soft_rgb,
+            reduced_motion=self._reduced_motion_from_gtk(),
+        )
+        self._refresh_session_list()
+        self._refresh_connection_state()
+
+    def _on_settings_button_clicked(self, _button: Gtk.Button) -> None:
+        try:
+            self._open_settings_editor()
+        except Exception as error:
+            logger.exception("Could not open settings editor")
+            self._set_status_message(f"Could not open settings: {error}", STATUS_ERROR)
+
+    def _open_settings_editor(self) -> None:
+        original_payload = load_settings()
+        working_payload = copy.deepcopy(original_payload)
+        (
+            default_width,
+            default_height,
+            min_width,
+            min_height,
+            max_width,
+            max_height,
+        ) = self._settings_dialog_size_constraints()
+
+        dialog = Gtk.Dialog(
+            title="App Settings",
+            transient_for=self,
+        )
+        dialog.set_modal(True)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Save", Gtk.ResponseType.OK)
+        dialog.set_resizable(True)
+        if hasattr(dialog, "set_geometry_hints"):
+            try:
+                geometry = Gdk.Geometry()
+                geometry.min_width = min_width
+                geometry.min_height = min_height
+                geometry.max_width = max_width
+                geometry.max_height = max_height
+                dialog.set_geometry_hints(
+                    None,
+                    geometry,
+                    Gdk.WindowHints.MIN_SIZE | Gdk.WindowHints.MAX_SIZE,
+                )
+            except Exception:
+                logger.debug("Geometry hints are unavailable in the current GDK runtime.", exc_info=True)
+        dialog.set_default_size(default_width, default_height)
+
+        content_area = dialog.get_content_area()
+        content_area.set_spacing(8)
+        content_area.set_border_width(8)
+
+        helper_label = Gtk.Label(
+            label="Customize providers, theme colors, model options and reasoning options.",
+        )
+        helper_label.set_xalign(0.0)
+        helper_label.set_line_wrap(True)
+        content_area.pack_start(helper_label, False, False, 0)
+
+        notebook = Gtk.Notebook()
+        notebook.set_scrollable(True)
+        settings_scroller = Gtk.ScrolledWindow()
+        settings_scroller.set_hexpand(True)
+        settings_scroller.set_vexpand(True)
+        settings_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        settings_scroller.set_min_content_width(max(280, min_width - 24))
+        settings_scroller.set_min_content_height(240)
+        settings_scroller.add(notebook)
+        content_area.pack_start(settings_scroller, True, True, 0)
+
+        hex_pattern = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+        def _normalize_hex(raw: str) -> str | None:
+            if not isinstance(raw, str):
+                return None
+            value = raw.strip()
+            if not value.startswith("#"):
+                return None
+            if not hex_pattern.match(value):
+                return None
+            if len(value) == 4:
+                return f"#{value[1]*2}{value[2]*2}{value[3]*2}".lower()
+            if len(value) == 7:
+                return value.lower()
+            return None
+
+        def _to_hex_with_prefix(red: int, green: int, blue: int) -> str:
+            return f"#{int(red):02x}{int(green):02x}{int(blue):02x}"
+
+        def _normalize_rgb_component(value: object) -> int:
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                return 0
+            return max(0, min(255, number))
+
+        def _rgba_to_hex(color: Gdk.RGBA) -> str:
+            return _to_hex_with_prefix(
+                round(color.red * 255),
+                round(color.green * 255),
+                round(color.blue * 255),
+            )
+
+        def _hex_to_rgba(raw: str) -> Gdk.RGBA | None:
+            rgba = Gdk.RGBA()
+            if rgba.parse(raw):
+                return rgba
+            return None
+
+        def _set_bg(widget: Gtk.Widget, value: str) -> None:
+            color = _hex_to_rgba(value)
+            if color is not None and hasattr(widget, "override_background_color"):
+                widget.override_background_color(Gtk.StateFlags.NORMAL, color)
+
+        def _set_fg(widget: Gtk.Widget, value: str) -> None:
+            color = _hex_to_rgba(value)
+            if color is not None and hasattr(widget, "override_color"):
+                widget.override_color(Gtk.StateFlags.NORMAL, color)
+
+        def _selected_reasoning_labels() -> list[tuple[str, str]]:
+            result: list[tuple[str, str]] = []
+            for entry in working_payload.get("reasoning_options", []):
+                if not isinstance(entry, dict):
+                    continue
+                title = str(entry.get("title", "")).strip()
+                value = str(entry.get("value", "")).strip()
+                if title and value:
+                    result.append((title, value))
+            return result
+
+        def _sync_reasoning_payload(reasoning_store: Gtk.ListStore) -> None:
+            items: list[dict[str, str]] = []
+            for row in reasoning_store:
+                title = str(row[0]).strip()
+                value = str(row[1]).strip()
+                description = str(row[2]).strip()
+                if not value:
+                    value = "medium"
+                if not title:
+                    title = value
+                items.append({"title": title, "value": value, "description": description})
+            if not items:
+                items.append(
+                    {
+                        "title": "Medium (Balanced)",
+                        "value": "medium",
+                        "description": "Balanced reasoning.",
+                    },
+                )
+            working_payload["reasoning_options"] = items
+
+        def _update_provider_model_payload(provider_id: str, model_store: Gtk.ListStore) -> None:
+            provider = working_payload["providers"].get(provider_id)
+            if not isinstance(provider, dict):
+                return
+            options: list[dict[str, str]] = []
+            for row in model_store:
+                label = str(row[0]).strip() or "Model"
+                value = str(row[1]).strip() or label.lower().replace(" ", "-")
+                options.append({"label": label, "value": value})
+            provider["model_options"] = options
+
+        def _normalize_payload() -> bool:
+            providers = working_payload.get("providers")
+            if not isinstance(providers, dict):
+                return False
+            for provider in providers.values():
+                if not isinstance(provider, dict):
+                    return False
+                colors = provider.get("colors")
+                if not isinstance(colors, dict):
+                    return False
+                for key, value in list(colors.items()):
+                    normalized = _normalize_hex(str(value))
+                    if normalized is None:
+                        return False
+                    colors[key] = normalized
+
+                for key in ("accent_rgb", "accent_soft_rgb"):
+                    rgb = provider.get(key)
+                    if not isinstance(rgb, list) or len(rgb) < 3:
+                        return False
+                    provider[key] = [_normalize_rgb_component(v) for v in rgb[:3]]
+
+                model_options = provider.get("model_options", [])
+                normalized_models: list[dict[str, str]] = []
+                if not isinstance(model_options, list) or not model_options:
+                    return False
+                for entry in model_options:
+                    if not isinstance(entry, dict):
+                        continue
+                    label = str(entry.get("label", "")).strip() or "Model"
+                    value = str(entry.get("value", "")).strip() or label.lower().replace(" ", "-")
+                    normalized_models.append({"label": label, "value": value})
+                if normalized_models:
+                    provider["model_options"] = normalized_models
+                else:
+                    return False
+
+            return True
+
+        def _build_reasoning_tab() -> Gtk.Widget:
+            page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            page.set_border_width(8)
+
+            model = Gtk.ListStore(str, str, str)
+            for entry in working_payload.get("reasoning_options", []):
+                if not isinstance(entry, dict):
+                    continue
+                model.append(
+                    (
+                        str(entry.get("title", "")),
+                        str(entry.get("value", "")),
+                        str(entry.get("description", "")),
+                    ),
+                )
+
+            tree = Gtk.TreeView(model=model)
+            for column_index, title, width in (
+                (0, "Title", 180),
+                (1, "Value", 130),
+                (2, "Description", 300),
+            ):
+                renderer = Gtk.CellRendererText()
+                renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
+                column = Gtk.TreeViewColumn(title, renderer, text=column_index)
+                column.set_resizable(True)
+                column.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
+                column.set_fixed_width(width)
+                column.set_min_width(width)
+                tree.append_column(column)
+            tree.get_selection().set_mode(Gtk.SelectionMode.SINGLE)
+            tree.set_headers_visible(True)
+
+            scroller = Gtk.ScrolledWindow()
+            scroller.set_hexpand(True)
+            scroller.set_vexpand(True)
+            scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            scroller.add(tree)
+            page.pack_start(scroller, True, True, 0)
+
+            editor = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            title_entry = Gtk.Entry()
+            title_entry.set_placeholder_text("Low (Fast)")
+            title_entry.set_hexpand(True)
+            value_entry = Gtk.Entry()
+            value_entry.set_placeholder_text("low")
+            value_entry.set_hexpand(True)
+            description_entry = Gtk.Entry()
+            description_entry.set_placeholder_text("Description")
+            description_entry.set_hexpand(True)
+            editor.pack_start(title_entry, True, True, 0)
+            editor.pack_start(value_entry, True, True, 0)
+            editor.pack_start(description_entry, True, True, 0)
+            page.pack_start(editor, False, False, 0)
+
+            btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            add_btn = Gtk.Button(label="Add")
+            update_btn = Gtk.Button(label="Update")
+            remove_btn = Gtk.Button(label="Remove")
+            up_btn = Gtk.Button(label="↑")
+            down_btn = Gtk.Button(label="↓")
+            btn_box.pack_start(add_btn, False, False, 0)
+            btn_box.pack_start(update_btn, False, False, 0)
+            btn_box.pack_start(remove_btn, False, False, 0)
+            btn_box.pack_start(up_btn, False, False, 0)
+            btn_box.pack_start(down_btn, False, False, 0)
+            page.pack_start(btn_box, False, False, 0)
+
+            selected = {"iter": None}
+
+            def _reasoning_row_from_editor() -> tuple[str, str, str]:
+                title = title_entry.get_text().strip()
+                value = value_entry.get_text().strip()
+                description = description_entry.get_text().strip()
+                if not value:
+                    value = "medium"
+                if not title:
+                    title = value
+                return (title, value, description)
+
+            def _selection_changed(_selection: Gtk.TreeSelection) -> None:
+                _, selected_row = _selection.get_selected()
+                selected["iter"] = selected_row
+                if selected_row is None:
+                    return
+                title_entry.set_text(str(model[selected_row][0]))
+                value_entry.set_text(str(model[selected_row][1]))
+                description_entry.set_text(str(model[selected_row][2]))
+
+            def _swap_items(step: int) -> None:
+                row_iter = selected["iter"]
+                if row_iter is None:
+                    return
+                path = model.get_path(row_iter)
+                if path is None:
+                    return
+                index = path.get_indices()[0]
+                target_index = index + step
+                if target_index < 0 or target_index >= len(model):
+                    return
+
+                target = model.get_iter(Gtk.TreePath((target_index,)))
+                if step < 0:
+                    model.move_before(row_iter, target)
+                else:
+                    model.move_after(row_iter, target)
+                selected["iter"] = row_iter
+                tree.get_selection().select_iter(row_iter)
+                _sync_reasoning_payload(model)
+
+            def _reasoning_add(_button: Gtk.Button | None = None) -> None:
+                row_iter = model.append(_reasoning_row_from_editor())
+                selected["iter"] = row_iter
+                tree.get_selection().select_iter(row_iter)
+                _sync_reasoning_payload(model)
+
+            def _reasoning_update(_button: Gtk.Button | None = None) -> None:
+                row_iter = selected["iter"]
+                if row_iter is None:
+                    return
+                title, value, description = _reasoning_row_from_editor()
+                model.set_value(row_iter, 0, title)
+                model.set_value(row_iter, 1, value)
+                model.set_value(row_iter, 2, description)
+                _sync_reasoning_payload(model)
+
+            def _reasoning_remove(_button: Gtk.Button | None = None) -> None:
+                row_iter = selected["iter"]
+                if row_iter is None:
+                    return
+                model.remove(row_iter)
+                selected["iter"] = None
+                if len(model) == 0:
+                    default_iter = model.append(("Medium (Balanced)", "medium", "Balanced reasoning."))
+                    selected["iter"] = default_iter
+                    tree.get_selection().select_iter(default_iter)
+                _sync_reasoning_payload(model)
+
+            tree.get_selection().connect("changed", _selection_changed)
+            add_btn.connect("clicked", _reasoning_add)
+            update_btn.connect("clicked", _reasoning_update)
+            remove_btn.connect("clicked", _reasoning_remove)
+            up_btn.connect("clicked", lambda _button: _swap_items(-1))
+            down_btn.connect("clicked", lambda _button: _swap_items(1))
+            _sync_reasoning_payload(model)
+            return page
+
+        def _build_provider_page(provider_id: str, payload: dict[str, Any]) -> Gtk.Widget:
+            page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            page.set_border_width(8)
+
+            provider = working_payload["providers"].get(provider_id, {})
+            if not isinstance(provider, dict):
+                provider = copy.deepcopy(payload)
+                working_payload["providers"][provider_id] = provider
+
+            name = str(payload.get("name", provider_id))
+            page.pack_start(Gtk.Label(label=f"Provider: {name}"), False, False, 0)
+
+            support_reasoning = Gtk.CheckButton(label="Enable reasoning controls for this provider")
+            support_reasoning.set_active(bool(provider.get("supports_reasoning", True)))
+            support_reasoning.connect(
+                "toggled",
+                lambda button: (
+                    provider.__setitem__("supports_reasoning", bool(button.get_active())),
+                    _apply_preview(),
+                ),
+            )
+            page.pack_start(support_reasoning, False, False, 0)
+
+            preview_frame = Gtk.Frame(label="Preview")
+            preview_root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            preview_root.set_border_width(8)
+
+            preview_title = Gtk.Label(label=f"{name} preview")
+            preview_title.set_xalign(0.0)
+            preview_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            preview_header.pack_start(preview_title, True, True, 0)
+
+            preview_user = Gtk.Frame()
+            preview_user_label = Gtk.Label(label="User message")
+            preview_user_label.set_xalign(0.0)
+            preview_user_label.set_margin_start(8)
+            preview_user_label.set_margin_end(8)
+            preview_user_label.set_margin_top(6)
+            preview_user_label.set_margin_bottom(6)
+            preview_user.add(preview_user_label)
+
+            preview_assistant = Gtk.Frame()
+            preview_assistant_label = Gtk.Label(label="Assistant response")
+            preview_assistant_label.set_xalign(0.0)
+            preview_assistant_label.set_margin_start(8)
+            preview_assistant_label.set_margin_end(8)
+            preview_assistant_label.set_margin_top(6)
+            preview_assistant_label.set_margin_bottom(6)
+            preview_assistant.add(preview_assistant_label)
+
+            preview_model_label = Gtk.Label(label="Model: default")
+            preview_model_label.set_xalign(0.0)
+            preview_reason_label = Gtk.Label(label="Reasoning: medium")
+            preview_reason_label.set_xalign(0.0)
+
+            preview_root.pack_start(preview_header, False, False, 0)
+            preview_root.pack_start(preview_user, False, False, 0)
+            preview_root.pack_start(preview_assistant, False, False, 0)
+            preview_root.pack_start(preview_model_label, False, False, 0)
+            preview_root.pack_start(preview_reason_label, False, False, 0)
+            preview_frame.add(preview_root)
+
+            def _apply_preview() -> None:
+                providers_payload = working_payload.get("providers")
+                if isinstance(providers_payload, dict):
+                    raw_provider = providers_payload.get(provider_id, {})
+                else:
+                    raw_provider = {}
+                current_provider = raw_provider if isinstance(raw_provider, dict) else {}
+                raw_colors = current_provider.get("colors", {})
+                colors = raw_colors if isinstance(raw_colors, dict) else {}
+
+                window_bg = _normalize_hex(str(colors.get("window_bg", "#1f1f1a"))) or "#1f1f1a"
+                header_bg = _normalize_hex(str(colors.get("header_bg", "#262621"))) or "#262621"
+                user_bg = _normalize_hex(str(colors.get("button_bg", "#3a3a34"))) or "#3a3a34"
+                assistant_bg = _normalize_hex(str(colors.get("chat_bg", "#2f2f2a"))) or "#2f2f2a"
+                fg = _normalize_hex(str(colors.get("foreground", "#d4d4c8"))) or "#d4d4c8"
+
+                _set_bg(preview_root, window_bg)
+                _set_bg(preview_header, header_bg)
+                _set_bg(preview_user, user_bg)
+                _set_bg(preview_assistant, assistant_bg)
+                _set_fg(preview_title, fg)
+                _set_fg(preview_user_label, fg)
+                _set_fg(preview_assistant_label, fg)
+                _set_fg(preview_model_label, fg)
+                _set_fg(preview_reason_label, fg)
+
+                model_options_raw = current_provider.get("model_options", [])
+                model_options = model_options_raw if isinstance(model_options_raw, list) else []
+                model_value = "default"
+                for item in model_options:
+                    if not isinstance(item, dict):
+                        continue
+                    candidate = str(item.get("value", "")).strip()
+                    if candidate:
+                        model_value = candidate
+                        break
+                preview_model_label.set_text(f"Model: {model_value}")
+
+                if current_provider.get("supports_reasoning", False):
+                    reasons = _selected_reasoning_labels()
+                    if reasons:
+                        preview_reason_label.set_text(
+                            f"Reasoning: {reasons[0][0]} ({reasons[0][1]})",
+                        )
+                    else:
+                        preview_reason_label.set_text("Reasoning: medium")
+                else:
+                    preview_reason_label.set_text("Reasoning: disabled")
+
+            colors_map = provider.setdefault("colors", {})
+            colors_frame = Gtk.Frame(label="Theme Colors")
+            colors_grid = Gtk.Grid()
+            colors_grid.set_row_spacing(6)
+            colors_grid.set_column_spacing(8)
+            colors_grid.set_border_width(8)
+            colors_frame.add(colors_grid)
+            page.pack_start(colors_frame, False, False, 0)
+
+            color_buttons: dict[str, Gtk.ColorButton] = {}
+
+            def _color_sync(entry: Gtk.Entry, pid: str, key: str, button: Gtk.ColorButton) -> None:
+                normalized = _normalize_hex(entry.get_text())
+                if normalized is None:
+                    return
+                data_provider = working_payload["providers"].get(pid)
+                if not isinstance(data_provider, dict):
+                    return
+                data_colors = data_provider.setdefault("colors", {})
+                if isinstance(data_colors, dict):
+                    data_colors[key] = normalized
+                button_color = _hex_to_rgba(normalized)
+                if button_color is not None:
+                    button.set_rgba(button_color)
+                _apply_preview()
+
+            def _color_button_sync(button: Gtk.ColorButton, pid: str, key: str, entry: Gtk.Entry) -> None:
+                data_provider = working_payload["providers"].get(pid)
+                if not isinstance(data_provider, dict):
+                    return
+                data_colors = data_provider.setdefault("colors", {})
+                hex_color = _rgba_to_hex(button.get_rgba())
+                data_colors[key] = hex_color
+                entry.set_text(hex_color)
+                _apply_preview()
+
+            color_items = sorted(colors_map.keys())
+            for row, key in enumerate(color_items):
+                value = _normalize_hex(str(colors_map.get(key, "#000000"))) or "#000000"
+                colors_map[key] = value
+
+                key_label = Gtk.Label(label=key)
+                key_label.set_xalign(0.0)
+                colors_grid.attach(key_label, 0, row, 1, 1)
+
+                value_entry = Gtk.Entry()
+                value_entry.set_width_chars(10)
+                value_entry.set_text(value)
+                color_button = Gtk.ColorButton()
+                color_buttons[key] = color_button
+                parsed_rgba = _hex_to_rgba(value)
+                if parsed_rgba is not None:
+                    color_button.set_rgba(parsed_rgba)
+                value_entry.connect(
+                    "changed",
+                    lambda entry, pid=provider_id, color_key=key, button=color_button: _color_sync(
+                        entry,
+                        pid,
+                        color_key,
+                        button,
+                    ),
+                )
+                color_button.connect(
+                    "color-set",
+                    lambda button, pid=provider_id, color_key=key, field=value_entry: _color_button_sync(
+                        button,
+                        pid,
+                        color_key,
+                        field,
+                    ),
+                )
+                colors_grid.attach(value_entry, 1, row, 1, 1)
+                colors_grid.attach(color_button, 2, row, 1, 1)
+
+            def _sync_rgb_value(pid: str, rgb_key: str, index: int, spinner: Gtk.SpinButton) -> None:
+                data_provider = working_payload["providers"].get(pid)
+                if not isinstance(data_provider, dict):
+                    return
+                rgb = data_provider.get(rgb_key)
+                if not isinstance(rgb, list) or len(rgb) < 3:
+                    rgb = [0, 0, 0]
+                rgb[index] = _normalize_rgb_component(spinner.get_value())
+                data_provider[rgb_key] = rgb
+                _apply_preview()
+
+            accent_frame = Gtk.Frame(label="Accent RGB")
+            accent_grid = Gtk.Grid()
+            accent_grid.set_column_spacing(6)
+            accent_grid.set_row_spacing(4)
+            accent_grid.set_border_width(8)
+            accent_frame.add(accent_grid)
+
+            accent_row = 0
+            for key in ("accent_rgb", "accent_soft_rgb"):
+                accent_grid.attach(Gtk.Label(label=key), 0, accent_row, 1, 1)
+                rgb_values = provider.get(key, [0, 0, 0])
+                if not isinstance(rgb_values, list) or len(rgb_values) < 3:
+                    rgb_values = [0, 0, 0]
+                for index, channel in enumerate(("R", "G", "B")):
+                    accent_grid.attach(Gtk.Label(label=f"{channel}"), 1 + index * 2, accent_row, 1, 1)
+                    adjustment = Gtk.Adjustment(
+                        value=float(_normalize_rgb_component(rgb_values[index])),
+                        lower=0,
+                        upper=255,
+                        step_increment=1,
+                        page_increment=10,
+                        page_size=0,
+                    )
+                    spin = Gtk.SpinButton(adjustment=adjustment, climb_rate=1.0, digits=0)
+                    spin.set_width_chars(4)
+                    spin.connect(
+                        "value-changed",
+                        lambda spinner, pid=provider_id, rgb_name=key, i=index: _sync_rgb_value(
+                            pid,
+                            rgb_name,
+                            i,
+                            spinner,
+                        ),
+                    )
+                    accent_grid.attach(spin, 2 + index * 2, accent_row, 1, 1)
+                accent_row += 1
+            page.pack_start(accent_frame, False, False, 0)
+
+            models_frame = Gtk.Frame(label="Model options")
+            models_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            models_box.set_border_width(8)
+            models_frame.add(models_box)
+
+            model_store = Gtk.ListStore(str, str)
+            for model_entry in provider.get("model_options", []):
+                if not isinstance(model_entry, dict):
+                    continue
+                model_store.append(
+                    (
+                        str(model_entry.get("label", "")) or "Model",
+                        str(model_entry.get("value", "")) or "model",
+                    ),
+                )
+
+            model_view = Gtk.TreeView(model=model_store)
+            model_label_renderer = Gtk.CellRendererText()
+            model_label_renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
+            model_label_column = Gtk.TreeViewColumn("Label", model_label_renderer, text=0)
+            model_label_column.set_resizable(True)
+            model_label_column.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
+            model_label_column.set_fixed_width(190)
+            model_label_column.set_min_width(150)
+            model_view.append_column(model_label_column)
+
+            model_value_renderer = Gtk.CellRendererText()
+            model_value_renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
+            model_value_column = Gtk.TreeViewColumn("Value", model_value_renderer, text=1)
+            model_value_column.set_resizable(True)
+            model_value_column.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
+            model_value_column.set_fixed_width(250)
+            model_value_column.set_min_width(170)
+            model_view.append_column(model_value_column)
+            model_view.get_selection().set_mode(Gtk.SelectionMode.SINGLE)
+
+            model_scroller = Gtk.ScrolledWindow()
+            model_scroller.set_hexpand(True)
+            model_scroller.set_vexpand(True)
+            model_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            model_scroller.set_min_content_height(130)
+            model_scroller.add(model_view)
+            models_box.pack_start(model_scroller, True, True, 0)
+
+            model_edit = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            model_label_entry = Gtk.Entry()
+            model_label_entry.set_placeholder_text("Model label")
+            model_label_entry.set_hexpand(True)
+            model_value_entry = Gtk.Entry()
+            model_value_entry.set_placeholder_text("Model value")
+            model_value_entry.set_hexpand(True)
+            model_edit.pack_start(model_label_entry, True, True, 0)
+            model_edit.pack_start(model_value_entry, True, True, 0)
+            models_box.pack_start(model_edit, False, False, 0)
+
+            model_btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            model_add_btn = Gtk.Button(label="Add")
+            model_update_btn = Gtk.Button(label="Update")
+            model_remove_btn = Gtk.Button(label="Remove")
+            model_btn_box.pack_start(model_add_btn, False, False, 0)
+            model_btn_box.pack_start(model_update_btn, False, False, 0)
+            model_btn_box.pack_start(model_remove_btn, False, False, 0)
+            models_box.pack_start(model_btn_box, False, False, 0)
+
+            selected_model = {"iter": None}
+
+            def _model_selection_changed(selection: Gtk.TreeSelection) -> None:
+                _, model_iter = selection.get_selected()
+                selected_model["iter"] = model_iter
+                if model_iter is None:
+                    return
+                model_label_entry.set_text(str(model_store[model_iter][0]))
+                model_value_entry.set_text(str(model_store[model_iter][1]))
+
+            def _model_remove_if_selected() -> None:
+                row_iter = selected_model["iter"]
+                if row_iter is None:
+                    return
+                model_store.remove(row_iter)
+                selected_model["iter"] = None
+                if len(model_store) == 0:
+                    model_store.append(("Default", "model"))
+                _update_provider_model_payload(provider_id, model_store)
+                _apply_preview()
+
+            def _model_add(_button: Gtk.Button | None = None) -> None:
+                model_store.append(
+                    (
+                        model_label_entry.get_text().strip() or "Model",
+                        model_value_entry.get_text().strip() or "model",
+                    ),
+                )
+                _update_provider_model_payload(provider_id, model_store)
+                _apply_preview()
+
+            def _model_update(_button: Gtk.Button | None = None) -> None:
+                row_iter = selected_model["iter"]
+                if row_iter is None:
+                    return
+                model_store.set_value(
+                    row_iter,
+                    0,
+                    model_label_entry.get_text().strip() or "Model",
+                )
+                model_store.set_value(
+                    row_iter,
+                    1,
+                    model_value_entry.get_text().strip() or "model",
+                )
+                _update_provider_model_payload(provider_id, model_store)
+                _apply_preview()
+
+            def _model_remove(_button: Gtk.Button | None = None) -> None:
+                _model_remove_if_selected()
+
+            model_view.get_selection().connect("changed", _model_selection_changed)
+            model_add_btn.connect("clicked", _model_add)
+            model_update_btn.connect("clicked", _model_update)
+            model_remove_btn.connect("clicked", _model_remove)
+            _update_provider_model_payload(provider_id, model_store)
+
+            page.pack_start(models_frame, True, True, 0)
+            page.pack_start(preview_frame, False, False, 0)
+            _apply_preview()
+            return page
+
+        reasoning_tab = _build_reasoning_tab()
+        notebook.append_page(reasoning_tab, Gtk.Label(label="Reasoning"))
+
+        providers = working_payload.get("providers")
+        if isinstance(providers, dict):
+            for provider_id, provider_payload in providers.items():
+                if not isinstance(provider_payload, dict):
+                    continue
+                page = _build_provider_page(provider_id, provider_payload)
+                label = str(provider_payload.get("name", provider_id))
+                notebook.append_page(page, Gtk.Label(label=label))
+
+        content_area.show_all()
+
+        while True:
+            response = dialog.run()
+            if response != Gtk.ResponseType.OK:
+                break
+
+            if not _normalize_payload():
+                msg = Gtk.MessageDialog(
+                    transient_for=self,
+                    modal=True,
+                    message_type=Gtk.MessageType.ERROR,
+                    buttons=Gtk.ButtonsType.CLOSE,
+                    text="Invalid settings values",
+                )
+                msg.format_secondary_text(
+                    "Invalid hex / rgb fields detected. Use #RRGGBB and 0-255 for colors.",
+                )
+                msg.run()
+                msg.destroy()
+                continue
+
+            try:
+                save_settings(working_payload)
+                self._apply_settings_payload(working_payload)
+            except (OSError, ValueError, TypeError) as error:
+                msg = Gtk.MessageDialog(
+                    transient_for=self,
+                    modal=True,
+                    message_type=Gtk.MessageType.ERROR,
+                    buttons=Gtk.ButtonsType.CLOSE,
+                    text="Could not save settings",
+                )
+                msg.format_secondary_text(str(error))
+                msg.run()
+                msg.destroy()
+                continue
+            self._set_status_message("Settings saved and applied.", STATUS_INFO)
+            break
+
+        dialog.destroy()
 
     def _apply_provider_branding(self) -> None:
         self.set_title(self._provider_window_title())
@@ -2752,10 +4790,14 @@ class ClaudeCodeWindow(Gtk.Window):
         *,
         preferred_model: str | None = None,
         preferred_permission: str | None = None,
+        preserve_previous_model: bool = True,
     ) -> None:
         provider = PROVIDERS[normalize_provider_id(provider_id)]
         previous_model_value = ""
-        if 0 <= self._selected_model_index < len(self._model_options):
+        if (
+            preserve_previous_model
+            and 0 <= self._selected_model_index < len(self._model_options)
+        ):
             previous_model_value = self._model_options[self._selected_model_index][1]
         previous_permission_value = ""
         if 0 <= self._selected_permission_index < len(self._permission_options):
@@ -2774,9 +4816,9 @@ class ClaudeCodeWindow(Gtk.Window):
         )
         self._selected_model_index = self._model_index_from_value(normalized_model)
         self._selected_permission_index = self._permission_index_from_value(normalized_permission)
-
         if not provider.supports_reasoning:
             self._selected_reasoning_index = self._reasoning_index_from_value("medium")
+            return
 
     def _stop_running_request_for_provider_switch(self) -> bool:
         all_stopped = True
@@ -2880,10 +4922,17 @@ class ClaudeCodeWindow(Gtk.Window):
                 new_provider.colors,
                 new_provider.accent_rgb,
                 new_provider.accent_soft_rgb,
+                reduced_motion=self._reduced_motion_from_gtk(),
             )
             self._active_provider_id = normalized_new_provider_id
             self._binary_path = new_binary_path
-            self._set_provider_option_lists(normalized_new_provider_id)
+            self._detect_provider_models_async(new_binary_path, normalized_new_provider_id)
+            self._detect_cli_flag_support_async(new_binary_path or "", normalized_new_provider_id)
+            self._set_provider_option_lists(
+                normalized_new_provider_id,
+                preserve_previous_model=False,
+            )
+            self._collapse_to_primary_pane()
             self._ensure_active_session_for_provider(reset_conversation=True)
 
             if old_active_session is not None and old_active_session.status == SESSION_STATUS_ACTIVE:
@@ -2903,6 +4952,8 @@ class ClaudeCodeWindow(Gtk.Window):
 
             self._apply_provider_branding()
             self._refresh_session_list()
+            self._update_pane_close_buttons()
+            self._update_all_pane_headers()
             self._refresh_slash_commands()
             self._save_sessions_safe("Could not save sessions")
             self._update_provider_toggle_button()
@@ -2911,7 +4962,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 self._set_connection_state(CONNECTION_DISCONNECTED)
                 self._show_missing_binary_error()
             else:
-                self._detect_cli_flag_support_async(self._binary_path)
+                self._detect_cli_flag_support_async(self._binary_path, self._active_provider_id)
                 self._refresh_connection_state()
             self._set_status_message(f"Switched to {new_provider.name}", STATUS_INFO)
             return True
@@ -2938,6 +4989,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 old_provider.colors,
                 old_provider.accent_rgb,
                 old_provider.accent_soft_rgb,
+                reduced_motion=self._reduced_motion_from_gtk(),
             )
             self._apply_provider_branding()
             self._refresh_session_list()
@@ -3196,10 +5248,10 @@ class ClaudeCodeWindow(Gtk.Window):
     def _on_webview_load_changed(
         self,
         pane_id: str,
-        _webview: WebKit2.WebView,
-        load_event: WebKit2.LoadEvent,
+        _webview: WebKit.WebView,
+        load_event: WebKit.LoadEvent,
     ) -> None:
-        if load_event != WebKit2.LoadEvent.FINISHED:
+        if load_event != WebKit.LoadEvent.FINISHED:
             return
 
         with self._pane_context(pane_id):
@@ -3210,15 +5262,28 @@ class ClaudeCodeWindow(Gtk.Window):
             for script in queued:
                 self._run_javascript(script)
 
+            self._call_js("setReducedMotion", self._reduced_motion_from_gtk())
             self._sync_provider_state_to_webview(pane_id=pane_id)
+            self._sync_agent_mode_to_webviews(pane_id=pane_id)
             self._show_welcome()
+            self._replay_active_session_if_present()
             self._refresh_slash_commands()
-            GLib.timeout_add(100, lambda pid=pane_id: self._call_js_in_pane(pid, "focusInput"))
+            if pane_id == self._active_pane_id:
+                GLib.timeout_add(120, lambda pid=pane_id: self._focus_chat_input_in_pane(pid))
+
+    def _focus_chat_input_in_pane(self, pane_id: str) -> bool:
+        pane = self._pane_by_id(pane_id)
+        if pane is None or pane._webview is None:
+            return False
+        pane._webview.grab_focus()
+        with self._pane_context(pane_id):
+            self._call_js("focusInput")
+        return False
 
     def _on_webview_focus_in(
         self,
         pane_id: str,
-        _webview: WebKit2.WebView,
+        _webview: WebKit.WebView,
         _event: Gdk.EventFocus,
     ) -> bool:
         self._set_active_pane(pane_id)
@@ -3229,7 +5294,7 @@ class ClaudeCodeWindow(Gtk.Window):
     def _on_webview_focus_out(
         self,
         pane_id: str,
-        _webview: WebKit2.WebView,
+        _webview: WebKit.WebView,
         _event: Gdk.EventFocus,
     ) -> bool:
         self._set_active_pane(pane_id)
@@ -3240,8 +5305,8 @@ class ClaudeCodeWindow(Gtk.Window):
     def _on_js_change_model(
         self,
         pane_id: str,
-        _manager: WebKit2.UserContentManager,
-        js_result: WebKit2.JavascriptResult,
+        _manager: WebKit.UserContentManager,
+        js_result: WebKit.JavascriptResult,
     ) -> None:
         self._set_active_pane(pane_id)
         raw_value = self._extract_message_from_js_result(js_result)
@@ -3251,8 +5316,8 @@ class ClaudeCodeWindow(Gtk.Window):
     def _on_js_change_permission(
         self,
         pane_id: str,
-        _manager: WebKit2.UserContentManager,
-        js_result: WebKit2.JavascriptResult,
+        _manager: WebKit.UserContentManager,
+        js_result: WebKit.JavascriptResult,
     ) -> None:
         self._set_active_pane(pane_id)
         raw_value = self._extract_message_from_js_result(js_result)
@@ -3262,8 +5327,8 @@ class ClaudeCodeWindow(Gtk.Window):
     def _on_js_change_reasoning(
         self,
         pane_id: str,
-        _manager: WebKit2.UserContentManager,
-        js_result: WebKit2.JavascriptResult,
+        _manager: WebKit.UserContentManager,
+        js_result: WebKit.JavascriptResult,
     ) -> None:
         self._set_active_pane(pane_id)
         if not self._active_provider.supports_reasoning:
@@ -3280,29 +5345,65 @@ class ClaudeCodeWindow(Gtk.Window):
             return
 
         self._selected_reasoning_index = index
-        _, reasoning_value = REASONING_LEVEL_OPTIONS[index]
+        reasoning_value = self._reasoning_value_from_index(self._selected_reasoning_index)
 
         active = self._get_active_session()
+        had_conversation = False
         if active is not None:
+            had_conversation = active.conversation_id is not None
             active.reasoning_level = reasoning_value
+            if had_conversation:
+                active.conversation_id = None
             self._save_sessions_safe("Could not save session reasoning level")
+            if had_conversation:
+                self._reset_conversation_state("Conversation reset for reasoning change")
 
         self._set_status_message(f"Reasoning level set to {reasoning_value}", STATUS_MUTED)
 
     def _on_js_refresh_slash_commands(
         self,
         pane_id: str,
-        _manager: WebKit2.UserContentManager,
-        _js_result: WebKit2.JavascriptResult,
+        _manager: WebKit.UserContentManager,
+        _js_result: WebKit.JavascriptResult,
     ) -> None:
         self._set_active_pane(pane_id)
         self._refresh_slash_commands()
 
+    def _on_js_toggle_agent_mode(
+        self,
+        pane_id: str,
+        _manager: WebKit.UserContentManager,
+        js_result: WebKit.JavascriptResult,
+    ) -> None:
+        self._set_active_pane(pane_id)
+        raw_value = self._extract_message_from_js_result(js_result).strip().lower()
+        if raw_value == "on":
+            next_enabled = True
+        elif raw_value == "off":
+            next_enabled = False
+        elif raw_value in {"true", "yes", "1"}:
+            next_enabled = True
+        elif raw_value in {"false", "no", "0"}:
+            next_enabled = False
+        else:
+            next_enabled = not self._agentctl_auto_enabled
+
+        if next_enabled == self._agentctl_auto_enabled:
+            return
+
+        self._agentctl_auto_enabled = next_enabled
+        if next_enabled:
+            self._set_status_message("Auto agent controls enabled.", STATUS_INFO)
+        else:
+            self._set_status_message("Auto agent controls disabled.", STATUS_WARNING)
+        self._persist_agent_mode_preference()
+        self._sync_agent_mode_to_webviews()
+
     def _on_js_attach_file(
         self,
         pane_id: str,
-        _manager: WebKit2.UserContentManager,
-        _js_result: WebKit2.JavascriptResult,
+        _manager: WebKit.UserContentManager,
+        _js_result: WebKit.JavascriptResult,
     ) -> None:
         self._set_active_pane(pane_id)
         dialog = Gtk.FileChooserDialog(
@@ -3377,6 +5478,7 @@ class ClaudeCodeWindow(Gtk.Window):
             mime_type = "application/octet-stream"
         payload = {
             "name": os.path.basename(selected),
+            "path": selected,
             "type": mime_type,
             "data": f"data:{mime_type};base64,{base64.b64encode(raw_bytes).decode('ascii')}",
         }
@@ -3385,8 +5487,8 @@ class ClaudeCodeWindow(Gtk.Window):
     def _on_js_stop_process(
         self,
         pane_id: str,
-        _manager: WebKit2.UserContentManager,
-        _js_result: WebKit2.JavascriptResult,
+        _manager: WebKit.UserContentManager,
+        _js_result: WebKit.JavascriptResult,
     ) -> None:
         self._set_active_pane(pane_id)
         if self._claude_process.is_running():
@@ -3397,8 +5499,8 @@ class ClaudeCodeWindow(Gtk.Window):
     def _on_js_permission_response(
         self,
         pane_id: str,
-        _manager: WebKit2.UserContentManager,
-        js_result: WebKit2.JavascriptResult,
+        _manager: WebKit.UserContentManager,
+        js_result: WebKit.JavascriptResult,
     ) -> None:
         self._set_active_pane(pane_id)
         raw_payload = self._extract_message_from_js_result(js_result)
@@ -3472,13 +5574,17 @@ class ClaudeCodeWindow(Gtk.Window):
     def _on_js_send_message(
         self,
         pane_id: str,
-        _manager: WebKit2.UserContentManager,
-        js_result: WebKit2.JavascriptResult,
+        _manager: WebKit.UserContentManager,
+        js_result: WebKit.JavascriptResult,
     ) -> None:
         self._set_active_pane(pane_id)
         raw_text = self._extract_message_from_js_result(js_result)
         message, attachments = parse_send_payload(raw_text)
         if not message and not attachments:
+            return
+        if message and self._handle_agent_command(pane_id, message):
+            if attachments:
+                self._set_status_message("Attachments are ignored for local /agent commands.", STATUS_MUTED)
             return
 
         if self._binary_path is None:
@@ -3487,15 +5593,15 @@ class ClaudeCodeWindow(Gtk.Window):
             self._add_system_message(f"{self._provider_cli_label()} is not available.")
             return
         if self._active_provider_id == "codex" and not is_codex_authenticated():
-            auth_message = "Codex is not logged in. Run `codex login` and retry."
             self._refresh_connection_state()
-            self._set_status_message(auth_message, STATUS_ERROR)
-            self._add_system_message(auth_message)
-            return
+            self._set_status_message(
+                "Codex login status could not be confirmed; sending anyway.",
+                STATUS_WARNING,
+            )
 
         if self._active_session_id is None:
             if os.path.isdir(self._project_folder):
-                self._start_new_session(self._project_folder)
+                self._start_new_session(self._project_folder, reset_conversation=False)
             else:
                 self._set_status_message("No active session", STATUS_ERROR)
                 self._add_system_message("Create a session first.")
@@ -3519,7 +5625,7 @@ class ClaudeCodeWindow(Gtk.Window):
 
         _, model_value = self._model_options[self._selected_model_index]
         _, permission_value, _ = self._permission_options[self._selected_permission_index]
-        _, reasoning_value = REASONING_LEVEL_OPTIONS[self._selected_reasoning_index]
+        reasoning_value = self._reasoning_value_from_index(self._selected_reasoning_index)
         if not self._active_provider.supports_reasoning:
             reasoning_value = "medium"
 
@@ -3528,6 +5634,9 @@ class ClaudeCodeWindow(Gtk.Window):
         if not composed_message.strip():
             cleanup_temp_paths(attachment_paths)
             return
+
+        if self._is_primary_pane(pane_id) and self._agentctl_auto_enabled:
+            composed_message = f"{_AGENTCTL_HINT}\n\nUser request:\n{composed_message}"
 
         self._has_messages = True
         self._context_char_count += len(composed_message)
@@ -3539,6 +5648,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._pulse_chat_shell()
         self._set_connection_state(CONNECTION_STARTING)
         self._set_status_message(f"Sending message to {self._active_provider.name}...", STATUS_INFO)
+        active_caps = self._cli_caps_for(self._active_provider_id)
 
         active_session.status = SESSION_STATUS_ACTIVE
         active_session.last_used_at = current_timestamp()
@@ -3558,15 +5668,16 @@ class ClaudeCodeWindow(Gtk.Window):
             model=model_value,
             permission_mode=permission_value,
             conversation_id=self._conversation_id,
-            supports_model_flag=self._supports_model_flag,
-            supports_permission_flag=self._supports_permission_flag,
-            supports_output_format_flag=self._supports_output_format_flag,
-            supports_stream_json=self._supports_stream_json,
-            supports_json=self._supports_json,
-            supports_include_partial_messages=self._supports_include_partial_messages,
+            supports_model_flag=active_caps.supports_model_flag,
+            supports_permission_flag=active_caps.supports_permission_flag,
+            supports_output_format_flag=active_caps.supports_output_format_flag,
+            supports_stream_json=active_caps.supports_stream_json,
+            supports_json=active_caps.supports_json,
+            supports_include_partial_messages=active_caps.supports_include_partial_messages,
             stream_json_requires_verbose=self._stream_json_requires_verbose,
             reasoning_level=reasoning_value,
-            supports_reasoning_flag=self._supports_reasoning_flag,
+            supports_reasoning_flag=(active_caps.supports_reasoning_flag or self._active_provider_id == "codex")
+            and self._active_provider.supports_reasoning,
             allowed_tools=list(self._allowed_tools) if self._allowed_tools else None,
             provider_id=self._active_provider_id,
         )
@@ -3586,10 +5697,22 @@ class ClaudeCodeWindow(Gtk.Window):
         self._request_temp_files[request_token] = attachment_paths
 
     @staticmethod
-    def _extract_message_from_js_result(js_result: WebKit2.JavascriptResult) -> str:
+    def _extract_message_from_js_result(js_result: Any) -> str:
         try:
-            js_value = js_result.get_js_value()
-            raw = js_value.to_string()
+            raw_obj = js_result
+            if hasattr(js_result, "get_js_value"):
+                raw_obj = js_result.get_js_value()
+            elif hasattr(js_result, "get_value"):
+                raw_obj = js_result.get_value()
+
+            if hasattr(raw_obj, "to_string"):
+                raw = raw_obj.to_string()
+            elif hasattr(raw_obj, "get_string"):
+                raw = raw_obj.get_string()
+            elif hasattr(raw_obj, "unpack"):
+                raw = raw_obj.unpack()
+            else:
+                raw = raw_obj
         except Exception:
             logger.exception("Could not extract message payload from JavaScript result.")
             return ""
@@ -3679,7 +5802,8 @@ class ClaudeCodeWindow(Gtk.Window):
 
             self._invalidate_active_request()
             self._set_typing(False)
-            had_assistant_output = bool(self._active_assistant_message.strip())
+            assistant_output_text = str(self._active_assistant_message or "")
+            had_assistant_output = bool(assistant_output_text.strip())
             self._finish_assistant_message()
             self._permission_request_pending = False
 
@@ -3702,6 +5826,8 @@ class ClaudeCodeWindow(Gtk.Window):
                     self._set_status_message(f"{self._active_provider.name} response received", STATUS_MUTED)
                 self._set_active_session_status(SESSION_STATUS_ACTIVE)
                 self._save_sessions_safe("Could not save sessions")
+                if had_assistant_output:
+                    self._execute_agentctl_from_assistant(pane_id, assistant_output_text)
                 if had_assistant_output:
                     self.send_notification(
                         f"{self._active_provider.name} response complete",
@@ -3730,6 +5856,10 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _run_javascript(self, script: str) -> None:
         if self._webview is None:
+            return
+
+        if hasattr(self._webview, "evaluate_javascript"):
+            self._webview.evaluate_javascript(script, -1, None, None, None, None, None)
             return
 
         try:
@@ -3803,9 +5933,14 @@ class ClaudeCodeWindow(Gtk.Window):
                 pane._request_temp_files.clear()
 
         if self._css_provider is not None:
-            screen = Gdk.Screen.get_default()
-            if screen is not None:
-                Gtk.StyleContext.remove_provider_for_screen(screen, self._css_provider)
+            if GTK4:
+                display = Gdk.Display.get_default()
+                if display is not None:
+                    Gtk.StyleContext.remove_provider_for_display(display, self._css_provider)
+            else:
+                screen = Gdk.Screen.get_default()
+                if screen is not None:
+                    Gtk.StyleContext.remove_provider_for_screen(screen, self._css_provider)
             self._css_provider = None
 
         for attr in (
