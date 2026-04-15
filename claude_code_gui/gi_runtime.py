@@ -1,12 +1,88 @@
-"""GI runtime compatibility layer (GTK4-first, GTK3 fallback)."""
+"""GI runtime compatibility layer (GTK4 only)."""
 
 from __future__ import annotations
+
+import time
+import types
+from typing import Any
 
 import gi
 
 
 GTK4 = False
 WEBKIT6 = False
+
+
+def _missing_placeholder(module_name: str) -> Any:
+    class _Missing:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def __getattr__(self, name: str) -> "_Missing":
+            if name.startswith("__"):
+                raise AttributeError(name)
+            return _Missing(f"{self._name}.{name}")
+
+        def __call__(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError(f"GTK runtime symbol unavailable: {self._name}")
+
+        def __repr__(self) -> str:
+            return f"<MissingGI {self._name}>"
+
+    return _Missing(module_name)
+
+
+class _MissingGLib(types.SimpleNamespace):
+    class MainLoop:
+        def __init__(self) -> None:
+            self._running = False
+
+        def run(self) -> None:
+            self._running = True
+
+        def quit(self) -> None:
+            self._running = False
+
+        def is_running(self) -> bool:
+            return self._running
+
+    @staticmethod
+    def idle_add(callback: Any, *args: Any, **_kwargs: Any) -> Any:
+        return callback(*args)
+
+    @staticmethod
+    def timeout_add(_delay_ms: int, callback: Any, *args: Any, **_kwargs: Any) -> int:
+        return 0
+
+    @staticmethod
+    def timeout_add_seconds(_delay_seconds: int, callback: Any, *args: Any, **_kwargs: Any) -> int:
+        return 0
+
+    @staticmethod
+    def source_remove(_source_id: int) -> bool:
+        return True
+
+    @staticmethod
+    def get_monotonic_time() -> int:
+        return int(time.monotonic() * 1_000_000)
+
+    @staticmethod
+    def usleep(microseconds: int) -> None:
+        time.sleep(microseconds / 1_000_000)
+
+
+def _build_headless_gi_stubs() -> tuple[Any, Any, _MissingGLib, Any, Any, Any]:
+    return (
+        _missing_placeholder("Gdk"),
+        _missing_placeholder("Gio"),
+        _MissingGLib(),
+        _missing_placeholder("Gtk"),
+        _missing_placeholder("Pango"),
+        _missing_placeholder("WebKit"),
+    )
+
+
+runtime_loaded = False
 
 try:
     gi.require_version("Gtk", "4.0")
@@ -15,14 +91,19 @@ try:
     GTK4 = True
     WEBKIT6 = True
     from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit
-except ValueError:
-    gi.require_version("Gtk", "3.0")
-    gi.require_version("Gdk", "3.0")
+    runtime_loaded = True
+except (ImportError, ValueError, AttributeError):
+    pass
+
+if not runtime_loaded:
     try:
-        gi.require_version("WebKit2", "4.1")
-    except ValueError:
-        gi.require_version("WebKit2", "4.0")
-    from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit2 as WebKit
+        Gdk, Gio, GLib, Gtk, Pango, WebKit = _build_headless_gi_stubs()
+        GTK4 = False
+        WEBKIT6 = False
+    except Exception:
+        Gdk, Gio, GLib, Gtk, Pango, WebKit = _build_headless_gi_stubs()
+        GTK4 = False
+        WEBKIT6 = False
 
 
 if GTK4:

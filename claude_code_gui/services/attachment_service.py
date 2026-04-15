@@ -67,6 +67,15 @@ def parse_send_payload(raw_text: str) -> tuple[str, list[dict[str, str]]]:
             name = str(item.get("name") or "attachment").strip() or "attachment"
             file_type = str(item.get("type") or "application/octet-stream").strip() or "application/octet-stream"
             data = str(item.get("data") or "").strip()
+            if file_type == "application/octet-stream" and data.startswith("data:"):
+                comma_index = data.find(",")
+                if comma_index >= 5:
+                    header = data[5:comma_index]
+                else:
+                    header = ""
+                inferred = header.split(";", 1)[0].strip()
+                if inferred.startswith("image/"):
+                    file_type = inferred
             if len(data) > MAX_DATA_URL_CHARS:
                 continue
             if not data:

@@ -298,6 +298,142 @@ menuitem:disabled {{
     background-color: {WINDOW_BG};
 }}
 
+.settings-content {{
+    background:
+        radial-gradient(circle at top left, {ACCENT_RGBA_012}, transparent 34%),
+        radial-gradient(circle at bottom right, {ACCENT_SOFT_RGBA_018}, transparent 46%),
+        {WINDOW_BG};
+}}
+
+label.settings-helper {{
+    color: {FOREGROUND_MUTED};
+    font-size: 11px;
+    font-weight: 500;
+}}
+
+label.settings-validation {{
+    font-size: 11px;
+    font-weight: 600;
+}}
+
+notebook.settings-notebook {{
+    border: 1px solid {BORDER_SOFT};
+    border-radius: 12px;
+    background: @glass_tint_base;
+}}
+
+notebook.settings-notebook > header {{
+    background: transparent;
+    border-bottom: 1px solid {BORDER_SOFT};
+    padding: 3px 6px;
+}}
+
+notebook.settings-notebook > header > tabs > tab {{
+    margin: 0 4px 0 0;
+    border-radius: {GLASS_RADII["pill"]}px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: {FOREGROUND_MUTED};
+    padding: 5px 12px;
+    font-size: 11px;
+    font-weight: 700;
+}}
+
+notebook.settings-notebook > header > tabs > tab:hover {{
+    border-color: {ACCENT_SOFT};
+    color: {FOREGROUND};
+    background: @glass_tint_interactive;
+}}
+
+notebook.settings-notebook > header > tabs > tab:checked {{
+    border-color: {ACCENT_SOFT};
+    color: {FOREGROUND};
+    background: @glass_tint_interactive_hover;
+}}
+
+.settings-page {{
+    background: transparent;
+}}
+
+label.settings-provider-title {{
+    color: {FOREGROUND};
+    font-size: 12px;
+    font-weight: 700;
+}}
+
+label.settings-muted {{
+    color: {FOREGROUND_MUTED};
+    font-size: 11px;
+}}
+
+checkbutton.settings-toggle {{
+    color: {FOREGROUND};
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 0;
+}}
+
+checkbutton.settings-toggle check {{
+    border-radius: 6px;
+    border: 1px solid {BORDER_SOFT};
+    background: {BUTTON_BG};
+}}
+
+checkbutton.settings-toggle check:checked {{
+    border-color: {ACCENT_SOFT};
+    background: {ACCENT_RGBA_018};
+}}
+
+frame.settings-card {{
+    border: 1px solid {BORDER_SOFT};
+    border-radius: 12px;
+    background: linear-gradient(180deg, @glass_tint_base 0%, @glass_tint_base_solid 100%);
+}}
+
+frame.settings-card > border {{
+    border-radius: 11px;
+}}
+
+entry.settings-entry {{
+    min-height: 30px;
+    border-radius: 9px;
+    border: 1px solid {BORDER_SOFT};
+    background-color: {BUTTON_BG};
+    color: {FOREGROUND};
+    padding: 0 9px;
+    font-size: 11px;
+}}
+
+entry.settings-entry:focus {{
+    border-color: {ACCENT_SOFT};
+    box-shadow: none;
+}}
+
+treeview.settings-treeview {{
+    background-color: {BUTTON_BG};
+    color: {FOREGROUND};
+}}
+
+treeview.settings-treeview.view:selected,
+treeview.settings-treeview.view:focus:selected {{
+    background-color: {ACCENT_RGBA_018};
+    color: {FOREGROUND};
+}}
+
+button.settings-color-button {{
+    min-width: 34px;
+    min-height: 30px;
+    padding: 0;
+    border-radius: {GLASS_RADII["control"]}px;
+}}
+
+button.settings-preset-button {{
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: 10px;
+    font-weight: 700;
+}}
+
 .sidebar {{
     background: {SIDEBAR_BG};
     border-right: 1px solid {BORDER_SOFT};
@@ -444,6 +580,15 @@ popover.path-suggestion-popover {{
     font-weight: 600;
 }}
 
+.session-mark-toggle {{
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0 6px;
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1;
+}}
+
 .session-filter-pill:hover {{
     background: {SESSION_FILTER_HOVER_BG};
     border-color: {ACCENT_SOFT};
@@ -541,12 +686,18 @@ popover.path-suggestion-popover {{
     margin-top: 4px;
 }}
 
-.session-status-dot.session-status-active {{
+.session-status-dot.session-status-active,
+.session-status-dot.session-status-active-done {{
     background-color: {SUCCESS};
 }}
 
-.session-status-dot.session-status-ended {{
+.session-status-dot.session-status-ended,
+.session-status-dot.session-status-inactive {{
     background-color: {STATUS_DOT_ENDED};
+}}
+
+.session-status-dot.session-status-active-working {{
+    background-color: {ACCENT_SOFT};
 }}
 
 .session-status-dot.session-status-archived {{
@@ -628,6 +779,35 @@ popover.path-suggestion-popover {{
     color: {FOREGROUND};
     font-size: 11px;
     font-weight: 700;
+}}
+
+.pane-agent-status {{
+    border-radius: 999px;
+    border: 1px solid {BORDER_SOFT};
+    background: {BUTTON_BG};
+    color: {FOREGROUND_MUTED};
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 7px;
+    margin: 0 2px;
+}}
+
+.pane-agent-status-working {{
+    border-color: {ACCENT_SOFT};
+    background: {ACCENT_RGBA_012};
+    color: {ACCENT_SOFT};
+}}
+
+.pane-agent-status-done {{
+    border-color: rgba(107, 190, 120, 0.58);
+    background: rgba(107, 190, 120, 0.15);
+    color: {SUCCESS};
+}}
+
+.pane-agent-status-blocked {{
+    border-color: rgba(226, 112, 112, 0.58);
+    background: rgba(226, 112, 112, 0.16);
+    color: {ERROR};
 }}
 
 .pane-session-label {{

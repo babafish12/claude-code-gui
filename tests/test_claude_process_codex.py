@@ -131,3 +131,115 @@ def test_codex_run_single_attempt_collects_error_events(fake_subprocess) -> None
     assert chunks == []
     assert system_messages == []
     assert permission_requests == []
+
+
+def test_codex_file_change_events_emit_diff_payload(fake_subprocess, mocker) -> None:
+    fake_subprocess.enqueue(
+        lines=[
+            json.dumps({"type": "thread.started", "thread_id": "thread-xyz"}),
+            json.dumps(
+                {
+                    "type": "item.started",
+                    "item": {
+                        "id": "chg-1",
+                        "type": "file_change",
+                        "status": "in_progress",
+                        "changes": [{"path": "src/app.py", "kind": "update"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "chg-1",
+                        "type": "file_change",
+                        "status": "completed",
+                        "changes": [{"path": "src/app.py", "kind": "update"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "DONE"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 4,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 1,
+                    },
+                }
+            ),
+        ],
+        returncode=0,
+    )
+
+    process, _running, chunks, system_messages, permission_requests, _completed = _build_process()
+    mocker.patch.object(
+        process,
+        "_snapshot_text_for_diff",
+        side_effect=["before\n", "after\n"],
+    )
+
+    result, unsupported_output = process._run_single_attempt(
+        request_token="req-diff",
+        config=_build_codex_config(),
+        mode="stream-json",
+    )
+
+    assert result.success is True
+    assert result.assistant_text == "DONE"
+    assert chunks == [("req-diff", "DONE")]
+    assert unsupported_output is False
+    assert permission_requests == []
+
+    assert len(system_messages) == 1
+    _, payload_raw = system_messages[0]
+    payload = json.loads(payload_raw)
+    assert payload["__tool__"] is True
+    assert payload["name"] == "Edit"
+    assert payload["path"] == "src/app.py"
+    assert payload["old"] == "before\n"
+    assert payload["new"] == "after\n"
+
+
+def test_detect_ci_event_ignores_generic_failures_without_ci_signal() -> None:
+    process, _running, _chunks, _system_messages, _permission_requests, _completed = _build_process()
+
+    event = process._detect_ci_event(
+        command="bash -lc 'echo failed'",
+        output="Operation failed while parsing local file",
+        pr_event=None,
+    )
+
+    assert event is None
+
+
+def test_detect_ci_event_for_explicit_ci_command() -> None:
+    process, _running, _chunks, _system_messages, _permission_requests, _completed = _build_process()
+
+    event = process._detect_ci_event(
+        command="gh run view 123",
+        output="status: failed",
+        pr_event=None,
+    )
+
+    assert event is not None
+    assert event["status"] == "failing"
+
+
+def test_detect_ci_event_ignores_generic_pipeline_words_without_ci_signal() -> None:
+    process, _running, _chunks, _system_messages, _permission_requests, _completed = _build_process()
+
+    event = process._detect_ci_event(
+        command="cat pipeline_notes.txt",
+        output="pipeline pending in local planning doc",
+        pr_event=None,
+    )
+
+    assert event is None

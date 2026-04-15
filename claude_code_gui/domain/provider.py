@@ -264,13 +264,21 @@ def _coerce_provider(
     if not icon:
         icon = str(fallback_payload.get("icon", "")).strip()
 
+    raw_binary_names = (
+        provider_payload.get("binary_names")
+        if isinstance(provider_payload, dict) and isinstance(provider_payload.get("binary_names"), list)
+        else fallback_payload.get("binary_names", [])
+    )
+    if not isinstance(raw_binary_names, list):
+        raw_binary_names = []
+
     return ProviderConfig(
         id=_coerce_text(provider_payload.get("id"), fallback=provider_id),
         name=_coerce_text(provider_payload.get("name"), fallback=fallback_payload.get("name", "Claude")),
         icon=icon or _coerce_text(fallback_payload.get("icon"), fallback=f"{provider_id}.svg"),
         binary_names=tuple(
             _coerce_text(name, fallback="").lower().strip()
-            for name in (provider_payload.get("binary_names") if isinstance(provider_payload, dict) else fallback_payload.get("binary_names", []))
+            for name in raw_binary_names
             if isinstance(name, str) and _coerce_text(name, fallback="").strip()
         ),
         colors=colors,
@@ -352,12 +360,15 @@ def refresh_provider_registry(
     detected_model_options: dict[str, object] | None = None,
 ) -> dict[str, ProviderConfig]:
     """Reload providers from app settings and update the global registry."""
-    global PROVIDERS
     normalized_discovery = _normalize_discovered_model_overrides(detected_model_options)
     if normalized_discovery:
         _DISCOVERED_MODEL_OPTIONS.update(normalized_discovery)
 
-    PROVIDERS = _build_providers(payload, _DISCOVERED_MODEL_OPTIONS)
+    # Keep the same dict object so modules that imported `PROVIDERS` by reference
+    # immediately see updated provider data without needing an app restart.
+    updated_registry = _build_providers(payload, _DISCOVERED_MODEL_OPTIONS)
+    PROVIDERS.clear()
+    PROVIDERS.update(updated_registry)
     return PROVIDERS
 
 

@@ -53,7 +53,7 @@ def test_codex_jsonl_schema_contract() -> None:
             "--json",
             "--color",
             "never",
-            "-s",
+            "--sandbox",
             "read-only",
             "Reply exactly with OK",
         ],

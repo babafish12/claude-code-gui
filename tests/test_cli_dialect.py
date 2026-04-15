@@ -49,6 +49,16 @@ def test_claude_build_argv_with_all_supported_flags(run_config: CliRunConfig) ->
     ]
 
 
+def test_claude_build_argv_with_ask_permission_mode(run_config: CliRunConfig) -> None:
+    run_config.permission_mode = "ask"
+    dialect = ClaudeDialect()
+
+    argv = dialect.build_argv("hello", run_config)
+
+    assert "--permission-mode" in argv
+    assert "ask" in argv
+
+
 def test_claude_build_resume_argv_appends_resume(run_config: CliRunConfig) -> None:
     dialect = ClaudeDialect()
 
@@ -178,6 +188,37 @@ def test_codex_build_argv_permission_mode_mapping() -> None:
     assert "--dangerously-bypass-approvals-and-sandbox" in argv
 
 
+def test_codex_build_argv_with_ask_permission_mode() -> None:
+    dialect = CodexDialect()
+    config = CliRunConfig(
+        binary_path="/usr/bin/codex",
+        cwd="/tmp/work",
+        model="gpt-5",
+        permission_mode="ask",
+    )
+
+    argv = dialect.build_argv("run", config)
+
+    assert "--permission-mode" not in argv
+    assert "--full-auto" not in argv
+    assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+
+
+def test_codex_build_argv_with_plan_permission_uses_sandbox_flag() -> None:
+    dialect = CodexDialect()
+    config = CliRunConfig(
+        binary_path="/usr/bin/codex",
+        cwd="/tmp/work",
+        model="gpt-5",
+        permission_mode="plan",
+    )
+
+    argv = dialect.build_argv("run", config)
+
+    assert "--sandbox" in argv
+    assert "read-only" in argv
+
+
 def test_codex_parse_line_all_primary_event_types() -> None:
     dialect = CodexDialect()
 
@@ -226,6 +267,35 @@ def test_codex_parse_line_all_primary_event_types() -> None:
         "cached_input_tokens": 2,
         "output_tokens": 3,
     }
+
+
+def test_codex_parse_line_file_change_item() -> None:
+    dialect = CodexDialect()
+
+    events = dialect.parse_line(
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "chg-1",
+                    "type": "file_change",
+                    "status": "completed",
+                    "changes": [
+                        {"path": "/tmp/work/src/app.py", "kind": "update"},
+                    ],
+                },
+            }
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].tool is not None
+    assert events[0].tool["type"] == "file_change"
+    assert events[0].tool["phase"] == "completed"
+    assert events[0].tool["id"] == "chg-1"
+    assert events[0].tool["changes"] == [
+        {"path": "/tmp/work/src/app.py", "kind": "update"},
+    ]
 
 
 def test_codex_parse_line_error_fallback_message() -> None:

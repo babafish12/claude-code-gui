@@ -75,6 +75,11 @@
           "is_advanced": false
         },
         {
+          "label": "Ask",
+          "value": "ask",
+          "is_advanced": false
+        },
+        {
           "label": "Plan mode",
           "value": "plan",
           "is_advanced": false
@@ -165,6 +170,11 @@
           "is_advanced": false
         },
         {
+          "label": "Ask",
+          "value": "ask",
+          "is_advanced": false
+        },
+        {
           "label": "Plan mode",
           "value": "plan",
           "is_advanced": false
@@ -195,5 +205,8 @@
       "description": "Deep reasoning for complex problems."
     }
   ],
-  "agentctl_auto_enabled": true
+  "agentctl_auto_enabled": true,
+  "system_tray_enabled": true,
+  "active_provider_id": "claude",
+  "stream_render_throttle_ms": 80
 }

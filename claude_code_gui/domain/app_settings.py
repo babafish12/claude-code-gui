@@ -141,6 +141,7 @@ _BUILTIN_DEFAULT_APP_SETTINGS: dict[str, Any] = {
             ],
             "permission_options": [
                 {"label": "Auto", "value": "auto", "is_advanced": False},
+                {"label": "Ask", "value": "ask", "is_advanced": False},
                 {"label": "Plan mode", "value": "plan", "is_advanced": False},
                 {"label": "Bypass permissions (Advanced)", "value": "bypassPermissions", "is_advanced": True},
             ],
@@ -197,6 +198,7 @@ _BUILTIN_DEFAULT_APP_SETTINGS: dict[str, Any] = {
             ],
             "permission_options": [
                 {"label": "Auto", "value": "auto", "is_advanced": False},
+                {"label": "Ask", "value": "ask", "is_advanced": False},
                 {"label": "Plan mode", "value": "plan", "is_advanced": False},
                 {"label": "Bypass permissions (Advanced)", "value": "bypassPermissions", "is_advanced": True},
             ],
@@ -221,6 +223,9 @@ _BUILTIN_DEFAULT_APP_SETTINGS: dict[str, Any] = {
         },
     ],
     "agentctl_auto_enabled": True,
+    "system_tray_enabled": True,
+    "active_provider_id": "claude",
+    "stream_render_throttle_ms": 80,
 }
 
 
@@ -281,6 +286,29 @@ def _to_bool(value: Any, fallback: bool) -> bool:
         if lower in {"0", "false", "no", "off"}:
             return False
     return fallback
+
+
+def _to_int(value: Any, fallback: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return fallback
+        try:
+            return int(float(stripped))
+        except ValueError:
+            return fallback
+    return fallback
+
+
+def _to_int_range(value: Any, fallback: int, *, minimum: int, maximum: int) -> int:
+    converted = _to_int(value, fallback)
+    return max(minimum, min(maximum, converted))
 
 
 def _to_rgb(value: Any, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
@@ -560,6 +588,12 @@ def _normalize_settings(payload: Any) -> dict[str, Any]:
     if not normalized_providers:
         normalized_providers = copy.deepcopy(fallback["providers"])
 
+    preferred_provider_id = _to_text(payload.get("active_provider_id")).lower()
+    if not preferred_provider_id:
+        preferred_provider_id = _to_text(fallback.get("active_provider_id")).lower()
+    if preferred_provider_id not in normalized_providers:
+        preferred_provider_id = next(iter(normalized_providers.keys()))
+
     return {
         "providers": normalized_providers,
         "reasoning_options": _to_reasoning_options(
@@ -569,6 +603,17 @@ def _normalize_settings(payload: Any) -> dict[str, Any]:
         "agentctl_auto_enabled": _to_bool(
             payload.get("agentctl_auto_enabled"),
             bool(fallback.get("agentctl_auto_enabled", True)),
+        ),
+        "system_tray_enabled": _to_bool(
+            payload.get("system_tray_enabled"),
+            bool(fallback.get("system_tray_enabled", True)),
+        ),
+        "active_provider_id": preferred_provider_id,
+        "stream_render_throttle_ms": _to_int_range(
+            payload.get("stream_render_throttle_ms"),
+            _to_int_range(fallback.get("stream_render_throttle_ms"), 80, minimum=0, maximum=1500),
+            minimum=0,
+            maximum=1500,
         ),
     }
 

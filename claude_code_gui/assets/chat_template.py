@@ -137,6 +137,27 @@ button:disabled {
     height: 100%;
 }
 
+#app.pane-mode-agent #welcomeView {
+    display: none !important;
+}
+
+#app.pane-mode-agent #chatView {
+    display: block;
+}
+
+#app.pane-mode-agent #chatToolbar,
+#app.pane-mode-agent #artifactsPanel {
+    display: none !important;
+}
+
+#app.pane-mode-agent #messages {
+    padding-right: 10px !important;
+}
+
+#app.pane-mode-agent #chatComposer {
+    right: 0 !important;
+}
+
 #welcomeView,
 #chatView {
     width: 100%;
@@ -350,6 +371,7 @@ button:disabled {
     max-width: min(320px, 100%);
     min-height: 56px;
     transition: border-color var(--motion-fast) var(--ease-standard);
+    position: relative;
 }
 
 .attachment-chip:hover {
@@ -358,6 +380,7 @@ button:disabled {
 
 .attachment-preview {
     flex: none;
+    position: relative;
     width: 44px;
     height: 44px;
     border-radius: 10px;
@@ -415,11 +438,32 @@ button:disabled {
     font-size: 14px;
     line-height: 1;
     padding: 0;
+    width: 14px;
+    height: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
     transition: color var(--motion-fast) var(--ease-standard);
 }
 
 .attachment-remove:hover {
     color: var(--text-accent-soft);
+}
+
+.attachment-remove.attachment-remove-image {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+}
+
+.attachment-chip-image .attachment-remove {
+    position: absolute;
+    top: 4px;
+    left: 4px;
 }
 
 .plus-btn,
@@ -1249,7 +1293,10 @@ button:disabled {
 }
 
 .user-bubble {
-    width: 100%;
+    display: inline-block;
+    width: -webkit-fit-content;
+    width: fit-content;
+    max-width: 100%;
     border-radius: 18px;
     background: var(--user-bubble);
     padding: 12px 18px;
@@ -1260,6 +1307,7 @@ button:disabled {
 }
 
 .user-bubble-text {
+    display: inline;
     white-space: pre-wrap;
 }
 
@@ -3301,7 +3349,7 @@ body.reduced-motion *::after {
     ];
 
     const DEFAULT_SLASH_COMMANDS = [
-        { name: "/agent", icon: "\u25A7", description: "Main chat only: create/focus/close agent panes", providers: ["claude", "codex"] },
+        { name: "/agent", icon: "\u25A7", description: "Main chat: one-shot worker (/agent <task>) + pane controls", providers: ["claude", "codex"] },
         { name: "/help", icon: "?", description: "Show available commands and usage tips", providers: ["claude", "codex"] },
         { name: "/clear", icon: "\u2716", description: "Clear the current conversation", providers: ["claude", "codex"] },
         { name: "/compact", icon: "\u25A3", description: "Compact conversation to save context", providers: ["claude"] },
@@ -3398,7 +3446,7 @@ body.reduced-motion *::after {
     const DIFF_RENDER_LINE_LIMIT = 1000;
     const DIFF_AUTO_EXPAND_MAX_LINES = 180;
     const MOTION_FAST_MS = 120;
-    const STREAM_RENDER_THROTTLE_MS = 80;
+    const DEFAULT_STREAM_RENDER_THROTTLE_MS = 80;
     const WAIT_INACTIVITY_MS = 5000;
     const WAIT_ROTATE_MS = 4000;
     const WAIT_STATUS_MIN_INTERVAL_MS = 1000;
@@ -3432,6 +3480,14 @@ body.reduced-motion *::after {
     let renderQueued = false;
     let renderTimerId = null;
     let lastAssistantRenderAt = 0;
+    let streamRenderThrottleMs = DEFAULT_STREAM_RENDER_THROTTLE_MS;
+    let pendingAssistantText = "";
+    let assistantRevealTimer = null;
+    let finishAfterPendingReveal = false;
+    let lastAssistantChunkText = "";
+    let lastAssistantChunkAt = 0;
+    let lastSystemMessageText = "";
+    let lastSystemMessageAt = 0;
     let waitStatusVisible = false;
     let waitStatusText = "";
     let waitInactivityTimer = null;
@@ -3449,6 +3505,7 @@ body.reduced-motion *::after {
     let selectedReasoning = "medium";
     let selectedPermission = "auto";
     let reasoningVisible = true;
+    let paneMode = "main";
     let activeProviderId = "claude";
     let activeProviderName = "Claude";
     let activePopup = null;
@@ -5283,14 +5340,34 @@ body.reduced-motion *::after {
         return html || "<p></p>";
     }
 
-    function postToHost(handlerName, payload) {
-        if (
-            window.webkit &&
-            window.webkit.messageHandlers &&
-            window.webkit.messageHandlers[handlerName]
-        ) {
-            window.webkit.messageHandlers[handlerName].postMessage(payload);
+    function postToHost(handlerName, payload, aliases) {
+        const handlerNames = [handlerName];
+        if (Array.isArray(aliases)) {
+            aliases.forEach(function (entry) {
+                const alias = String(entry || "").trim();
+                if (!alias || handlerNames.indexOf(alias) !== -1) {
+                    return;
+                }
+                handlerNames.push(alias);
+            });
         }
+        if (!(window.webkit && window.webkit.messageHandlers)) {
+            return false;
+        }
+        for (let index = 0; index < handlerNames.length; index += 1) {
+            const candidate = handlerNames[index];
+            const handler = window.webkit.messageHandlers[candidate];
+            if (!handler) {
+                continue;
+            }
+            try {
+                handler.postMessage(payload);
+                return true;
+            } catch (_error) {
+                continue;
+            }
+        }
+        return false;
     }
 
     function parseHostPayload(rawValue) {
@@ -5595,8 +5672,34 @@ body.reduced-motion *::after {
         activePopup = popup;
     }
 
+    function isAgentPaneMode() {
+        return paneMode === "agent";
+    }
+
+    function setPaneMode(nextMode) {
+        const normalized = String(nextMode || "").trim().toLowerCase();
+        paneMode = normalized === "agent" ? "agent" : "main";
+        if (appEl) {
+            appEl.classList.toggle("pane-mode-agent", isAgentPaneMode());
+        }
+        if (isAgentPaneMode()) {
+            setArtifactsPanelOpen(false);
+        }
+        setChatState(hasMessages);
+    }
+
     function setChatState(withMessages) {
         hasMessages = !!withMessages;
+
+        if (isAgentPaneMode()) {
+            welcomeViewEl.style.display = "none";
+            chatViewEl.classList.add("active");
+            appEl.classList.add("chat-state");
+            userScrolledUp = false;
+            updateScrollButtonVisibility();
+            setTimeout(function () { chatInputEl.focus(); }, 50);
+            return;
+        }
 
         if (hasMessages) {
             welcomeViewEl.style.display = "none";
@@ -5919,6 +6022,30 @@ body.reduced-motion *::after {
         return shell;
     }
 
+    function isImageAttachment(payload) {
+        const attachmentType = String(payload && payload.type || "").trim().toLowerCase();
+        const data = String(payload && payload.data || "");
+        if (attachmentType.indexOf("image/") === 0 || data.indexOf("data:image/") === 0) {
+            return true;
+        }
+
+        const path = String(payload && payload.path || "").trim().toLowerCase().replace(/\\\\/g, "/");
+        const fileName = String(payload && payload.name || "").trim().toLowerCase();
+        const fullName = (fileName || path).split("/").pop();
+        const extension = (fullName || "").split(".").pop();
+        return {
+            png: true,
+            jpg: true,
+            jpeg: true,
+            gif: true,
+            webp: true,
+            svg: true,
+            bmp: true,
+            avif: true,
+            heic: true,
+        }[extension] === true;
+    }
+
     function normalizeAttachment(payload) {
         if (!payload || typeof payload !== "object") {
             return null;
@@ -5977,12 +6104,15 @@ body.reduced-motion *::after {
         }
 
         attachments.forEach(function (attachment) {
+            const isImage = isImageAttachment(attachment);
             const chip = document.createElement("div");
-            chip.className = "attachment-chip";
+            chip.className = isImage
+                ? "attachment-chip attachment-chip-image"
+                : "attachment-chip";
 
             const preview = document.createElement("div");
             preview.className = "attachment-preview";
-            if (attachment.type.indexOf("image/") === 0) {
+            if (isImage) {
                 const thumb = document.createElement("img");
                 thumb.className = "attachment-thumb";
                 thumb.src = attachment.data;
@@ -6008,7 +6138,7 @@ body.reduced-motion *::after {
             meta.appendChild(name);
 
             const attachmentPath = String(attachment.path || "").trim();
-            if (attachmentPath) {
+            if (attachmentPath && !isImage) {
                 const path = document.createElement("span");
                 path.className = "attachment-path";
                 path.textContent = compactDisplayPath(attachmentPath, 44);
@@ -6022,7 +6152,9 @@ body.reduced-motion *::after {
 
             const removeButton = document.createElement("button");
             removeButton.type = "button";
-            removeButton.className = "attachment-remove";
+            removeButton.className = isImage
+                ? "attachment-remove attachment-remove-image"
+                : "attachment-remove";
             removeButton.setAttribute("aria-label", "Remove attachment");
             removeButton.textContent = "×";
             removeButton.addEventListener("click", function () {
@@ -6031,7 +6163,11 @@ body.reduced-motion *::after {
                 });
                 renderAttachments();
             });
-            chip.appendChild(removeButton);
+            if (isImage) {
+                preview.appendChild(removeButton);
+            } else {
+                chip.appendChild(removeButton);
+            }
 
             container.appendChild(chip);
         });
@@ -6146,6 +6282,9 @@ body.reduced-motion *::after {
     }
 
     function activeInput() {
+        if (isAgentPaneMode()) {
+            return chatInputEl;
+        }
         return hasMessages ? chatInputEl : welcomeInputEl;
     }
 
@@ -6449,7 +6588,7 @@ body.reduced-motion *::after {
     }
 
     function focusPrimaryInput() {
-        if (hasMessages) {
+        if (hasMessages || isAgentPaneMode()) {
             chatInputEl.focus();
         } else {
             welcomeInputEl.focus();
@@ -6580,7 +6719,7 @@ body.reduced-motion *::after {
             const gallery = document.createElement("div");
             gallery.className = "message-attachments";
             outgoingAttachments.forEach(function (attachment) {
-                if (attachment.type.indexOf("image/") === 0 && attachment.data) {
+                if (isImageAttachment(attachment) && attachment.data) {
                     const image = document.createElement("img");
                     image.className = "message-attachment-image";
                     image.src = attachment.data;
@@ -6619,6 +6758,54 @@ body.reduced-motion *::after {
         bubbleWrap.appendChild(badge);
         rowObj.inner.appendChild(bubbleWrap);
         scrollToBottom(true);
+    }
+
+    function addAssistantMessage(text) {
+        const raw = String(text || "");
+        if (!raw) {
+            return;
+        }
+
+        setChatState(true);
+        resetToolTurnState();
+
+        const rowObj = createMessageRow("assistant");
+        const block = document.createElement("div");
+        block.className = "assistant-block";
+
+        const wrap = document.createElement("div");
+        wrap.className = "assistant-content-wrap";
+
+        const body = document.createElement("div");
+        body.className = "assistant-message markdown-body";
+        body.dataset.raw = raw;
+        body.dataset.rawMarkdown = raw;
+        body.innerHTML = markdownToHtml(raw);
+        registerAssistantArtifacts(body, raw);
+
+        const badge = document.createElement("div");
+        badge.className = "copy-success-badge";
+        badge.textContent = "Copied!";
+
+        const actions = document.createElement("div");
+        actions.className = "assistant-actions";
+        actions.innerHTML = [
+            '<button class="assistant-action" data-action="copy" type="button" title="Copy">📋</button>',
+            '<button class="assistant-action copy-md-action" data-action="copy-md" type="button" title="Copy as Markdown">📋 MD</button>',
+            '<button class="assistant-action" data-action="up" type="button" title="Thumbs up">👍</button>',
+            '<button class="assistant-action" data-action="down" type="button" title="Thumbs down">👎</button>',
+            '<button class="assistant-action" data-action="retry" type="button" title="Retry">🔄</button>',
+        ].join("");
+
+        wrap.appendChild(body);
+        wrap.appendChild(actions);
+        wrap.appendChild(badge);
+        block.appendChild(wrap);
+        rowObj.inner.appendChild(block);
+
+        if (!userScrolledUp) {
+            scrollToBottom(true);
+        }
     }
 
     function toTitleCase(value) {
@@ -6707,24 +6894,52 @@ body.reduced-motion *::after {
             };
         }
 
-        if (
+        const ciCommandSignal = (
             /\bgh\s+pr\s+checks\b/.test(lowerCommand)
             || /\bgh\s+run\b/.test(lowerCommand)
-            || lowerOutput.indexOf("pipeline") >= 0
-            || lowerOutput.indexOf("workflow") >= 0
-        ) {
-            let status = "pending";
+            || /\bgh\s+workflow\b/.test(lowerCommand)
+            || /\bbuildkite\b/.test(lowerCommand)
+            || /\bjenkins\b/.test(lowerCommand)
+            || /\bcircleci\b/.test(lowerCommand)
+        );
+        const ciUrl = (
+            output.match(/https?:\/\/[^\s)]+(?:actions\/runs\/\d+|runs\/\d+|pipelines\/[^\s)]+)/i)
+            || command.match(/https?:\/\/[^\s)]+(?:actions\/runs\/\d+|runs\/\d+|pipelines\/[^\s)]+)/i)
+            || []
+        )[0] || "";
+        const ciOutputSignal = (
+            /\bgithub actions\b/i.test(output)
+            || /\bbuildkite\b/i.test(output)
+            || /\bjenkins\b/i.test(output)
+            || /\bcircleci\b/i.test(output)
+            || /\bgh\s+pr\s+checks\b/i.test(output)
+            || /\bgh\s+run\b/i.test(output)
+            || /\bgh\s+workflow\b/i.test(output)
+            || /\bcheck suite\b/i.test(output)
+            || /\bworkflow\s+(?:run|id|name)\b/i.test(output)
+            || /\bpipeline\s+(?:id|name|url)\b/i.test(output)
+        );
+
+        if (ciCommandSignal || !!ciUrl || ciOutputSignal) {
+            let status = "";
             if (/\b(fail|failed|failing|error)\b/i.test(output)) {
                 status = "failing";
             } else if (/\b(pass|passed|success|successful)\b/i.test(output)) {
                 status = "passing";
+            } else if (/\b(pending|queued|in progress|running)\b/i.test(output)) {
+                status = "pending";
+            } else if (ciCommandSignal) {
+                status = "pending";
             }
-            events.ci = {
-                status: status,
-                url: (output.match(/https?:\/\/[^\s)]+(?:actions\/runs\/\d+|runs\/\d+|pipelines\/[^\s)]+)/i) || [])[0] || "",
-                prUrl: events.pr && events.pr.url ? events.pr.url : "",
-                suggestFix: status === "failing",
-            };
+
+            if (status) {
+                events.ci = {
+                    status: status,
+                    url: ciUrl,
+                    prUrl: events.pr && events.pr.url ? events.pr.url : "",
+                    suggestFix: status === "failing",
+                };
+            }
         }
 
         return events;
@@ -7084,6 +7299,17 @@ body.reduced-motion *::after {
         var raw = String(text || "").trim();
         if (!raw) return;
 
+        const now = Date.now();
+        if (
+            raw.length >= 6
+            && raw === lastSystemMessageText
+            && (now - lastSystemMessageAt) < 1500
+        ) {
+            return;
+        }
+        lastSystemMessageText = raw;
+        lastSystemMessageAt = now;
+
         try {
             var parsed = JSON.parse(raw);
             if (parsed && parsed.__permission_request__) {
@@ -7136,6 +7362,10 @@ body.reduced-motion *::after {
     }
 
     function addToolMessage(data) {
+        if (currentAssistantBody && currentAssistantRaw.trim()) {
+            finalizeAssistantSegmentForInterleaving();
+        }
+
         var toolUseId = data && typeof data.toolUseId === "string" ? data.toolUseId.trim() : "";
         if (toolUseId) {
             var hasOutput = !!(data.output && String(data.output).trim());
@@ -7377,6 +7607,12 @@ body.reduced-motion *::after {
         const proposedAction = String(data.proposedAction || "");
         const filePath = String(data.path || "");
         const command = String(data.command || "");
+        const choices = Array.isArray(data.choices) ? data.choices.filter(function (item) {
+            return String(item || "").trim();
+        }).map(function (item) {
+            return String(item).trim().slice(0, 120);
+        }) : [];
+        const defaultChoice = String(data.defaultChoice || data.default_choice || "").trim();
         const oldText = (data.old !== undefined || data.old_content !== undefined)
             ? String(data.old_content !== undefined ? data.old_content : (data.old || ""))
             : "";
@@ -7586,23 +7822,8 @@ body.reduced-motion *::after {
                 resolveDenialCard("deny");
             });
         } else {
-            const allowButton = document.createElement("button");
-            allowButton.type = "button";
-            allowButton.className = "permission-action-btn allow";
-            allowButton.textContent = "Allow";
-            actions.appendChild(allowButton);
-
-            const alwaysAllowBtn = document.createElement("button");
-            alwaysAllowBtn.type = "button";
-            alwaysAllowBtn.className = "permission-action-btn always-allow";
-            alwaysAllowBtn.textContent = "Always Allow " + toolName;
-            actions.appendChild(alwaysAllowBtn);
-
-            const denyButton = document.createElement("button");
-            denyButton.type = "button";
-            denyButton.className = "permission-action-btn deny";
-            denyButton.textContent = "Deny";
-            actions.appendChild(denyButton);
+            const hasChoices = choices.length > 0;
+            const normalizedDefaultChoice = defaultChoice.toLowerCase();
 
             const commentWrap = document.createElement("div");
             commentWrap.className = "permission-comment-wrap";
@@ -7610,7 +7831,7 @@ body.reduced-motion *::after {
             const commentInput = document.createElement("input");
             commentInput.type = "text";
             commentInput.className = "permission-comment-input";
-            commentInput.placeholder = "Add comment or modification request";
+            commentInput.placeholder = "Reply in text (or pick a button)";
             commentWrap.appendChild(commentInput);
 
             const commentButton = document.createElement("button");
@@ -7618,6 +7839,55 @@ body.reduced-motion *::after {
             commentButton.className = "permission-action-btn";
             commentButton.textContent = "Send";
             commentWrap.appendChild(commentButton);
+
+            if (hasChoices) {
+                const choiceGrid = document.createElement("div");
+                choiceGrid.className = "permission-actions";
+
+                for (let index = 0; index < choices.length; index += 1) {
+                    const choice = choices[index];
+                    const isDefault = choice.toLowerCase() === normalizedDefaultChoice;
+                    const button = document.createElement("button");
+                    button.type = "button";
+                    button.className = isDefault
+                        ? "permission-action-btn allow"
+                        : "permission-action-btn";
+                    button.textContent = choice;
+                    choiceGrid.appendChild(button);
+
+                    button.addEventListener("click", function () {
+                        const normalizedChoice = String(choice || "").trim().toLowerCase();
+                        if (["y", "yes", "ja", "j", "allow", "approve", "approved", "ok", "okay", "true", "1"].includes(normalizedChoice)) {
+                            submitResponse("allow", choice);
+                            return;
+                        }
+                        if (["n", "no", "nein", "deny", "denied", "reject", "rejected", "false", "0"].includes(normalizedChoice)) {
+                            submitResponse("deny", choice);
+                            return;
+                        }
+                        submitResponse("comment", choice);
+                    });
+                }
+                actions.appendChild(choiceGrid);
+            } else {
+                const allowButton = document.createElement("button");
+                allowButton.type = "button";
+                allowButton.className = "permission-action-btn allow";
+                allowButton.textContent = "Allow";
+                actions.appendChild(allowButton);
+
+                const alwaysAllowBtn = document.createElement("button");
+                alwaysAllowBtn.type = "button";
+                alwaysAllowBtn.className = "permission-action-btn always-allow";
+                alwaysAllowBtn.textContent = "Always Allow " + toolName;
+                actions.appendChild(alwaysAllowBtn);
+
+                const denyButton = document.createElement("button");
+                denyButton.type = "button";
+                denyButton.className = "permission-action-btn deny";
+                denyButton.textContent = "Deny";
+                actions.appendChild(denyButton);
+            }
 
             actions.appendChild(commentWrap);
             card.appendChild(actions);
@@ -7637,11 +7907,13 @@ body.reduced-motion *::after {
                 card.classList.remove("pending");
                 card.classList.add("resolved");
 
-                allowButton.disabled = true;
-                alwaysAllowBtn.disabled = true;
-                denyButton.disabled = true;
                 commentButton.disabled = true;
                 commentInput.disabled = true;
+
+                const actionButtons = actions.querySelectorAll(".permission-action-btn");
+                for (let index = 0; index < actionButtons.length; index += 1) {
+                    actionButtons[index].disabled = true;
+                }
 
                 if (action === "allow" || action === "always_allow") {
                     status.textContent = "Approved. Sent to " + activeProviderName + ".";
@@ -7652,16 +7924,18 @@ body.reduced-motion *::after {
                     return;
                 }
                 status.textContent = commentText
-                    ? 'Comment sent: "' + commentText + '"'
-                    : ("Comment sent to " + activeProviderName + ".");
+                    ? 'Answer sent: "' + commentText + '"'
+                    : ("Answer sent to " + activeProviderName + ".");
             }
 
-            function submitResponse(action) {
+            function submitResponse(action, commentText) {
                 if (resolved) {
                     return;
                 }
 
-                const trimmedComment = String(commentInput.value || "").trim();
+                const trimmedComment = typeof commentText === "string"
+                    ? String(commentText).trim()
+                    : String(commentInput.value || "").trim();
                 if (action === "comment" && !trimmedComment) {
                     commentInput.focus();
                     return;
@@ -7677,18 +7951,6 @@ body.reduced-motion *::after {
                 resolveCard(action, trimmedComment);
             }
 
-            allowButton.addEventListener("click", function () {
-                submitResponse("allow");
-            });
-
-            alwaysAllowBtn.addEventListener("click", function () {
-                submitResponse("always_allow");
-            });
-
-            denyButton.addEventListener("click", function () {
-                submitResponse("deny");
-            });
-
             commentButton.addEventListener("click", function () {
                 submitResponse("comment");
             });
@@ -7699,6 +7961,32 @@ body.reduced-motion *::after {
                     submitResponse("comment");
                 }
             });
+
+            if (!hasChoices) {
+                const allowButton = actions.querySelector(".permission-action-btn.allow");
+                const alwaysAllowBtn = actions.querySelector(".permission-action-btn.always-allow");
+                const denyButton = actions.querySelector(".permission-action-btn.deny");
+
+                if (alwaysAllowBtn) {
+                    alwaysAllowBtn.classList.remove("allow");
+                }
+
+                if (allowButton) {
+                    allowButton.addEventListener("click", function () {
+                        submitResponse("allow");
+                    });
+                }
+                if (alwaysAllowBtn) {
+                    alwaysAllowBtn.addEventListener("click", function () {
+                        submitResponse("always_allow");
+                    });
+                }
+                if (denyButton) {
+                    denyButton.addEventListener("click", function () {
+                        submitResponse("deny");
+                    });
+                }
+            }
         }
 
         rowObj.inner.appendChild(card);
@@ -7823,6 +8111,14 @@ body.reduced-motion *::after {
         }
     }
 
+    function normalizeStreamRenderThrottle(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+            return DEFAULT_STREAM_RENDER_THROTTLE_MS;
+        }
+        return Math.max(0, Math.min(1500, Math.round(numeric)));
+    }
+
     function queueAssistantRenderFrame() {
         if (renderQueued) {
             return;
@@ -7860,7 +8156,7 @@ body.reduced-motion *::after {
         }
 
         const elapsed = Date.now() - lastAssistantRenderAt;
-        const delay = Math.max(0, STREAM_RENDER_THROTTLE_MS - elapsed);
+        const delay = Math.max(0, streamRenderThrottleMs - elapsed);
         if (delay === 0) {
             queueAssistantRenderFrame();
             return;
@@ -7872,38 +8168,33 @@ body.reduced-motion *::after {
         }, delay);
     }
 
-    function appendAssistantChunk(text) {
-        if (!text) {
-            return;
+    function stopAssistantRevealTimer() {
+        if (assistantRevealTimer) {
+            window.clearTimeout(assistantRevealTimer);
+            assistantRevealTimer = null;
         }
-
-        if (!currentAssistantBody && !thinkingIndicatorRow) {
-            startAssistantMessage();
-        }
-
-        clearLongWaitStatusInternal({ immediate: true });
-        resetLongWaitStatusTimers();
-
-        if (!assistantHasFirstChunk) {
-            assistantHasFirstChunk = true;
-            ensureAssistantMessageRow();
-            hideThinkingIndicator(false);
-            setAssistantPhase(ASSISTANT_PHASE.STREAMING);
-        }
-
-        currentAssistantRaw += String(text);
-        scheduleAssistantRender(false);
     }
 
-    function finishAssistantMessage() {
-        processingActive = false;
-        clearLongWaitStatusAndTimers(true);
-        hideThinkingIndicator(true);
-        if (renderTimerId) {
-            window.clearTimeout(renderTimerId);
-            renderTimerId = null;
+    function assistantRevealChunkSize() {
+        if (streamRenderThrottleMs <= 0) {
+            return Number.MAX_SAFE_INTEGER;
         }
+        if (streamRenderThrottleMs <= 30) {
+            return 120;
+        }
+        if (streamRenderThrottleMs <= 80) {
+            return 80;
+        }
+        if (streamRenderThrottleMs <= 160) {
+            return 42;
+        }
+        if (streamRenderThrottleMs <= 280) {
+            return 24;
+        }
+        return 16;
+    }
 
+    function completeAssistantMessageNow() {
         const lingeringIndicators = messagesEl.querySelectorAll(".thinking-indicator");
         lingeringIndicators.forEach(function (indicator) {
             const row = indicator.closest(".message-row");
@@ -7937,12 +8228,178 @@ body.reduced-motion *::after {
         currentAssistantBody = null;
         currentAssistantRow = null;
         currentAssistantRaw = "";
+        pendingAssistantText = "";
+        finishAfterPendingReveal = false;
         assistantHasFirstChunk = false;
+        lastAssistantChunkText = "";
+        lastAssistantChunkAt = 0;
         refreshChatSearchIfActive();
         setAssistantPhase(ASSISTANT_PHASE.DONE);
         if (!userScrolledUp) {
             scrollToBottom(true);
         }
+    }
+
+    function flushPendingAssistantText(immediate) {
+        if (!pendingAssistantText) {
+            if (finishAfterPendingReveal) {
+                finishAfterPendingReveal = false;
+                completeAssistantMessageNow();
+            }
+            return;
+        }
+
+        if (immediate || streamRenderThrottleMs <= 0) {
+            currentAssistantRaw += pendingAssistantText;
+            pendingAssistantText = "";
+            stopAssistantRevealTimer();
+            scheduleAssistantRender(true);
+            if (finishAfterPendingReveal) {
+                finishAfterPendingReveal = false;
+                completeAssistantMessageNow();
+            }
+            return;
+        }
+
+        if (assistantRevealTimer) {
+            return;
+        }
+
+        const revealStep = function () {
+            assistantRevealTimer = null;
+            if (!pendingAssistantText) {
+                if (finishAfterPendingReveal) {
+                    finishAfterPendingReveal = false;
+                    completeAssistantMessageNow();
+                }
+                return;
+            }
+
+            const size = assistantRevealChunkSize();
+            const segment = pendingAssistantText.slice(0, size);
+            pendingAssistantText = pendingAssistantText.slice(segment.length);
+            currentAssistantRaw += segment;
+            scheduleAssistantRender(true);
+
+            if (pendingAssistantText) {
+                assistantRevealTimer = window.setTimeout(revealStep, streamRenderThrottleMs);
+                return;
+            }
+
+            if (finishAfterPendingReveal) {
+                finishAfterPendingReveal = false;
+                completeAssistantMessageNow();
+            }
+        };
+
+        revealStep();
+    }
+
+    function appendAssistantChunk(text) {
+        if (!text) {
+            return;
+        }
+
+        const chunkText = String(text);
+        const now = Date.now();
+        if (
+            chunkText.length >= 8
+            && chunkText === lastAssistantChunkText
+            && (now - lastAssistantChunkAt) < 1500
+        ) {
+            return;
+        }
+        lastAssistantChunkText = chunkText;
+        lastAssistantChunkAt = now;
+
+        let normalizedChunk = chunkText;
+        const combinedAssistantRaw = currentAssistantRaw + pendingAssistantText;
+        if (combinedAssistantRaw) {
+            if (normalizedChunk === combinedAssistantRaw) {
+                return;
+            }
+            if (normalizedChunk.startsWith(combinedAssistantRaw)) {
+                normalizedChunk = normalizedChunk.slice(combinedAssistantRaw.length);
+            } else if (combinedAssistantRaw.startsWith(normalizedChunk)) {
+                return;
+            } else if (normalizedChunk.length >= 24 && combinedAssistantRaw.indexOf(normalizedChunk) >= 0) {
+                return;
+            } else {
+                const maxOverlap = Math.min(combinedAssistantRaw.length, normalizedChunk.length, 768);
+                let overlap = 0;
+                for (let size = maxOverlap; size >= 12; size -= 1) {
+                    if (combinedAssistantRaw.slice(-size) === normalizedChunk.slice(0, size)) {
+                        overlap = size;
+                        break;
+                    }
+                }
+                if (overlap > 0) {
+                    normalizedChunk = normalizedChunk.slice(overlap);
+                }
+            }
+        }
+
+        if (!normalizedChunk) {
+            return;
+        }
+
+        if (!currentAssistantBody && !thinkingIndicatorRow) {
+            if (processingActive && assistantPhase === ASSISTANT_PHASE.STREAMING) {
+                ensureAssistantMessageRow();
+                assistantHasFirstChunk = true;
+            } else {
+                startAssistantMessage();
+            }
+        }
+
+        clearLongWaitStatusInternal({ immediate: true });
+        resetLongWaitStatusTimers();
+
+        if (!assistantHasFirstChunk) {
+            assistantHasFirstChunk = true;
+            ensureAssistantMessageRow();
+            hideThinkingIndicator(false);
+            setAssistantPhase(ASSISTANT_PHASE.STREAMING);
+        }
+
+        pendingAssistantText += normalizedChunk;
+        flushPendingAssistantText(false);
+    }
+
+    function finalizeAssistantSegmentForInterleaving() {
+        flushPendingAssistantText(true);
+        if (!currentAssistantBody) {
+            return;
+        }
+
+        if (currentAssistantRaw.trim()) {
+            renderAssistantContent(false);
+            registerAssistantArtifacts(currentAssistantBody, currentAssistantRaw);
+        } else if (currentAssistantRow) {
+            currentAssistantRow.remove();
+        }
+
+        currentAssistantBody = null;
+        currentAssistantRow = null;
+        currentAssistantRaw = "";
+        assistantHasFirstChunk = false;
+    }
+
+    function finishAssistantMessage() {
+        processingActive = false;
+        clearLongWaitStatusAndTimers(true);
+        hideThinkingIndicator(true);
+        if (renderTimerId) {
+            window.clearTimeout(renderTimerId);
+            renderTimerId = null;
+        }
+        if (pendingAssistantText) {
+            finishAfterPendingReveal = true;
+            setAssistantPhase(ASSISTANT_PHASE.DONE);
+            flushPendingAssistantText(false);
+            return;
+        }
+        completeAssistantMessageNow();
     }
 
     function setTyping(isTyping) {
@@ -7981,13 +8438,20 @@ body.reduced-motion *::after {
             window.clearTimeout(renderTimerId);
             renderTimerId = null;
         }
+        stopAssistantRevealTimer();
         processingActive = false;
         clearLongWaitStatusAndTimers(true);
         lastAssistantRenderAt = 0;
         currentAssistantRaw = "";
+        pendingAssistantText = "";
+        finishAfterPendingReveal = false;
         currentAssistantBody = null;
         currentAssistantRow = null;
         assistantHasFirstChunk = false;
+        lastAssistantChunkText = "";
+        lastAssistantChunkAt = 0;
+        lastSystemMessageText = "";
+        lastSystemMessageAt = 0;
         typingRow = null;
         thinkingIndicatorRow = null;
         setAssistantPhase(ASSISTANT_PHASE.IDLE);
@@ -8659,7 +9123,11 @@ var GLASS_BUTTON_SELECTOR = [
 
     plusButtons.forEach(function (button) {
         button.addEventListener("click", function () {
-            postToHost("attachFile", "open");
+            postToHost(
+                "attachFile",
+                JSON.stringify({ action: "attach_file", source: "plus_button" }),
+                ["attach_file", "openFile", "open_file"],
+            );
         });
     });
 
@@ -8672,7 +9140,11 @@ var GLASS_BUTTON_SELECTOR = [
 
     folderPathButtons.forEach(function (button) {
         button.addEventListener("click", function () {
-            postToHost("changeFolder", "change");
+            postToHost(
+                "changeFolder",
+                JSON.stringify({ action: "change_folder", source: "folder_button" }),
+                ["change_folder", "openFolder", "open_folder"],
+            );
         });
     });
 
@@ -9041,6 +9513,7 @@ var GLASS_BUTTON_SELECTOR = [
     attachInputBehavior(chatInputEl);
 
     window.addUserMessage = addUserMessage;
+    window.addAssistantMessage = addAssistantMessage;
     window.startAssistantMessage = startAssistantMessage;
     window.appendAssistantChunk = appendAssistantChunk;
     window.finishAssistantMessage = finishAssistantMessage;
@@ -9103,6 +9576,16 @@ var GLASS_BUTTON_SELECTOR = [
 
     window.setAgentModeEnabled = function (isEnabled) {
         setAgentModeEnabled(!!isEnabled);
+    };
+    window.setPaneMode = function (mode) {
+        setPaneMode(mode);
+    };
+    window.setStreamRenderThrottleMs = function (value) {
+        streamRenderThrottleMs = normalizeStreamRenderThrottle(value);
+        if (pendingAssistantText) {
+            stopAssistantRevealTimer();
+            flushPendingAssistantText(false);
+        }
     };
 
     window.setReasoningOptions = function (optionsJson) {
@@ -9208,7 +9691,7 @@ var GLASS_BUTTON_SELECTOR = [
         scheduleWaitInactivityTimer();
     };
     window.focusInput = function () {
-        if (hasMessages) {
+        if (hasMessages || isAgentPaneMode()) {
             chatInputEl.focus();
         } else {
             welcomeInputEl.focus();

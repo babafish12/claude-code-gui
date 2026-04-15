@@ -51,7 +51,6 @@ def get_permission_options(provider: str = DEFAULT_PROVIDER_ID) -> list[tuple[st
 PERMISSION_OPTIONS: list[tuple[str, str, bool]] = get_permission_options()
 
 LEGACY_PERMISSION_ALIASES: dict[str, str] = {
-    "ask": "auto",
     "default": "auto",
     "acceptEdits": "auto",
 }

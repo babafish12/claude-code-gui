@@ -280,6 +280,8 @@ class ClaudeProcess:
 
         try:
             process_env = dict(os.environ)
+            process_env["CLAUDE_CODE_GUI"] = "1"
+            process_env["CLAUDE_CODE_GUI_APP"] = "1"
             process = subprocess.Popen(
                 argv,
                 cwd=config.cwd,
@@ -333,6 +335,9 @@ class ClaudeProcess:
         cost_usd = 0.0
         input_tokens = 0
         output_tokens = 0
+        seen_permission_signatures: set[str] = set()
+        codex_file_change_snapshots: dict[str, dict[str, str | None]] = {}
+        last_emitted_assistant_chunk = ""
 
         stdout = process.stdout
         if stdout is not None:
@@ -367,6 +372,14 @@ class ClaudeProcess:
                                 request_token=request_token,
                                 event=event,
                             )
+                    elif isinstance(event, dict) and self._requires_permission(event):
+                        permission_payload = self._extract_permission_request(
+                            event,
+                            request_token=request_token,
+                            fallback_tool_data=None,
+                        )
+                        if permission_payload is not None:
+                            self._emit_permission_request(request_token, permission_payload)
 
                     parsed_events = dialect.parse_line(stripped)
                     for parsed_event in parsed_events:
@@ -377,16 +390,31 @@ class ClaudeProcess:
                             if parsed_event.raw_type == "result":
                                 result_text = parsed_event.text
                             else:
-                                assistant_parts.append(parsed_event.text)
+                                text_chunk = str(parsed_event.text)
+                                if (
+                                    len(text_chunk) >= 8
+                                    and text_chunk == last_emitted_assistant_chunk
+                                ):
+                                    continue
+                                last_emitted_assistant_chunk = text_chunk
+                                if self._maybe_emit_text_permission_request(
+                                    request_token=request_token,
+                                    text=text_chunk,
+                                    seen_signatures=seen_permission_signatures,
+                                ):
+                                    continue
+                                assistant_parts.append(text_chunk)
                                 streamed_assistant = True
-                                self._emit_assistant_chunk(request_token, parsed_event.text)
+                                self._emit_assistant_chunk(request_token, text_chunk)
 
                         if parsed_event.tool:
-                            tool_payload = self._normalize_tool_payload(
+                            tool_payloads = self._expand_tool_payloads(
                                 parsed_event=parsed_event,
                                 provider_id=provider_id,
+                                cwd=config.cwd,
+                                codex_file_change_snapshots=codex_file_change_snapshots,
                             )
-                            if tool_payload is not None:
+                            for tool_payload in tool_payloads:
                                 tool_use_id = str(tool_payload.get("toolUseId") or "").strip()
                                 if tool_use_id and tool_use_id in suppressed_tool_use_ids:
                                     continue
@@ -412,6 +440,12 @@ class ClaudeProcess:
 
                 else:
                     if line:
+                        if self._maybe_emit_text_permission_request(
+                            request_token=request_token,
+                            text=line,
+                            seen_signatures=seen_permission_signatures,
+                        ):
+                            continue
                         assistant_parts.append(line + "\n")
                         streamed_assistant = True
                         self._emit_assistant_chunk(request_token, line + "\n")
@@ -569,6 +603,361 @@ class ClaudeProcess:
 
         _emit_for_payload(event, None)
         return suppressed_tool_use_ids, suppress_tools_without_id
+
+    def _maybe_emit_text_permission_request(
+        self,
+        *,
+        request_token: str,
+        text: str,
+        seen_signatures: set[str],
+    ) -> bool:
+        permission_payload = self._extract_text_permission_request(
+            request_token=request_token,
+            text=text,
+        )
+        if permission_payload is None:
+            return False
+
+        signature = self._permission_signature(permission_payload)
+        if signature in seen_signatures:
+            return True
+        seen_signatures.add(signature)
+        self._emit_permission_request(request_token, permission_payload)
+        return True
+
+    @staticmethod
+    def _permission_signature(payload: dict[str, Any]) -> str:
+        choices = payload.get("choices")
+        if isinstance(choices, list):
+            normalized_choices = [str(item or "").strip().casefold() for item in choices]
+            normalized_choices = [item for item in normalized_choices if item]
+            choices_part = "|".join(normalized_choices)
+        else:
+            choices_part = ""
+
+        return "||".join(
+            [
+                str(payload.get("name") or "").strip().casefold(),
+                str(payload.get("description") or "").strip().casefold(),
+                str(payload.get("proposedAction") or "").strip().casefold(),
+                choices_part,
+            ]
+        )[:1200]
+
+    def _extract_text_permission_request(
+        self,
+        *,
+        request_token: str,
+        text: str,
+    ) -> dict[str, Any] | None:
+        normalized_text = re.sub(r"\s+", " ", str(text or "").strip())
+        if not normalized_text:
+            return None
+
+        lowered = normalized_text.casefold()
+        has_permission_cue = any(
+            marker in lowered
+            for marker in (
+                "permission",
+                "approval",
+                "approve",
+                "allow",
+                "confirm",
+                "authorization",
+                "authorisation",
+                "authorize",
+                "authorise",
+                "genehmigung",
+                "freigabe",
+                "bestätig",
+                "bestaetig",
+                "erlaub",
+                "zustimm",
+            )
+        )
+        has_yn_cue = any(token in lowered for token in ("yes/no", "ja/nein", "y/n", "j/n")) or bool(
+            re.search(r"\[[ynjYNJ]/[ynjYNJ]\]", normalized_text)
+        )
+        question_style = "?" in normalized_text or any(
+            phrase in lowered
+            for phrase in (
+                "soll ich",
+                "should i",
+                "do you want",
+                "would you like",
+                "möchtest du",
+                "moechtest du",
+                "darf ich",
+                "continue",
+                "proceed",
+            )
+        )
+
+        extracted_choices = self._extract_text_choices(normalized_text)
+        has_choice_cue = len(extracted_choices) >= 2
+        has_choice_prompt = any(
+            token in lowered for token in ("choose", "select", "pick", "option", "auswahl", "wähle", "waehle")
+        )
+
+        should_emit = (
+            (has_permission_cue and (question_style or has_yn_cue or has_choice_cue))
+            or has_yn_cue
+            or (has_choice_cue and has_choice_prompt)
+        )
+        if not should_emit:
+            return None
+
+        is_german = bool(
+            re.search(r"[äöüß]", normalized_text)
+            or any(token in lowered for token in ("soll ich", "genehmigung", "freigabe", "ja", "nein", "bitte"))
+        )
+
+        choices = extracted_choices
+        if not choices and (has_yn_cue or "soll ich" in lowered or "should i" in lowered or "do you want" in lowered):
+            choices = ["Ja", "Nein"] if is_german else ["Yes", "No"]
+
+        default_choice = ""
+        if re.search(r"\[[YJ]/[nN]\]", normalized_text):
+            default_choice = "Ja" if is_german else "Yes"
+        elif re.search(r"\[[yYjJ]/[N]\]", normalized_text):
+            default_choice = "Nein" if is_german else "No"
+
+        tool_name = "Prompt"
+        if any(token in lowered for token in ("upgrade", "update", "aktualisieren", "upgraden")):
+            tool_name = "Update"
+
+        payload: dict[str, Any] = {
+            "__permission_request__": True,
+            "requestId": self._next_permission_request_id(request_token),
+            "name": tool_name,
+            "description": normalized_text[:400],
+            "proposedAction": normalized_text[:240],
+        }
+        if choices:
+            payload["choices"] = choices
+        if default_choice:
+            payload["defaultChoice"] = default_choice
+        return payload
+
+    @staticmethod
+    def _extract_text_choices(text: str) -> list[str]:
+        normalized = str(text or "")
+        choices: list[str] = []
+
+        numbered = re.findall(r"\[\s*\d+\s*\]\s*([^\[\]\n\r]{1,120})", normalized)
+        if len(numbered) >= 2:
+            for item in numbered:
+                candidate = item.strip(" .;:|,")
+                if candidate:
+                    choices.append(candidate)
+            deduped: list[str] = []
+            for choice in choices:
+                if choice not in deduped:
+                    deduped.append(choice)
+            if len(deduped) >= 2:
+                return deduped[:8]
+
+        labeled_matches = list(
+            re.finditer(
+                r"(?:^|\s)(?:[A-Za-z]|\d{1,2})[)\.:]\s*([^\n\r]{1,120}?)(?=(?:\s+(?:[A-Za-z]|\d{1,2})[)\.:]\s*)|$)",
+                normalized,
+            )
+        )
+        if len(labeled_matches) >= 2:
+            deduped_labeled: list[str] = []
+            for match in labeled_matches:
+                candidate = match.group(1).strip(" .;:|,")
+                if candidate and candidate not in deduped_labeled:
+                    deduped_labeled.append(candidate)
+            if len(deduped_labeled) >= 2:
+                return deduped_labeled[:8]
+
+        return []
+
+    def _expand_tool_payloads(
+        self,
+        *,
+        parsed_event: ParsedEvent,
+        provider_id: str,
+        cwd: str,
+        codex_file_change_snapshots: dict[str, dict[str, str | None]],
+    ) -> list[dict[str, Any]]:
+        if not isinstance(parsed_event.tool, dict):
+            return []
+
+        raw_payloads: list[dict[str, Any]]
+        if provider_id == "codex":
+            raw_payloads = self._materialize_codex_file_change_payloads(
+                parsed_event.tool,
+                cwd=cwd,
+                snapshots=codex_file_change_snapshots,
+            )
+        else:
+            raw_payloads = [parsed_event.tool]
+
+        normalized_payloads: list[dict[str, Any]] = []
+        for raw_payload in raw_payloads:
+            normalized = self._normalize_tool_payload(
+                parsed_event=ParsedEvent(tool=raw_payload, raw_type=parsed_event.raw_type),
+                provider_id=provider_id,
+            )
+            if normalized is not None:
+                normalized_payloads.append(normalized)
+        return normalized_payloads
+
+    def _materialize_codex_file_change_payloads(
+        self,
+        tool_payload: dict[str, Any],
+        *,
+        cwd: str,
+        snapshots: dict[str, dict[str, str | None]],
+    ) -> list[dict[str, Any]]:
+        payload_type = str(tool_payload.get("type") or "").strip().lower()
+        if payload_type != "file_change":
+            return [tool_payload]
+
+        item_id = str(tool_payload.get("id") or "").strip()
+        phase = str(tool_payload.get("phase") or tool_payload.get("status") or "").strip().lower()
+        if phase == "item.started":
+            phase = "started"
+        elif phase == "item.completed":
+            phase = "completed"
+
+        entries = self._normalize_codex_file_change_entries(
+            tool_payload.get("changes"),
+            cwd=cwd,
+        )
+        if not entries:
+            return []
+
+        if phase in {"started", "in_progress", "running"}:
+            if item_id:
+                snapshots[item_id] = {
+                    entry["absolute_path"]: self._snapshot_text_for_diff(entry["absolute_path"])
+                    for entry in entries
+                }
+            return []
+
+        if phase not in {"completed", "done"}:
+            return []
+
+        previous_snapshots = snapshots.pop(item_id, {}) if item_id else {}
+        diff_payloads: list[dict[str, Any]] = []
+        for index, entry in enumerate(entries):
+            absolute_path = entry["absolute_path"]
+            kind = str(entry.get("kind") or "update").strip().lower()
+            old_text = previous_snapshots.get(absolute_path)
+            if old_text is None:
+                old_text = ""
+            new_text = self._snapshot_text_for_diff(absolute_path)
+            if new_text is None:
+                new_text = ""
+
+            if old_text == new_text and kind not in {"delete", "remove", "add", "create", "new"}:
+                continue
+
+            clipped_old = self._clip_text(old_text, limit=12000)
+            clipped_new = self._clip_text(new_text, limit=12000)
+
+            payload: dict[str, Any] = {
+                "name": self._file_change_tool_name(kind),
+                "path": entry["display_path"],
+                "old": clipped_old,
+                "new": clipped_new,
+                "old_content": clipped_old,
+                "new_content": clipped_new,
+            }
+            if item_id:
+                payload["toolUseId"] = f"{item_id}:{index + 1}"
+            diff_payloads.append(payload)
+
+        return diff_payloads
+
+    def _normalize_codex_file_change_entries(
+        self,
+        raw_changes: Any,
+        *,
+        cwd: str,
+    ) -> list[dict[str, str]]:
+        if not isinstance(raw_changes, list):
+            return []
+
+        entries: list[dict[str, str]] = []
+        for change in raw_changes:
+            if not isinstance(change, dict):
+                continue
+            raw_path = (
+                change.get("path")
+                or change.get("file_path")
+                or change.get("file")
+                or change.get("target")
+            )
+            path = str(raw_path or "").strip()
+            if not path:
+                continue
+            absolute_path = self._resolve_file_change_path(path, cwd=cwd)
+            display_path = self._display_file_change_path(absolute_path, cwd=cwd)
+            kind = str(
+                change.get("kind")
+                or change.get("change_type")
+                or change.get("change")
+                or change.get("type")
+                or "update"
+            ).strip().lower()
+            entries.append(
+                {
+                    "absolute_path": absolute_path,
+                    "display_path": display_path,
+                    "kind": kind or "update",
+                }
+            )
+        return entries
+
+    @staticmethod
+    def _resolve_file_change_path(path: str, *, cwd: str) -> str:
+        if os.path.isabs(path):
+            return os.path.normpath(path)
+        return os.path.normpath(os.path.join(cwd, path))
+
+    @staticmethod
+    def _display_file_change_path(path: str, *, cwd: str) -> str:
+        if not path:
+            return ""
+        try:
+            relative = os.path.relpath(path, cwd)
+        except ValueError:
+            return path
+        if relative.startswith(f"..{os.sep}") or relative == "..":
+            return path
+        return relative
+
+    @staticmethod
+    def _snapshot_text_for_diff(path: str, *, max_bytes: int = 24000) -> str | None:
+        if not path:
+            return ""
+        if not os.path.exists(path):
+            return ""
+        if not os.path.isfile(path):
+            return None
+
+        try:
+            with open(path, "rb") as handle:
+                content = handle.read(max_bytes)
+        except OSError:
+            return None
+
+        if b"\x00" in content:
+            return None
+        return content.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _file_change_tool_name(kind: str) -> str:
+        normalized = str(kind or "").strip().lower()
+        if normalized in {"add", "create", "new"}:
+            return "Write"
+        if normalized in {"delete", "remove"}:
+            return "Delete"
+        return "Edit"
 
     def _normalize_tool_payload(
         self,
@@ -1166,16 +1555,14 @@ class ClaudeProcess:
         lower_command = command.lower()
         lower_output = output.lower()
         explicit_ci_command = any(
-            marker in lower_command
-            for marker in (
-                "gh pr checks",
-                "gh run",
-                "github actions",
-                "workflow",
-                "pipeline",
-                "buildkite",
-                "jenkins",
-                "circleci",
+            re.search(pattern, lower_command)
+            for pattern in (
+                r"\bgh\s+pr\s+checks\b",
+                r"\bgh\s+run\b",
+                r"\bgh\s+workflow\b",
+                r"\bbuildkite\b",
+                r"\bjenkins\b",
+                r"\bcircleci\b",
             )
         )
 
@@ -1201,7 +1588,22 @@ class ClaudeProcess:
                 flags=re.IGNORECASE,
             )
 
-        has_ci_signal = explicit_ci_command or bool(ci_url) or bool(status)
+        has_ci_keywords = any(
+            re.search(pattern, lower_output)
+            for pattern in (
+                r"\bgithub actions\b",
+                r"\bbuildkite\b",
+                r"\bjenkins\b",
+                r"\bcircleci\b",
+                r"\bgh\s+pr\s+checks\b",
+                r"\bgh\s+run\b",
+                r"\bgh\s+workflow\b",
+                r"\bcheck suite\b",
+                r"\bworkflow\s+(?:run|id|name)\b",
+                r"\bpipeline\s+(?:id|name|url)\b",
+            )
+        )
+        has_ci_signal = explicit_ci_command or bool(ci_url) or has_ci_keywords
         if not has_ci_signal or not status:
             return None
 
@@ -1257,7 +1659,28 @@ class ClaudeProcess:
 
         tool_data = fallback_tool_data or self._extract_tool_data(payload)
         if tool_data is None:
-            return None
+            question_hint = str(
+                payload.get("question")
+                or payload.get("prompt")
+                or payload.get("message")
+                or payload.get("description")
+            ).strip()
+            tool_name = str(
+                payload.get("name")
+                or payload.get("tool")
+                or payload.get("tool_name")
+                or payload.get("toolName")
+                or ("Prompt" if question_hint else "tool")
+            ).strip()
+            tool_data = {"name": tool_name}
+            tool_path = str(
+                payload.get("path")
+                or payload.get("file_path")
+                or payload.get("command")
+                or ""
+            ).strip()
+            if tool_path:
+                tool_data["path"] = tool_path
 
         request_id = str(
             payload.get("request_id")
@@ -1270,6 +1693,7 @@ class ClaudeProcess:
 
         description = self._permission_description(payload, tool_data)
         proposed_action = self._permission_action(payload, tool_data)
+        choices = self._extract_permission_choices(payload)
 
         permission_data: dict[str, Any] = {
             "__permission_request__": True,
@@ -1283,6 +1707,16 @@ class ClaudeProcess:
             value = tool_data.get(key)
             if value:
                 permission_data[key] = value
+
+        if choices:
+            permission_data["choices"] = choices
+
+            default_choice = (
+                str(payload.get("default") or payload.get("defaultChoice") or payload.get("default_choice"))
+                .strip()
+            )
+            if default_choice:
+                permission_data["defaultChoice"] = default_choice
 
         return permission_data
 
@@ -1322,12 +1756,74 @@ class ClaudeProcess:
             return True
         if event_type in {"system", "input"} and subtype in {"permission_request", "approval_request"}:
             return True
+        if event_type in {"input", "prompt", "question", "ask", "choose"}:
+            return True
+        if event_type in {"assistant", "system"} and isinstance(payload.get("choices") or payload.get("options"), list):
+            return True
+        if event_type in {"assistant", "system"}:
+            options = payload.get("choices") or payload.get("options")
+            if isinstance(options, dict):
+                return bool(options)
+
+        if isinstance(payload.get("requires_input"), bool) and payload.get("requires_input"):
+            return True
+        if isinstance(payload.get("input_required"), bool) and payload.get("input_required"):
+            return True
+        if isinstance(payload.get("prompt_required"), bool) and payload.get("prompt_required"):
+            return True
+
+        if payload.get("question") is not None and isinstance(payload.get("choices") or payload.get("options"), list):
+            return True
 
         return False
 
     @staticmethod
+    def _extract_permission_choices(payload: dict[str, Any]) -> list[str]:
+        raw_choices = payload.get("choices")
+        if raw_choices is None:
+            raw_choices = payload.get("options")
+        if raw_choices is None:
+            return []
+
+        if isinstance(raw_choices, dict):
+            entries: list[str] = []
+            for key, value in raw_choices.items():
+                if value is None:
+                    continue
+                if isinstance(value, (str, int, float, bool)):
+                    candidate = str(value)
+                else:
+                    candidate = str(key)
+                text = candidate.strip()
+                if text:
+                    entries.append(text)
+            return entries
+        if not isinstance(raw_choices, (list, tuple)):
+            return []
+
+        choices: list[str] = []
+        for item in raw_choices:
+            if isinstance(item, str):
+                text = item.strip()
+            elif isinstance(item, dict):
+                text = str(
+                    item.get("label")
+                    or item.get("text")
+                    or item.get("value")
+                    or item.get("name")
+                    or item.get("choice")
+                    or ""
+                ).strip()
+            else:
+                text = ""
+            if text:
+                choices.append(text)
+
+        return choices
+
+    @staticmethod
     def _permission_description(payload: dict[str, Any], tool_data: dict[str, Any]) -> str:
-        for key in ("description", "prompt", "message"):
+        for key in ("description", "prompt", "message", "question", "text"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()[:400]
@@ -1344,6 +1840,10 @@ class ClaudeProcess:
         explicit = payload.get("proposed_action") or payload.get("action")
         if isinstance(explicit, str) and explicit.strip():
             return explicit.strip()[:400]
+
+        question = payload.get("question")
+        if isinstance(question, str) and question.strip():
+            return question.strip()[:240]
 
         command = tool_data.get("command")
         if isinstance(command, str) and command.strip():

@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import unittest
 
+import pytest
+
 from claude_code_gui.domain.cli_dialect import CliRunConfig, CodexDialect
+
+pytestmark = pytest.mark.unit
 
 
 class CodexDialectArgvTests(unittest.TestCase):
@@ -23,6 +27,7 @@ class CodexDialectArgvTests(unittest.TestCase):
         self.assertEqual(argv[:2], ["/usr/bin/codex", "exec"])
         self.assertIn("--json", argv)
         self.assertIn("--color", argv)
+        self.assertTrue("--sandbox" in argv or "--full-auto" in argv)
         self.assertIn("-C", argv)
         self.assertEqual(argv[-1], "hello")
 
@@ -31,6 +36,8 @@ class CodexDialectArgvTests(unittest.TestCase):
         self.assertEqual(argv[:3], ["/usr/bin/codex", "exec", "resume"])
         self.assertIn("--json", argv)
         self.assertNotIn("--color", argv)
+        self.assertNotIn("--sandbox", argv)
+        self.assertNotIn("-s", argv)
         self.assertNotIn("-C", argv)
         self.assertNotIn("--skip-git-repo-check", argv)
         self.assertEqual(argv[-2:], ["thread-123", "resume prompt"])
@@ -51,6 +58,18 @@ class CodexDialectArgvTests(unittest.TestCase):
         argv = self.dialect.build_resume_argv("thread-123", "resume prompt", no_cwd_config)
         self.assertNotIn("-C", argv)
         self.assertNotIn("--skip-git-repo-check", argv)
+
+    def test_resume_argv_with_plan_mode_does_not_pass_sandbox_flag(self) -> None:
+        plan_config = CliRunConfig(
+            binary_path="/usr/bin/codex",
+            cwd="/tmp/workspace",
+            model="gpt-5",
+            permission_mode="plan",
+            disable_color=True,
+        )
+        argv = self.dialect.build_resume_argv("thread-123", "resume prompt", plan_config)
+        self.assertNotIn("--sandbox", argv)
+        self.assertNotIn("-s", argv)
 
     def test_parse_line_turn_failed_emits_error_event(self) -> None:
         events = self.dialect.parse_line('{"type":"turn.failed","message":"Model rejected request"}')

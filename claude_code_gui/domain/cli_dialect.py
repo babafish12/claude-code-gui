@@ -598,6 +598,7 @@ class CodexDialect:
                 config,
                 include_color=True,
                 include_cwd=True,
+                include_sandbox=True,
             )
         )
         argv.append(prompt)
@@ -613,6 +614,7 @@ class CodexDialect:
                 config,
                 include_color=False,
                 include_cwd=False,
+                include_sandbox=False,
             )
         )
         argv.extend([safe_session_id, prompt])
@@ -780,6 +782,49 @@ class CodexDialect:
             parsed_events.append(ParsedEvent(tool=command_payload, raw_type=phase))
             return parsed_events
 
+        if item_type == "file_change":
+            normalized_phase = phase
+            if phase == "item.started":
+                normalized_phase = "started"
+            elif phase == "item.completed":
+                normalized_phase = "completed"
+
+            changes: list[dict[str, str]] = []
+            raw_changes = item.get("changes")
+            if isinstance(raw_changes, list):
+                for entry in raw_changes:
+                    if not isinstance(entry, dict):
+                        continue
+                    path = self._coerce_event_value(
+                        entry.get("path")
+                        or entry.get("file_path")
+                        or entry.get("file")
+                        or entry.get("target")
+                    )
+                    if not path:
+                        continue
+                    kind = self._coerce_event_value(
+                        entry.get("kind")
+                        or entry.get("change_type")
+                        or entry.get("change")
+                        or entry.get("type")
+                    ).lower()
+                    change_entry: dict[str, str] = {"path": path}
+                    if kind:
+                        change_entry["kind"] = kind
+                    changes.append(change_entry)
+
+            file_change_payload: dict[str, Any] = {
+                "type": "file_change",
+                "name": "file_change",
+                "id": self._coerce_event_value(item.get("id")),
+                "status": self._coerce_event_value(item.get("status")),
+                "phase": normalized_phase,
+                "changes": changes,
+            }
+            parsed_events.append(ParsedEvent(tool=file_change_payload, raw_type=phase))
+            return parsed_events
+
         if item_type == "tool_result":
             output = self._coerce_event_value(item.get("output") or item.get("result") or item.get("text"))
             if output:
@@ -870,6 +915,7 @@ class CodexDialect:
         *,
         include_color: bool,
         include_cwd: bool,
+        include_sandbox: bool,
     ) -> list[str]:
         argv: list[str] = []
         output_format = str(config.output_format or "").strip().lower()
@@ -883,7 +929,10 @@ class CodexDialect:
         if model_value:
             argv.extend(["-m", model_value])
 
-        permission_flags = self._permission_flags(config.permission_mode)
+        permission_flags = self._permission_flags(
+            config.permission_mode,
+            include_sandbox=include_sandbox,
+        )
         argv.extend(permission_flags)
 
         if config.supports_reasoning_flag:
@@ -899,17 +948,19 @@ class CodexDialect:
         return argv
 
     @staticmethod
-    def _permission_flags(permission_mode: str) -> list[str]:
+    def _permission_flags(permission_mode: str, *, include_sandbox: bool) -> list[str]:
         normalized = str(permission_mode or "").strip().lower()
 
         if normalized == "auto":
             return ["--full-auto"]
+        if normalized == "ask":
+            return []
         if normalized in {"bypasspermissions", "bypass_permissions", "bypass-permissions"}:
             return ["--dangerously-bypass-approvals-and-sandbox"]
         if normalized == "plan":
-            return ["-s", "read-only"]
+            return ["--sandbox", "read-only"] if include_sandbox else []
         if normalized in {"read-only", "workspace-write", "danger-full-access"}:
-            return ["-s", normalized]
+            return ["--sandbox", normalized] if include_sandbox else []
         return []
 
     @staticmethod
