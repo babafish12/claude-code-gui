@@ -40,6 +40,10 @@ def _extract_models_from_json_payload(payload: object) -> tuple[tuple[str, str],
             raw_items = payload.get(key)
             if raw_items is not None:
                 if isinstance(raw_items, dict):
+                    nested_result = _extract_models_from_json_payload(raw_items)
+                    if nested_result:
+                        return nested_result
+
                     discovered: list[tuple[str, str]] = []
                     for model_name, model_data in raw_items.items():
                         candidate = _normalize_model_value(str(model_name))

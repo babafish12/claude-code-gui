@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import re
+from pathlib import Path
+
+import pytest
 
 from claude_code_gui.assets.chat_template import CHAT_WEBVIEW_HTML
-from pathlib import Path
+
+pytestmark = pytest.mark.unit
 
 
 def _extract_rules(html: str, selector: str) -> list[str]:

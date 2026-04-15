@@ -9,7 +9,11 @@ from __future__ import annotations
 import itertools
 import unittest
 
+import pytest
+
 from claude_code_gui.domain.cli_dialect import ClaudeDialect, CliRunConfig
+
+pytestmark = pytest.mark.unit
 
 
 def _legacy_head_build_argv(prompt: str, config: CliRunConfig) -> list[str]:

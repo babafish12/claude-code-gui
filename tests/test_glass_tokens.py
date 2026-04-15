@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from claude_code_gui.assets.glass_tokens import (
     GLASS_BLUR,
     GLASS_DURATIONS,
@@ -13,6 +15,8 @@ from claude_code_gui.assets.glass_tokens import (
     glass_css_variables_block,
     glass_gtk_define_colors,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_glass_groups_are_populated() -> None:
