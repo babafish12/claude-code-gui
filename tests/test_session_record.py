@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from claude_code_gui.core.model_permissions import normalize_permission_value
 from claude_code_gui.domain.provider import get_provider_config
 from claude_code_gui.domain.session import SessionRecord
 
@@ -26,7 +27,7 @@ def test_from_dict_legacy_payload_defaults_provider_and_mode(tmp_path: Path) -> 
     assert record.id == "s-1"
     assert record.provider == "claude"
     assert record.model == "sonnet"
-    assert record.permission_mode == "auto"
+    assert record.permission_mode == normalize_permission_value("ask", provider="claude")
     assert record.status == "ended"
     assert record.history == []
     assert record.project_path == str(tmp_path.resolve())

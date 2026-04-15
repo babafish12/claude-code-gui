@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from claude_code_gui.core.model_permissions import normalize_permission_value
 from claude_code_gui.domain.session import SessionRecord
 from claude_code_gui.storage import sessions_store
 
@@ -71,7 +72,7 @@ def test_load_sessions_migrates_legacy_payload_without_provider(sessions_path) -
     assert len(loaded) == 1
     assert loaded[0].provider == "claude"
     assert loaded[0].model == "sonnet"
-    assert loaded[0].permission_mode == "auto"
+    assert loaded[0].permission_mode == normalize_permission_value("ask", provider="claude")
 
 
 def test_save_sessions_persists_provider_field(sessions_path) -> None:

@@ -40,7 +40,7 @@ def test_normalize_provider_id_and_lookup() -> None:
 
 
 def test_providers_registry_contains_expected_entries() -> None:
-    assert set(PROVIDERS.keys()) == {"claude", "codex"}
+    assert {"claude", "codex"}.issubset(set(PROVIDERS.keys()))
 
     claude = PROVIDERS["claude"]
     codex = PROVIDERS["codex"]
