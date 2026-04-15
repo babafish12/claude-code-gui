@@ -661,7 +661,10 @@ def on_js_send_message(
         supports_include_partial_messages=active_caps.supports_include_partial_messages,
         stream_json_requires_verbose=window._stream_json_requires_verbose,
         reasoning_level=reasoning_value,
-        supports_reasoning_flag=(active_caps.supports_reasoning_flag or window._active_provider_id == "codex")
+        supports_reasoning_flag=(
+            active_caps.supports_reasoning_flag
+            or window._active_provider_id in {"codex", "gemini"}
+        )
         and window._active_provider.supports_reasoning,
         allowed_tools=list(window._allowed_tools) if window._allowed_tools else None,
         provider_id=window._active_provider_id,

@@ -204,6 +204,68 @@ _BUILTIN_DEFAULT_APP_SETTINGS: dict[str, Any] = {
             ],
             "supports_reasoning": True,
         },
+            "gemini": {
+                "id": "gemini",
+                "name": "Gemini",
+                "icon": "gemini-color.svg",
+            "binary_names": ["gemini"],
+            "colors": {
+                "window_bg": "#1b2030",
+                "header_bg": "#171c2b",
+                "header_gradient_end": "#121625",
+                "sidebar_bg": "#131827",
+                "chat_outer_bg": "#1b2030",
+                "chat_bg": "#1b2030",
+                "status_bg": "#151b29",
+                "bottom_gradient_end": "#121625",
+                "border": "#303b57",
+                "border_soft": "#28324b",
+                "foreground": "#dde5ff",
+                "foreground_muted": "#9ba8cc",
+                "accent": "#4f8cff",
+                "accent_soft": "#7cb7ff",
+                "warning": "#d8b06c",
+                "error": "#db7f79",
+                "success": "#69c9a1",
+                "button_bg": "#1f2536",
+                "button_bg_hover": "#273047",
+                "button_bg_active": "#2f3a55",
+                "new_session_bg": "#202739",
+                "new_session_border": "#2f3b57",
+                "sidebar_toggle_collapsed_bg": "#273149",
+                "menu_bg": "#1a2235",
+                "popover_bg": "#162033",
+                "session_filter_bg": "#202739",
+                "session_filter_hover_bg": "#28324b",
+                "session_filter_active_fg": "#f2f6ff",
+                "session_row_hover_bg": "#253049",
+                "session_row_active_bg": "#2c3752",
+                "status_dot_ended": "#7d89ab",
+                "status_dot_archived": "#5b6580",
+                "context_trough_bg": "#28324b",
+                "session_meta_time": "#b3bfe0",
+            },
+            "accent_rgb": [79, 140, 255],
+            "accent_soft_rgb": [124, 183, 255],
+            "model_options": [
+                {"label": "Auto", "value": "auto"},
+                {"label": "Pro", "value": "pro"},
+                {"label": "Flash", "value": "flash"},
+                {"label": "Flash Lite", "value": "flash-lite"},
+                {"label": "Gemini 3 Pro Preview", "value": "gemini-3-pro-preview"},
+                {"label": "Gemini 3 Flash Preview", "value": "gemini-3-flash-preview"},
+                {"label": "Gemini 2.5 Pro", "value": "gemini-2.5-pro"},
+                {"label": "Gemini 2.5 Flash", "value": "gemini-2.5-flash"},
+                {"label": "Gemini 2.5 Flash Lite", "value": "gemini-2.5-flash-lite"},
+            ],
+            "permission_options": [
+                {"label": "Auto edit", "value": "auto", "is_advanced": False},
+                {"label": "Default (Ask)", "value": "ask", "is_advanced": False},
+                {"label": "Plan mode", "value": "plan", "is_advanced": False},
+                {"label": "YOLO (Advanced)", "value": "bypassPermissions", "is_advanced": True},
+            ],
+            "supports_reasoning": True,
+        },
     },
     "reasoning_options": [
         {
@@ -506,6 +568,8 @@ def _normalize_provider(payload: Any, fallback: dict[str, Any]) -> dict[str, Any
         provider_default_icon = "claude-color.svg"
     elif normalized_provider_id.lower() == "codex":
         provider_default_icon = "codex-white.svg"
+    elif normalized_provider_id.lower() == "gemini":
+        provider_default_icon = "gemini-color.svg"
 
     normalized: dict[str, Any] = {
         "id": _to_text(payload.get("id")) or fallback.get("id", "claude"),
@@ -564,6 +628,16 @@ def _normalize_provider(payload: Any, fallback: dict[str, Any]) -> dict[str, Any
         normalized["icon"] = "codex-white.svg"
     elif icon_name == "⌘" and provider_id_lower == "codex":
         normalized["icon"] = "codex-white.svg"
+    elif provider_id_lower == "gemini" and (
+        (not has_explicit_path and icon_name in {
+            "gemini",
+            "gemini.svg",
+            "gemini-color.svg",
+            "google-gemini.svg",
+        })
+        or (not has_explicit_path and icon_name.startswith("gemini"))
+    ):
+        normalized["icon"] = "gemini-color.svg"
 
     return normalized
 
@@ -574,7 +648,7 @@ def _normalize_settings(payload: Any) -> dict[str, Any]:
 
     fallback = get_default_settings()
     raw_providers = payload.get("providers")
-    normalized_providers: dict[str, dict[str, Any]] = {}
+    normalized_providers: dict[str, dict[str, Any]] = copy.deepcopy(fallback["providers"])
     if isinstance(raw_providers, dict):
         for key, value in raw_providers.items():
             if not key:
@@ -585,14 +659,18 @@ def _normalize_settings(payload: Any) -> dict[str, Any]:
                 continue
             normalized_providers[provider_id] = _normalize_provider(value, fallback_provider)
 
-    if not normalized_providers:
-        normalized_providers = copy.deepcopy(fallback["providers"])
-
     preferred_provider_id = _to_text(payload.get("active_provider_id")).lower()
     if not preferred_provider_id:
         preferred_provider_id = _to_text(fallback.get("active_provider_id")).lower()
     if preferred_provider_id not in normalized_providers:
-        preferred_provider_id = next(iter(normalized_providers.keys()))
+        if isinstance(raw_providers, dict):
+            for key in raw_providers.keys():
+                candidate = _to_text(key).lower()
+                if candidate in normalized_providers:
+                    preferred_provider_id = candidate
+                    break
+        if preferred_provider_id not in normalized_providers:
+            preferred_provider_id = next(iter(normalized_providers.keys()))
 
     return {
         "providers": normalized_providers,

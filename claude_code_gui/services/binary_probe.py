@@ -259,6 +259,16 @@ def _is_probable_model_value(value: str, *, provider: str = "claude") -> bool:
         if normalized.startswith("o") and len(normalized) > 1 and normalized[1].isdigit():
             return True
         return False
+    if provider == "gemini":
+        if normalized in {"auto", "pro", "flash", "flash-lite"}:
+            return True
+        if normalized.startswith("gemini-"):
+            return True
+        if normalized.startswith("models/"):
+            return True
+        if normalized.startswith("learnlm-"):
+            return True
+        return False
     return True
 
 
@@ -297,6 +307,15 @@ def detect_provider_model_options(binary_path: str, provider_id: str) -> tuple[t
         _add_command([binary_path, "exec", "--help"])
         _add_command([binary_path, "help", "exec"])
         _add_command([binary_path, "features", "--help"])
+        _add_command([binary_path, "help"])
+    elif provider == "gemini":
+        _add_command([binary_path, "models"])
+        _add_command([binary_path, "models", "--json"])
+        _add_command([binary_path, "model", "list"])
+        _add_command([binary_path, "model", "list", "--json"])
+        _add_command([binary_path, "list", "models"])
+        _add_command([binary_path, "list", "models", "--json"])
+        _add_command([binary_path, "--help"])
         _add_command([binary_path, "help"])
     else:
         _add_command([binary_path, "model", "list"])
@@ -419,6 +438,7 @@ def detect_cli_flag_support(binary_path: str) -> CliCapabilities:
     caps = CliCapabilities()
     binary_name = Path(binary_path).name.lower()
     is_codex = binary_name == "codex"
+    is_gemini = binary_name == "gemini"
     try:
         result = subprocess.run(
             [binary_path, "--help"],
@@ -465,6 +485,16 @@ def detect_cli_flag_support(binary_path: str) -> CliCapabilities:
             or "-a" in output
             or caps.supports_permission_flag
         )
+    if is_gemini:
+        caps.supports_permission_flag = (
+            "--approval-mode" in output
+            or "--yolo" in output
+            or "--sandbox" in output
+            or caps.supports_permission_flag
+        )
+        # Gemini currently exposes thinking controls via settings/model aliases,
+        # not via a dedicated CLI reasoning flag.
+        caps.supports_reasoning_flag = False
     caps.supports_output_format_flag = "--output-format" in output or "output format" in output
     caps.supports_stream_json = "stream-json" in output
     caps.supports_json = '"json"' in output or "--json" in output or " json " in output

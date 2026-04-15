@@ -465,6 +465,28 @@ button.settings-preset-button {{
     font-weight: 700;
 }}
 
+.provider-selector-row {{
+    margin-top: 2px;
+    margin-bottom: 2px;
+}}
+
+.provider-select-button {{
+    min-height: 30px;
+    padding: 0 9px;
+    border-radius: {GLASS_RADII["pill"]}px;
+}}
+
+.provider-select-button label {{
+    font-size: 10px;
+    font-weight: 700;
+}}
+
+.provider-select-button.provider-select-button-active {{
+    color: {FOREGROUND};
+    border-color: {ACCENT_SOFT};
+    background: {ACCENT_RGBA_018};
+}}
+
 .provider-switch-button:hover {{
     border-color: {ACCENT_SOFT};
     background: @glass_tint_interactive;

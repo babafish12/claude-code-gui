@@ -261,6 +261,16 @@ def _coerce_provider(
         or icon_name.startswith("codex-text")
     ):
         icon = "codex-white.svg"
+    elif provider_id == "gemini" and (
+        (not has_explicit_path and icon_name in {
+            "gemini",
+            "gemini.svg",
+            "gemini-color.svg",
+            "google-gemini.svg",
+        })
+        or (not has_explicit_path and icon_name.startswith("gemini"))
+    ):
+        icon = "gemini-color.svg"
     if not icon:
         icon = str(fallback_payload.get("icon", "")).strip()
 

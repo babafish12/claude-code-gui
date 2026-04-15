@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from claude_code_gui.domain.cli_dialect import ClaudeDialect, CliRunConfig, CodexDialect
+from claude_code_gui.domain.cli_dialect import ClaudeDialect, CliRunConfig, CodexDialect, GeminiDialect
 
 pytestmark = pytest.mark.unit
 
@@ -304,3 +304,53 @@ def test_codex_parse_line_error_fallback_message() -> None:
     events = dialect.parse_line(json.dumps({"type": "fatal"}))
 
     assert [event.error for event in events if event.error] == ["Codex returned an error event."]
+
+
+def test_gemini_build_argv_maps_permission_and_reasoning() -> None:
+    dialect = GeminiDialect()
+    config = CliRunConfig(
+        binary_path="/usr/bin/gemini",
+        cwd="/tmp/work",
+        model="auto",
+        permission_mode="bypassPermissions",
+        reasoning_level="high",
+        output_format="stream-json",
+        supports_model_flag=True,
+        supports_permission_flag=True,
+        supports_output_format_flag=True,
+        supports_reasoning_flag=True,
+    )
+
+    argv = dialect.build_argv("run", config)
+
+    assert argv[:3] == ["/usr/bin/gemini", "--output-format", "stream-json"]
+    assert "--model" in argv
+    assert "pro" in argv
+    assert "--approval-mode" in argv
+    assert "yolo" in argv
+    assert argv[-2:] == ["-p", "run"]
+
+
+def test_gemini_parse_line_init_and_assistant_message() -> None:
+    dialect = GeminiDialect()
+    init_events = dialect.parse_line(
+        json.dumps(
+            {
+                "type": "init",
+                "session_id": "sess-1",
+                "model": "flash",
+            }
+        )
+    )
+    assert [event.session_id for event in init_events if event.session_id] == ["sess-1"]
+
+    message_events = dialect.parse_line(
+        json.dumps(
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": "Hello from Gemini",
+            }
+        )
+    )
+    assert [event.text for event in message_events if event.text] == ["Hello from Gemini"]

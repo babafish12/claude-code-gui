@@ -3349,9 +3349,9 @@ body.reduced-motion *::after {
     ];
 
     const DEFAULT_SLASH_COMMANDS = [
-        { name: "/agent", icon: "\u25A7", description: "Main chat: one-shot worker (/agent <task>) + pane controls", providers: ["claude", "codex"] },
-        { name: "/help", icon: "?", description: "Show available commands and usage tips", providers: ["claude", "codex"] },
-        { name: "/clear", icon: "\u2716", description: "Clear the current conversation", providers: ["claude", "codex"] },
+        { name: "/agent", icon: "\u25A7", description: "Main chat: one-shot worker (/agent <task>) + pane controls", providers: ["claude", "codex", "gemini"] },
+        { name: "/help", icon: "?", description: "Show available commands and usage tips", providers: ["claude", "codex", "gemini"] },
+        { name: "/clear", icon: "\u2716", description: "Clear the current conversation", providers: ["claude", "codex", "gemini"] },
         { name: "/compact", icon: "\u25A3", description: "Compact conversation to save context", providers: ["claude"] },
         { name: "/cost", icon: "$", description: "Show token usage and cost for this session", providers: ["claude"] },
         { name: "/doctor", icon: "\u2695", description: "Check CLI installation health", providers: ["claude"] },
@@ -3359,10 +3359,10 @@ body.reduced-motion *::after {
         { name: "/login", icon: "\u2192", description: "Switch Anthropic accounts", providers: ["claude"] },
         { name: "/logout", icon: "\u2190", description: "Sign out from your Anthropic account", providers: ["claude"] },
         { name: "/memory", icon: "\u2601", description: "Edit CLAUDE.md memory files", providers: ["claude"] },
-        { name: "/model", icon: "\u269B", description: "Switch the AI model", providers: ["claude", "codex"] },
+        { name: "/model", icon: "\u269B", description: "Switch the AI model", providers: ["claude", "codex", "gemini"] },
         { name: "/permissions", icon: "\u26A0", description: "View or update tool permissions", providers: ["claude"] },
-        { name: "/pr-review", icon: "\u2714", description: "Review a GitHub pull request", providers: ["claude", "codex"] },
-        { name: "/review", icon: "\u2606", description: "Review code changes", providers: ["claude", "codex"] },
+        { name: "/pr-review", icon: "\u2714", description: "Review a GitHub pull request", providers: ["claude", "codex", "gemini"] },
+        { name: "/review", icon: "\u2606", description: "Review code changes", providers: ["claude", "codex", "gemini"] },
         { name: "/status", icon: "\u2139", description: "Show session and git status", providers: ["claude"] },
         { name: "/terminal-setup", icon: "\u2328", description: "Install Shift+Enter key binding", providers: ["claude"] },
         { name: "/vim", icon: "V", description: "Toggle vim mode for input", providers: ["claude"] },
@@ -3377,6 +3377,11 @@ body.reduced-motion *::after {
             "Implement feature Y",
             "Debug this error",
             "Run the test suite",
+        ],
+        gemini: [
+            "Plan this implementation",
+            "Review this diff",
+            "Debug this failing test",
         ],
     });
     var HOST_SLASH_COMMANDS = [];
@@ -8763,16 +8768,16 @@ var GLASS_BUTTON_SELECTOR = [
 
     function normalizeCommandProviders(rawProviders) {
         if (!Array.isArray(rawProviders)) {
-            return ["claude", "codex"];
+            return ["claude", "codex", "gemini"];
         }
         var normalized = [];
         rawProviders.forEach(function (entry) {
             var provider = String(entry || "").trim().toLowerCase();
-            if ((provider === "claude" || provider === "codex") && normalized.indexOf(provider) === -1) {
+            if ((provider === "claude" || provider === "codex" || provider === "gemini") && normalized.indexOf(provider) === -1) {
                 normalized.push(provider);
             }
         });
-        return normalized.length ? normalized : ["claude", "codex"];
+        return normalized.length ? normalized : ["claude", "codex", "gemini"];
     }
 
     function allSlashCommands() {

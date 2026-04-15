@@ -277,9 +277,8 @@ class ClaudeCodeWindow(Gtk.Window):
 
         self._sidebar_container: Gtk.Box | None = None
         self._sidebar_toggle_button: Gtk.Button | None = None
-        self._provider_toggle_button: Gtk.Button | None = None
-        self._provider_toggle_button_icon: Gtk.Image | None = None
-        self._provider_toggle_button_label: Gtk.Label | None = None
+        self._provider_button_row: Gtk.Box | None = None
+        self._provider_buttons: dict[str, Gtk.Button] = {}
         self._settings_button: Gtk.Button | None = None
         self._sidebar_current_width = float(SIDEBAR_OPEN_WIDTH)
         self._sidebar_expanded = True
@@ -781,6 +780,16 @@ class ClaudeCodeWindow(Gtk.Window):
                 or icon_name.startswith("codex-text")
             ):
                 icon_value = "codex-white.svg"
+            elif provider_key == "gemini" and (
+                icon_value_lower in {
+                    "gemini",
+                    "gemini.svg",
+                    "gemini-color.svg",
+                    "google-gemini.svg",
+                }
+                or icon_name.startswith("gemini")
+            ):
+                icon_value = "gemini-color.svg"
 
         icon_candidates: list[Path] = []
         if icon_value:
@@ -804,6 +813,14 @@ class ClaudeCodeWindow(Gtk.Window):
                     Path("codex-color.svg"),
                     Path("codex.svg"),
                     Path("codex.webp"),
+                ],
+            )
+        elif provider_key == "gemini":
+            icon_candidates.extend(
+                [
+                    Path("gemini-color.svg"),
+                    Path("gemini.svg"),
+                    Path("google-gemini.svg"),
                 ],
             )
         else:
@@ -873,6 +890,11 @@ class ClaudeCodeWindow(Gtk.Window):
                     return preferred
         if provider_key == "codex":
             for name in ("codex-switch.svg", "codex.svg", "codex-white.svg", "codex-text.svg", "codex-color.svg"):
+                preferred = _ICONS_DIR / name
+                if preferred.exists() and preferred.is_file():
+                    return preferred
+        if provider_key == "gemini":
+            for name in ("gemini-switch.svg", "gemini-color.svg", "gemini.svg", "google-gemini.svg"):
                 preferred = _ICONS_DIR / name
                 if preferred.exists() and preferred.is_file():
                     return preferred
@@ -2728,26 +2750,6 @@ class ClaudeCodeWindow(Gtk.Window):
         sidebar_top.pack_start(toggle_button, False, False, 0)
         self._sidebar_toggle_button = toggle_button
 
-        provider_button = Gtk.Button()
-        provider_button.set_relief(Gtk.ReliefStyle.NONE)
-        provider_button.set_halign(Gtk.Align.START)
-        provider_button.get_style_context().add_class("provider-switch-button")
-        provider_button._drag_blocker = True
-        provider_button.connect("clicked", self._on_provider_toggle_clicked)
-        provider_button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        provider_button_icon = Gtk.Image()
-        provider_button_icon.set_pixel_size(16)
-        provider_button_icon.get_style_context().add_class("provider-switch-icon")
-        provider_button_label = Gtk.Label(label="")
-        provider_button_label.set_xalign(0.0)
-        provider_button_box.pack_start(provider_button_icon, False, False, 0)
-        provider_button_box.pack_start(provider_button_label, False, False, 0)
-        provider_button.add(provider_button_box)
-        self._provider_toggle_button_icon = provider_button_icon
-        self._provider_toggle_button_label = provider_button_label
-        sidebar_top.pack_start(provider_button, False, False, 0)
-        self._provider_toggle_button = provider_button
-
         settings_button = Gtk.Button(label="Settings")
         settings_button.set_relief(Gtk.ReliefStyle.NONE)
         settings_button.set_halign(Gtk.Align.START)
@@ -2768,11 +2770,73 @@ class ClaudeCodeWindow(Gtk.Window):
         sidebar_top.pack_start(new_session_button, True, True, 0)
         sidebar.pack_start(sidebar_top, False, False, 0)
 
+        provider_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        provider_row.get_style_context().add_class("provider-selector-row")
+        provider_row.set_hexpand(True)
+        self._provider_button_row = provider_row
+        sidebar.pack_start(provider_row, False, False, 0)
+
+        self._provider_buttons = {}
+        for provider_id in self._provider_display_order():
+            provider = PROVIDERS.get(provider_id)
+            if provider is None:
+                continue
+            button = Gtk.Button()
+            button.set_relief(Gtk.ReliefStyle.NONE)
+            button.set_halign(Gtk.Align.FILL)
+            button.set_hexpand(True)
+            button.get_style_context().add_class("provider-switch-button")
+            button.get_style_context().add_class("provider-select-button")
+            button._drag_blocker = True
+            button.connect("clicked", self._on_provider_button_clicked, provider_id)
+
+            button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            icon = Gtk.Image()
+            icon.set_pixel_size(16)
+            icon.get_style_context().add_class("provider-switch-icon")
+            icon_path = self._provider_switch_icon_path(provider_id)
+            if icon_path is not None:
+                icon.set_from_file(str(icon_path))
+            label = Gtk.Label(label=provider.name)
+            label.set_xalign(0.0)
+            button_box.pack_start(icon, False, False, 0)
+            button_box.pack_start(label, False, False, 0)
+            button.add(button_box)
+
+            provider_row.pack_start(button, True, True, 0)
+            self._provider_buttons[provider_id] = button
+
         sessions_title = Gtk.Label(label="Sessions (0)")
         sessions_title.set_xalign(0.0)
         sessions_title.get_style_context().add_class("sidebar-section-title")
         sidebar.pack_start(sessions_title, False, False, 0)
         self._sessions_title_label = sessions_title
+
+        search_entry = Gtk.Entry()
+        search_entry.set_placeholder_text("Search sessions")
+        search_entry.get_style_context().add_class("session-search-entry")
+        search_entry.connect("changed", self._on_session_search_changed)
+        sidebar.pack_start(search_entry, False, False, 0)
+        self._session_search_entry = search_entry
+
+        session_scroll = Gtk.ScrolledWindow()
+        session_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        session_scroll.set_shadow_type(Gtk.ShadowType.NONE)
+        session_scroll.get_style_context().add_class("session-scroll")
+        session_scroll.set_vexpand(True)
+        sidebar.pack_start(session_scroll, True, True, 0)
+
+        session_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        session_list.get_style_context().add_class("session-list")
+        session_scroll.add(session_list)
+        self._session_list_box = session_list
+
+        empty = Gtk.Label(label="No chats yet. Click + New Chat.")
+        empty.set_line_wrap(True)
+        empty.set_xalign(0.0)
+        empty.get_style_context().add_class("session-empty")
+        session_list.pack_start(empty, False, False, 0)
+        self._session_empty_label = empty
 
         bulk_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         bulk_row.get_style_context().add_class("session-filter-row")
@@ -2813,40 +2877,15 @@ class ClaudeCodeWindow(Gtk.Window):
             filter_row.pack_start(button, False, False, 0)
             self._session_filter_buttons[key] = button
 
-        search_entry = Gtk.Entry()
-        search_entry.set_placeholder_text("Search sessions")
-        search_entry.get_style_context().add_class("session-search-entry")
-        search_entry.connect("changed", self._on_session_search_changed)
-        sidebar.pack_start(search_entry, False, False, 0)
-        self._session_search_entry = search_entry
-
-        session_scroll = Gtk.ScrolledWindow()
-        session_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        session_scroll.set_shadow_type(Gtk.ShadowType.NONE)
-        session_scroll.get_style_context().add_class("session-scroll")
-        session_scroll.set_vexpand(True)
-        sidebar.pack_start(session_scroll, True, True, 0)
-
-        session_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        session_list.get_style_context().add_class("session-list")
-        session_scroll.add(session_list)
-        self._session_list_box = session_list
-
-        empty = Gtk.Label(label="No chats yet. Click + New Chat.")
-        empty.set_line_wrap(True)
-        empty.set_xalign(0.0)
-        empty.get_style_context().add_class("session-empty")
-        session_list.pack_start(empty, False, False, 0)
-        self._session_empty_label = empty
-
         self._update_session_filter_buttons()
         self._sidebar_expanded_only_widgets = [
+            provider_row,
             new_session_button,
             sessions_title,
-            bulk_row,
-            filter_row,
             search_entry,
             session_scroll,
+            bulk_row,
+            filter_row,
         ]
         self._update_session_bulk_actions()
         self._update_sidebar_toggle_button()
@@ -3648,6 +3687,8 @@ class ClaudeCodeWindow(Gtk.Window):
             (Path.home() / ".claude" / "commands", ("claude",)),
             (project_root / ".codex" / "commands", ("codex",)),
             (codex_home / "commands", ("codex",)),
+            (project_root / ".gemini" / "commands", ("gemini",)),
+            (Path.home() / ".gemini" / "commands", ("gemini",)),
             (project_root / ".agents" / "commands", all_provider_ids),
             (Path.home() / ".agents" / "commands", all_provider_ids),
         ]
@@ -3673,6 +3714,8 @@ class ClaudeCodeWindow(Gtk.Window):
             (Path.home() / ".agents" / "skills", all_provider_ids),
             (project_root / ".codex" / "skills", ("codex",)),
             (codex_home / "skills", ("codex",)),
+            (project_root / ".gemini" / "skills", ("gemini",)),
+            (Path.home() / ".gemini" / "skills", ("gemini",)),
             (project_root / ".claude" / "skills", ("claude",)),
             (Path.home() / ".claude" / "skills", ("claude",)),
         ]
@@ -5154,18 +5197,16 @@ class ClaudeCodeWindow(Gtk.Window):
         self._sync_agent_mode_to_webviews()
 
     @staticmethod
-    def _provider_order() -> list[str]:
-        return list(PROVIDERS.keys())
-
-    def _next_provider_id(self) -> str | None:
-        ordered = self._provider_order()
-        if len(ordered) <= 1:
-            return None
-        try:
-            current_index = ordered.index(self._active_provider_id)
-        except ValueError:
-            return ordered[0]
-        return ordered[(current_index + 1) % len(ordered)]
+    def _provider_display_order() -> list[str]:
+        preferred = ["claude", "codex", "gemini"]
+        ordered: list[str] = []
+        for provider_id in preferred:
+            if provider_id in PROVIDERS and provider_id not in ordered:
+                ordered.append(provider_id)
+        for provider_id in PROVIDERS.keys():
+            if provider_id not in ordered:
+                ordered.append(provider_id)
+        return ordered
 
     def _provider_unavailability_reason(
         self,
@@ -5208,49 +5249,37 @@ class ClaudeCodeWindow(Gtk.Window):
         dialog.destroy()
 
     def _update_provider_toggle_button(self) -> None:
-        if self._provider_toggle_button is None:
+        if not self._provider_buttons:
             return
 
-        active_provider = PROVIDERS[normalize_provider_id(self._active_provider_id)]
-        next_provider_id = self._next_provider_id()
-        display_provider = active_provider
-        if next_provider_id is not None:
-            display_provider = PROVIDERS[normalize_provider_id(next_provider_id)]
+        active_provider_id = normalize_provider_id(self._active_provider_id)
+        for provider_id, button in self._provider_buttons.items():
+            normalized = normalize_provider_id(provider_id)
+            context = button.get_style_context()
+            context.remove_class("provider-select-button-active")
+            if normalized == active_provider_id:
+                context.add_class("provider-select-button-active")
+                button.set_sensitive(True)
+                button.set_tooltip_text(f"{self._provider_display_name(normalized)} (active)")
+                continue
 
-        icon_path = self._provider_switch_icon_path(display_provider.id)
-        if self._provider_toggle_button_icon is not None and self._provider_toggle_button_label is not None:
-            if icon_path is None:
-                self._provider_toggle_button_icon.set_visible(False)
-                self._provider_toggle_button_label.set_text(display_provider.name)
+            reason = self._provider_unavailability_reason(
+                normalized,
+                refresh_binary=True,
+                check_auth=True,
+            )
+            if reason is None:
+                button.set_sensitive(True)
+                button.set_tooltip_text(f"Switch to {self._provider_display_name(normalized)}")
             else:
-                self._provider_toggle_button_icon.set_from_file(str(icon_path))
-                self._provider_toggle_button_icon.set_pixel_size(16)
-                self._provider_toggle_button_icon.set_visible(True)
-                self._provider_toggle_button_label.set_text(display_provider.name)
-        if next_provider_id is None:
-            self._provider_toggle_button.set_sensitive(False)
-            self._provider_toggle_button.set_tooltip_text("No additional providers available")
-            return
+                button.set_sensitive(False)
+                button.set_tooltip_text(reason)
 
-        reason = self._provider_unavailability_reason(
-            next_provider_id,
-            refresh_binary=True,
-            check_auth=True,
-        )
-        if reason is None:
-            next_provider_name = self._provider_display_name(next_provider_id)
-            self._provider_toggle_button.set_sensitive(True)
-            self._provider_toggle_button.set_tooltip_text(f"Switch to {next_provider_name}")
+    def _on_provider_button_clicked(self, _button: Gtk.Button, provider_id: str) -> None:
+        normalized_provider_id = normalize_provider_id(provider_id)
+        if normalized_provider_id == self._active_provider_id:
             return
-
-        self._provider_toggle_button.set_sensitive(False)
-        self._provider_toggle_button.set_tooltip_text(reason)
-
-    def _on_provider_toggle_clicked(self, _button: Gtk.Button) -> None:
-        next_provider_id = self._next_provider_id()
-        if next_provider_id is None:
-            return
-        self._switch_provider(next_provider_id)
+        self._switch_provider(normalized_provider_id)
 
     def _provider_theme_variables(self, provider: ProviderConfig) -> dict[str, str]:
         accent_r, accent_g, accent_b = provider.accent_rgb

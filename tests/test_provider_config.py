@@ -40,17 +40,20 @@ def test_normalize_provider_id_and_lookup() -> None:
 
 
 def test_providers_registry_contains_expected_entries() -> None:
-    assert {"claude", "codex"}.issubset(set(PROVIDERS.keys()))
+    assert {"claude", "codex", "gemini"}.issubset(set(PROVIDERS.keys()))
 
     claude = PROVIDERS["claude"]
     codex = PROVIDERS["codex"]
+    gemini = PROVIDERS["gemini"]
 
     assert claude.binary_names == ("claude", "claude-code")
     assert codex.binary_names == ("codex",)
+    assert gemini.binary_names == ("gemini",)
     assert claude.supports_reasoning is True
     assert codex.supports_reasoning is True
+    assert gemini.supports_reasoning is True
 
-    for config in (claude, codex):
+    for config in (claude, codex, gemini):
         assert config.model_options
         assert config.permission_options
         assert "accent" in config.colors

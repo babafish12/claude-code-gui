@@ -46,12 +46,15 @@ def _build_config(*, provider_id: str = "claude", supports_reasoning_flag: bool 
     )
 
 
-def test_mode_attempts_and_cli_run_config_for_codex_and_claude() -> None:
+def test_mode_attempts_and_cli_run_config_for_codex_claude_and_gemini() -> None:
     codex_attempts = ClaudeProcess._build_mode_attempts(_build_config(provider_id="codex", supports_reasoning_flag=True))
     assert codex_attempts == [("stream-json", True), ("stream-json", False), ("text", False)]
 
     claude_attempts = ClaudeProcess._build_mode_attempts(_build_config(provider_id="claude", supports_reasoning_flag=True))
     assert claude_attempts == [("stream-json", True), ("json", True), ("text", True)]
+
+    gemini_attempts = ClaudeProcess._build_mode_attempts(_build_config(provider_id="gemini", supports_reasoning_flag=True))
+    assert gemini_attempts == [("stream-json", True), ("json", True), ("text", True)]
 
     codex_cli = ClaudeProcess._build_cli_run_config(
         _build_config(provider_id="codex", supports_reasoning_flag=True),
@@ -63,6 +66,7 @@ def test_mode_attempts_and_cli_run_config_for_codex_and_claude() -> None:
     assert codex_cli.supports_output_format_flag is True
     assert codex_cli.supports_reasoning_flag is False
     assert codex_cli.allowed_tools == ["Bash"]
+    assert ClaudeProcess._provider_label("gemini") == "Gemini"
 
 
 def test_parse_json_and_text_choice_helpers() -> None:

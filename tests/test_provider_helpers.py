@@ -102,9 +102,15 @@ def test_provider_color_and_icon_normalization() -> None:
         provider_id="codex",
         discovered_models={},
     )
+    gemini = provider._coerce_provider(
+        payload={"id": "gemini", "name": "Gemini", "icon": "gemini.svg"},
+        provider_id="gemini",
+        discovered_models={},
+    )
 
     assert claude.icon == "claude-color.svg"
     assert codex.icon == "codex-white.svg"
+    assert gemini.icon == "gemini-color.svg"
 
 
 def test_refresh_provider_registry_applies_discovered_models() -> None:
@@ -122,4 +128,3 @@ def test_refresh_provider_registry_applies_discovered_models() -> None:
         provider._DISCOVERED_MODEL_OPTIONS.update(original_discovered)
         provider.PROVIDERS.clear()
         provider.PROVIDERS.update(original_providers)
-

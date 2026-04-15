@@ -126,6 +126,19 @@ def test_normalize_provider_and_settings_icon_and_provider_selection() -> None:
     assert normalized_provider["binary_names"] == ["codex"]
     assert normalized_provider["supports_reasoning"] is False
 
+    gemini_fallback = copy.deepcopy(app_settings.DEFAULT_APP_SETTINGS["providers"]["gemini"])
+    normalized_gemini_provider = app_settings._normalize_provider(
+        {
+            "id": "gemini",
+            "name": "Gemini",
+            "icon": "gemini.svg",
+            "binary_names": [" gemini ", ""],
+        },
+        gemini_fallback,
+    )
+    assert normalized_gemini_provider["icon"] == "gemini-color.svg"
+    assert normalized_gemini_provider["binary_names"] == ["gemini"]
+
     normalized_settings = app_settings._normalize_settings(
         {
             "providers": {"codex": {"id": "codex", "name": "Codex", "icon": "⌘"}},
@@ -136,6 +149,7 @@ def test_normalize_provider_and_settings_icon_and_provider_selection() -> None:
     )
     assert normalized_settings["active_provider_id"] == "codex"
     assert normalized_settings["providers"]["codex"]["icon"] == "codex-white.svg"
+    assert "gemini" in normalized_settings["providers"]
     assert normalized_settings["stream_render_throttle_ms"] == 1500
     assert normalized_settings["reasoning_options"][0]["value"] == "low"
 
@@ -167,4 +181,3 @@ def test_load_default_app_settings_falls_back_to_builtin(tmp_path, monkeypatch: 
     defaults = app_settings._load_default_app_settings()
     assert "providers" in defaults
     assert "claude" in defaults["providers"]
-

@@ -588,6 +588,313 @@ class ClaudeDialect:
         return merged
 
 
+class GeminiDialect:
+    """Gemini argv builder + stream parser for headless JSON/stream-json events."""
+
+    def build_argv(self, prompt: str, config: CliRunConfig) -> list[str]:
+        argv = [config.binary_path]
+        argv.extend(self._build_common_flags(config))
+        argv.extend(["-p", prompt])
+        return argv
+
+    def build_resume_argv(self, session_id: str, prompt: str, config: CliRunConfig) -> list[str]:
+        argv = [config.binary_path]
+        argv.extend(self._build_common_flags(config))
+        safe_session_id = _sanitize_session_id(session_id)
+        if safe_session_id:
+            argv.extend(["--resume", safe_session_id])
+        argv.extend(["-p", prompt])
+        return argv
+
+    def parse_line(self, line: str) -> list[ParsedEvent]:
+        event = self._parse_json_line(line.strip())
+        if event is None:
+            return []
+        return self._parse_event(event)
+
+    def _parse_event(self, event: dict[str, Any]) -> list[ParsedEvent]:
+        parsed_events: list[ParsedEvent] = []
+        event_type = str(event.get("type") or "").strip().lower()
+
+        if event_type == "stream_event":
+            nested = event.get("event")
+            if isinstance(nested, dict):
+                return self._parse_event(nested)
+            return parsed_events
+
+        session_id = self._coerce_text(
+            event.get("session_id")
+            or event.get("sessionId")
+            or event.get("session")
+            or event.get("id")
+        )
+
+        if event_type == "init":
+            if session_id:
+                parsed_events.append(ParsedEvent(session_id=session_id, raw_type=event_type))
+            return parsed_events
+
+        if event_type == "message":
+            role = self._coerce_text(event.get("role")).lower()
+            text = self._extract_text_payload(
+                event.get("content")
+                or event.get("text")
+                or event.get("message")
+            )
+            if session_id:
+                parsed_events.append(ParsedEvent(session_id=session_id, raw_type=event_type))
+            if role == "assistant" and text:
+                parsed_events.append(ParsedEvent(text=text, raw_type=event_type))
+            elif role not in {"user", "assistant"} and text:
+                parsed_events.append(ParsedEvent(text=text, raw_type=event_type))
+            return parsed_events
+
+        if event_type in {"tool_call", "tool_use", "tool", "function_call"}:
+            tool_payload = self._parse_tool_payload(event)
+            if tool_payload is not None:
+                parsed_events.append(ParsedEvent(tool=tool_payload, raw_type=event_type))
+            return parsed_events
+
+        if event_type in {"tool_output", "tool_result"}:
+            tool_payload = self._parse_tool_output_payload(event)
+            if tool_payload is not None:
+                parsed_events.append(ParsedEvent(tool=tool_payload, raw_type=event_type))
+            return parsed_events
+
+        if event_type in {"error", "fatal"}:
+            error_text = self._extract_text_payload(
+                event.get("error")
+                or event.get("message")
+                or event.get("content")
+                or event.get("result")
+            ) or "Gemini returned an error event."
+            parsed_events.append(ParsedEvent(error=error_text, raw_type=event_type))
+            return parsed_events
+
+        if event_type in {"done", "result", "complete", "completed"}:
+            if session_id:
+                parsed_events.append(ParsedEvent(session_id=session_id, raw_type=event_type))
+            usage = self._extract_usage_payload(event.get("usage"))
+            if usage is not None:
+                parsed_events.append(ParsedEvent(usage=usage, raw_type=event_type))
+
+            status_text = self._coerce_text(event.get("status")).lower()
+            result_text = self._extract_text_payload(
+                event.get("result")
+                or event.get("message")
+                or event.get("content")
+                or event.get("text")
+            )
+            if status_text in {"error", "failed", "failure"}:
+                parsed_events.append(
+                    ParsedEvent(
+                        error=result_text or "Gemini reported an unsuccessful completion.",
+                        raw_type=event_type,
+                    )
+                )
+            elif result_text:
+                parsed_events.append(ParsedEvent(text=result_text, raw_type=event_type))
+            return parsed_events
+
+        if session_id:
+            parsed_events.append(ParsedEvent(session_id=session_id, raw_type=event_type or "event"))
+
+        fallback_text = self._extract_text_payload(event)
+        if fallback_text:
+            parsed_events.append(ParsedEvent(text=fallback_text, raw_type=event_type or "event"))
+        return parsed_events
+
+    @staticmethod
+    def _extract_usage_payload(raw_usage: Any) -> dict[str, Any] | None:
+        if not isinstance(raw_usage, dict):
+            return None
+
+        def _to_int(value: Any) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+
+        usage_payload = {
+            "input_tokens": _to_int(raw_usage.get("input_tokens") or raw_usage.get("inputTokens")),
+            "cached_input_tokens": _to_int(
+                raw_usage.get("cached_input_tokens")
+                or raw_usage.get("cachedInputTokens")
+            ),
+            "output_tokens": _to_int(raw_usage.get("output_tokens") or raw_usage.get("outputTokens")),
+        }
+        return usage_payload
+
+    def _parse_tool_payload(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        tool_name = self._coerce_text(
+            event.get("tool")
+            or event.get("tool_name")
+            or event.get("name")
+            or event.get("function")
+        ) or "tool"
+        raw_input = event.get("args") or event.get("arguments") or event.get("input")
+        tool_input = raw_input if isinstance(raw_input, dict) else {}
+
+        payload: dict[str, Any] = {"name": tool_name}
+
+        tool_use_id = self._coerce_text(
+            event.get("tool_use_id")
+            or event.get("toolUseId")
+            or event.get("id")
+        )
+        if tool_use_id:
+            payload["toolUseId"] = tool_use_id
+
+        command = self._coerce_text(tool_input.get("command") or event.get("command"))
+        if command:
+            payload["command"] = command[:400]
+
+        path = self._coerce_text(
+            tool_input.get("path")
+            or tool_input.get("file_path")
+            or tool_input.get("file")
+            or event.get("path")
+            or event.get("file_path")
+        )
+        if path:
+            payload["path"] = path
+
+        description = self._extract_text_payload(event.get("description") or tool_input.get("description"))
+        if description:
+            payload["description"] = description[:400]
+
+        return payload if payload else None
+
+    def _parse_tool_output_payload(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        tool_name = self._coerce_text(event.get("tool") or event.get("tool_name") or "tool_result")
+        output = self._extract_text_payload(
+            event.get("output")
+            or event.get("result")
+            or event.get("content")
+            or event.get("message")
+        )
+        if not output:
+            return None
+
+        payload: dict[str, Any] = {
+            "name": tool_name,
+            "output": output[:12000],
+        }
+        tool_use_id = self._coerce_text(
+            event.get("tool_use_id")
+            or event.get("toolUseId")
+            or event.get("id")
+        )
+        if tool_use_id:
+            payload["toolUseId"] = tool_use_id
+        return payload
+
+    def _build_common_flags(self, config: CliRunConfig) -> list[str]:
+        argv: list[str] = []
+        output_mode = str(config.output_format or "").strip().lower()
+        if config.supports_output_format_flag and output_mode in {"text", "json", "stream-json"}:
+            argv.extend(["--output-format", output_mode])
+
+        model_value = _sanitize_cli_token(config.model) or "auto"
+        if config.supports_reasoning_flag and model_value == "auto":
+            model_value = self._model_alias_for_reasoning(config.reasoning_level)
+        if config.supports_model_flag and model_value:
+            argv.extend(["--model", model_value])
+
+        if config.supports_permission_flag:
+            argv.extend(["--approval-mode", self._approval_mode_for_permission(config.permission_mode)])
+        return argv
+
+    @staticmethod
+    def _approval_mode_for_permission(permission_mode: str) -> str:
+        normalized = str(permission_mode or "").strip().lower()
+        if normalized in {"default", "ask"}:
+            return "default"
+        if normalized in {"auto", "auto_edit", "auto-edit"}:
+            return "auto_edit"
+        if normalized in {"plan"}:
+            return "plan"
+        if normalized in {"bypasspermissions", "bypass_permissions", "bypass-permissions", "yolo"}:
+            return "yolo"
+        return "default"
+
+    @staticmethod
+    def _model_alias_for_reasoning(reasoning_level: str) -> str:
+        normalized = _sanitize_reasoning_level(reasoning_level)
+        if normalized in {"high", "xhigh"}:
+            return "pro"
+        if normalized in {"low", "minimal"}:
+            return "flash-lite"
+        return "flash"
+
+    @staticmethod
+    def _coerce_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        return ""
+
+    def _extract_text_payload(self, value: Any) -> str:
+        chunks: list[str] = []
+
+        def _collect(raw: Any) -> None:
+            if raw is None:
+                return
+            if isinstance(raw, str):
+                text = raw.strip()
+                if text:
+                    chunks.append(text)
+                return
+            if isinstance(raw, (int, float, bool)):
+                chunks.append(str(raw))
+                return
+            if isinstance(raw, list):
+                for item in raw:
+                    _collect(item)
+                return
+            if not isinstance(raw, dict):
+                return
+
+            for key in (
+                "text",
+                "content",
+                "result",
+                "output",
+                "message",
+                "summary",
+                "description",
+                "value",
+                "delta",
+            ):
+                if key in raw:
+                    _collect(raw.get(key))
+
+        _collect(value)
+        if not chunks:
+            return ""
+        deduped: list[str] = []
+        for chunk in chunks:
+            if deduped and deduped[-1] == chunk:
+                continue
+            deduped.append(chunk)
+        return "\n".join(deduped)
+
+    @staticmethod
+    def _parse_json_line(value: str) -> dict[str, Any] | None:
+        if not value:
+            return None
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+        return None
+
+
 class CodexDialect:
     """Codex argv builder + JSONL parser based on verified local schema."""
 

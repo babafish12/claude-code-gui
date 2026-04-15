@@ -96,6 +96,14 @@ def test_is_probable_model_value_handles_codex_and_generic_rules() -> None:
     assert binary_probe._is_probable_model_value("bad value", provider="claude") is False
 
 
+def test_is_probable_model_value_handles_gemini_rules() -> None:
+    assert binary_probe._is_probable_model_value("auto", provider="gemini") is True
+    assert binary_probe._is_probable_model_value("pro", provider="gemini") is True
+    assert binary_probe._is_probable_model_value("flash-lite", provider="gemini") is True
+    assert binary_probe._is_probable_model_value("gemini-2.5-pro", provider="gemini") is True
+    assert binary_probe._is_probable_model_value("custom-model", provider="gemini") is False
+
+
 def test_detect_provider_model_options_codex_merges_cache_and_cli_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -228,6 +236,33 @@ def test_detect_cli_flag_support_codex_reads_exec_and_features_help(
     assert caps.supports_output_format_flag is True
     assert caps.supports_permission_flag is True
     assert caps.supports_reasoning_flag is True
+
+
+def test_detect_cli_flag_support_gemini_reads_approval_and_output_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = "/usr/bin/gemini"
+
+    def fake_run(command, **_kwargs):
+        key = tuple(command)
+        if key == (binary, "--help"):
+            return SimpleNamespace(
+                stdout='--model --approval-mode --output-format --sandbox --yolo [choices: "text", "json", "stream-json"]',
+                stderr="",
+                returncode=0,
+            )
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(binary_probe.subprocess, "run", fake_run)
+
+    caps = binary_probe.detect_cli_flag_support(binary)
+
+    assert caps.supports_model_flag is True
+    assert caps.supports_permission_flag is True
+    assert caps.supports_output_format_flag is True
+    assert caps.supports_stream_json is True
+    assert caps.supports_json is True
+    assert caps.supports_reasoning_flag is False
 
 
 def test_is_codex_authenticated_accepts_second_empty_success_response(

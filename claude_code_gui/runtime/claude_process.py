@@ -18,6 +18,7 @@ from claude_code_gui.domain.cli_dialect import (
     CliRunConfig,
     ClaudeDialect,
     CodexDialect,
+    GeminiDialect,
     ParsedEvent,
 )
 from claude_code_gui.domain.claude_types import ClaudeRunConfig, ClaudeRunResult
@@ -51,6 +52,7 @@ class ClaudeProcess:
         self._dialects: dict[str, CliDialect] = {
             "claude": ClaudeDialect(),
             "codex": CodexDialect(),
+            "gemini": GeminiDialect(),
         }
 
     def is_running(self) -> bool:
@@ -126,7 +128,7 @@ class ClaudeProcess:
         self._emit_running_changed(request_token, True)
 
         provider_id = normalize_provider_id(config.provider_id)
-        provider_label = "Codex" if provider_id == "codex" else "Claude"
+        provider_label = self._provider_label(provider_id)
         mode_attempts = self._build_mode_attempts(config)
         logger.info(
             "request=%s provider=%s run_start attempts=%s",
@@ -195,13 +197,24 @@ class ClaudeProcess:
 
     @staticmethod
     def _build_mode_attempts(config: ClaudeRunConfig) -> list[tuple[str, bool]]:
-        if normalize_provider_id(config.provider_id) == "codex":
+        provider_id = normalize_provider_id(config.provider_id)
+        if provider_id == "codex":
             use_reasoning = bool(config.supports_reasoning_flag)
             attempts: list[tuple[str, bool]] = [("stream-json", use_reasoning)]
             if use_reasoning:
                 attempts.append(("stream-json", False))
             attempts.append(("text", False))
             return attempts
+
+        if provider_id == "gemini":
+            modes: list[tuple[str, bool]] = []
+            if config.supports_output_format_flag:
+                if config.supports_stream_json:
+                    modes.append(("stream-json", config.supports_reasoning_flag))
+                if config.supports_json:
+                    modes.append(("json", config.supports_reasoning_flag))
+            modes.append(("text", config.supports_reasoning_flag))
+            return modes
 
         modes: list[tuple[str, bool]] = []
         if config.supports_output_format_flag:
@@ -214,7 +227,11 @@ class ClaudeProcess:
 
     @staticmethod
     def _provider_label(provider_id: str) -> str:
-        return "Codex" if provider_id == "codex" else "Claude"
+        if provider_id == "codex":
+            return "Codex"
+        if provider_id == "gemini":
+            return "Gemini"
+        return "Claude"
 
     def _get_dialect(self, provider_id: str) -> CliDialect:
         return self._dialects.get(provider_id, self._dialects["claude"])
