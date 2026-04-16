@@ -26,10 +26,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e .[test] || pip install pytest pytest-cov pytest-mock coverage[toml]
-      - name: Optional GTK deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-gi gir1.2-gtk-3.0 || true
       - name: Run tests
         run: pytest -m "unit or integration or gtk_css" --cov=claude_code_gui --cov-report=term-missing --cov-fail-under=50
 

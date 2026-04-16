@@ -10,13 +10,7 @@ from claude_code_gui.app.constants import (
     SESSION_STATUS_ARCHIVED,
     SESSION_STATUS_ENDED,
 )
-from claude_code_gui.gi_runtime import Gdk, GTK4, WEBKIT6
-
-if not (GTK4 and WEBKIT6):
-    pytest.skip(
-        "window_js_handlers tests require GTK4 + WebKit6 runtime",
-        allow_module_level=True,
-    )
+from claude_code_gui.gi_runtime import Gdk
 
 from claude_code_gui.ui.window import ClaudeCodeWindow
 

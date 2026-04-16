@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 import types
 from typing import Any
@@ -17,14 +18,38 @@ def _missing_placeholder(module_name: str) -> Any:
     class _Missing:
         def __init__(self, name: str) -> None:
             self._name = name
+            self._children: dict[str, _Missing] = {}
 
         def __getattr__(self, name: str) -> "_Missing":
             if name.startswith("__"):
                 raise AttributeError(name)
-            return _Missing(f"{self._name}.{name}")
+            child = self._children.get(name)
+            if child is None:
+                child = _Missing(f"{self._name}.{name}")
+                self._children[name] = child
+            return child
 
         def __call__(self, *_args: Any, **_kwargs: Any) -> Any:
             raise RuntimeError(f"GTK runtime symbol unavailable: {self._name}")
+
+        def __mro_entries__(self, _bases: tuple[type[Any], ...]) -> tuple[type[Any], ...]:
+            # Allow `class Foo(Gtk.Window): ...` imports in headless test environments.
+            return (object,)
+
+        def __bool__(self) -> bool:
+            return False
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, _Missing) and self._name == other._name
+
+        def __hash__(self) -> int:
+            return hash(self._name)
+
+        def __int__(self) -> int:
+            return abs(hash(self._name)) % (2**31)
+
+        def __index__(self) -> int:
+            return int(self)
 
         def __repr__(self) -> str:
             return f"<MissingGI {self._name}>"
@@ -83,17 +108,24 @@ def _build_headless_gi_stubs() -> tuple[Any, Any, _MissingGLib, Any, Any, Any]:
 
 
 runtime_loaded = False
+force_headless = str(os.environ.get("CLAUDE_CODE_GUI_FORCE_HEADLESS_GI", "")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
-try:
-    gi.require_version("Gtk", "4.0")
-    gi.require_version("Gdk", "4.0")
-    gi.require_version("WebKit", "6.0")
-    GTK4 = True
-    WEBKIT6 = True
-    from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit
-    runtime_loaded = True
-except (ImportError, ValueError, AttributeError):
-    pass
+if not force_headless:
+    try:
+        gi.require_version("Gtk", "4.0")
+        gi.require_version("Gdk", "4.0")
+        gi.require_version("WebKit", "6.0")
+        GTK4 = True
+        WEBKIT6 = True
+        from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit
+        runtime_loaded = True
+    except (ImportError, ValueError, AttributeError):
+        pass
 
 if not runtime_loaded:
     try:
