@@ -6230,12 +6230,16 @@ body.reduced-motion *::after {
         }).catch(function () {});
     }
 
-    function extractClipboardImageFiles(clipboardData) {
+    function extractClipboardFiles(clipboardData, options) {
         const files = [];
         const seen = new Set();
+        const imagesOnly = !!(options && options.imagesOnly);
 
         function remember(file) {
-            if (!file || !file.type || file.type.indexOf("image/") !== 0) {
+            if (!file) {
+                return;
+            }
+            if (imagesOnly && (!file.type || file.type.indexOf("image/") !== 0)) {
                 return;
             }
             const key = [
@@ -6253,7 +6257,10 @@ body.reduced-motion *::after {
 
         if (clipboardData && clipboardData.items) {
             Array.from(clipboardData.items).forEach(function (item) {
-                if (!item || !item.type || item.type.indexOf("image/") !== 0) {
+                if (!item || item.kind !== "file") {
+                    return;
+                }
+                if (imagesOnly && (!item.type || item.type.indexOf("image/") !== 0)) {
                     return;
                 }
                 remember(item.getAsFile());
@@ -6265,6 +6272,42 @@ body.reduced-motion *::after {
             });
         }
         return files;
+    }
+
+    function extractClipboardImageFiles(clipboardData) {
+        return extractClipboardFiles(clipboardData, { imagesOnly: true });
+    }
+
+    function extractClipboardFilePaths(clipboardData) {
+        if (!clipboardData) {
+            return [];
+        }
+        const paths = [];
+        const seen = new Set();
+        const uriList = String(clipboardData.getData("text/uri-list") || "").trim();
+        if (uriList) {
+            uriList.split(/\r?\n/).forEach(function (line) {
+                const trimmed = String(line || "").trim();
+                if (!trimmed || trimmed.charAt(0) === "#") {
+                    return;
+                }
+                if (trimmed.indexOf("file://") !== 0) {
+                    return;
+                }
+                let decoded = trimmed.slice("file://".length);
+                try {
+                    decoded = decodeURIComponent(decoded);
+                } catch (_error) {
+                    // keep raw value if decode fails
+                }
+                if (seen.has(decoded)) {
+                    return;
+                }
+                seen.add(decoded);
+                paths.push(decoded);
+            });
+        }
+        return paths;
     }
 
     function autoResizeInput(inputEl) {
@@ -8486,6 +8529,28 @@ body.reduced-motion *::after {
         clearMessages();
     }
 
+    function resetMessageHistory(messages) {
+        clearMessages();
+        if (!Array.isArray(messages) || !messages.length) {
+            return;
+        }
+        for (let i = 0; i < messages.length; i += 1) {
+            const entry = messages[i] || {};
+            const role = String(entry.role || "").toLowerCase();
+            const content = entry.content;
+            if (!content) {
+                continue;
+            }
+            if (role === "user") {
+                addUserMessage(content);
+            } else if (role === "assistant") {
+                addAssistantMessage(content);
+            } else if (role === "system") {
+                addSystemMessage(content);
+            }
+        }
+    }
+
     function copyText(raw, onDone) {
         const text = String(raw || "");
         if (!text) {
@@ -9037,10 +9102,21 @@ var GLASS_BUTTON_SELECTOR = [
 
         inputEl.addEventListener("paste", function (event) {
             const clipboard = event.clipboardData;
-            const imageFiles = extractClipboardImageFiles(clipboard);
-            if (imageFiles.length) {
+            const files = extractClipboardFiles(clipboard);
+            if (files.length) {
                 event.preventDefault();
-                addFilesFromList(imageFiles);
+                addFilesFromList(files);
+                return;
+            }
+
+            const filePaths = extractClipboardFilePaths(clipboard);
+            if (filePaths.length) {
+                event.preventDefault();
+                postToHost(
+                    "attachPaths",
+                    JSON.stringify({ action: "attach_paths", paths: filePaths }),
+                    ["attach_paths"]
+                );
                 return;
             }
 
@@ -9050,19 +9126,21 @@ var GLASS_BUTTON_SELECTOR = [
                         return;
                     }
                     items.forEach(function (item, itemIndex) {
-                        const imageType = (item.types || []).find(function (type) {
-                            return String(type || "").indexOf("image/") === 0;
+                        const fileType = (item.types || []).find(function (type) {
+                            const value = String(type || "");
+                            return value && value.indexOf("text/") !== 0;
                         });
-                        if (!imageType) {
+                        if (!fileType) {
                             return;
                         }
-                        item.getType(imageType).then(function (blob) {
+                        item.getType(fileType).then(function (blob) {
                             if (!blob) {
                                 return;
                             }
-                            const extension = imageType.split("/")[1] || "png";
-                            const name = "pasted-image-" + Date.now() + "-" + itemIndex + "." + extension;
-                            const file = new File([blob], name, { type: imageType });
+                            const extension = (fileType.split("/")[1] || "bin").replace(/[^a-z0-9.+_-]/gi, "");
+                            const namePrefix = fileType.indexOf("image/") === 0 ? "pasted-image-" : "pasted-file-";
+                            const name = namePrefix + Date.now() + "-" + itemIndex + "." + extension;
+                            const file = new File([blob], name, { type: fileType });
                             fileToAttachment(file).then(addAttachment).catch(function () {});
                         }).catch(function () {});
                     });
@@ -9536,6 +9614,7 @@ var GLASS_BUTTON_SELECTOR = [
     window.setTyping = setTyping;
     window.clearMessages = clearMessages;
     window.showWelcome = showWelcome;
+    window.resetMessageHistory = resetMessageHistory;
     window.addHostAttachment = function (attachments) {
         if (Array.isArray(attachments)) {
             attachments.forEach(addAttachment);

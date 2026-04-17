@@ -345,6 +345,127 @@ def on_js_attach_file(
         window._set_status_message(f"{added_count} file(s) attached.", STATUS_INFO)
 
 
+def on_js_attach_paths(
+    window: "ClaudeCodeWindow",
+    pane_id: str,
+    js_result: Any,
+    *,
+    max_option_payload_chars: int,
+) -> None:
+    if not window._activate_existing_pane(pane_id):
+        return
+    raw_payload = window._extract_message_from_js_result(
+        js_result,
+        max_chars=max_option_payload_chars,
+    )
+    if not raw_payload:
+        return
+
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(payload, dict):
+        return
+
+    raw_paths = payload.get("paths")
+    if not isinstance(raw_paths, list):
+        return
+
+    candidate_paths: list[str] = []
+    for entry in raw_paths:
+        if not isinstance(entry, str):
+            continue
+        clean = entry.strip()
+        if not clean:
+            continue
+        if len(clean) > 4096:
+            continue
+        candidate_paths.append(clean)
+
+    if not candidate_paths:
+        return
+
+    added_count = 0
+    skipped_count = 0
+    added_bytes = 0
+
+    for selected in candidate_paths:
+        if added_count >= MAX_ATTACHMENTS_PER_MESSAGE:
+            skipped_count += 1
+            continue
+        if not os.path.isfile(selected):
+            skipped_count += 1
+            continue
+
+        try:
+            file_size = os.path.getsize(selected)
+        except OSError as error:
+            skipped_count += 1
+            logger.warning("Paste-attach failed to stat %s: %s", selected, error)
+            continue
+
+        if file_size > ATTACHMENT_MAX_BYTES:
+            skipped_count += 1
+            window._set_status_message(
+                f"Attachment exceeds {ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit: {os.path.basename(selected)}",
+                STATUS_WARNING,
+            )
+            continue
+        if added_bytes + file_size > MAX_ATTACHMENT_TOTAL_BYTES:
+            skipped_count += 1
+            window._set_status_message(
+                "Attachment selection exceeds total size limit for one message.",
+                STATUS_WARNING,
+            )
+            continue
+
+        try:
+            with open(selected, "rb") as handle:
+                raw_bytes = handle.read()
+        except OSError as error:
+            skipped_count += 1
+            logger.warning("Paste-attach failed to read %s: %s", selected, error)
+            continue
+
+        mime_type, _ = mimetypes.guess_type(selected)
+        if not mime_type:
+            mime_type = "application/octet-stream"
+        if mime_type == "application/octet-stream":
+            lower_suffix = Path(selected).suffix.lower()
+            mime_type = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+                ".gif": "image/gif",
+                ".svg": "image/svg+xml",
+                ".bmp": "image/bmp",
+                ".avif": "image/avif",
+                ".heic": "image/heic",
+            }.get(lower_suffix, mime_type)
+
+        attachment_payload = {
+            "name": os.path.basename(selected),
+            "path": selected,
+            "type": mime_type,
+            "data": f"data:{mime_type};base64,{base64.b64encode(raw_bytes).decode('ascii')}",
+        }
+        window._call_js("addHostAttachment", attachment_payload)
+        added_count += 1
+        added_bytes += file_size
+
+    if added_count == 0 and skipped_count == 0:
+        return
+    if skipped_count:
+        window._set_status_message(
+            f"{added_count} attached, {skipped_count} skipped.",
+            STATUS_WARNING,
+        )
+    else:
+        window._set_status_message(f"{added_count} file(s) attached.", STATUS_INFO)
+
+
 def on_js_permission_response(
     window: "ClaudeCodeWindow",
     pane_id: str,

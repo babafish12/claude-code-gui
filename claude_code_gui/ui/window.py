@@ -96,6 +96,7 @@ from claude_code_gui.ui.window_js_handlers import (
     extract_action_from_js_result,
     extract_message_from_js_result,
     on_js_attach_file,
+    on_js_attach_paths,
     on_js_permission_response,
     on_js_send_message,
 )
@@ -1370,6 +1371,8 @@ class ClaudeCodeWindow(Gtk.Window):
             "open_folder",
             "attachFile",
             "attach_file",
+            "attachPaths",
+            "attach_paths",
             "openFile",
             "open_file",
             "toggleAgentMode",
@@ -1425,6 +1428,14 @@ class ClaudeCodeWindow(Gtk.Window):
         manager.connect(
             "script-message-received::open_file",
             lambda manager, result, pid=pane_id: self._on_js_attach_file(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::attachPaths",
+            lambda manager, result, pid=pane_id: self._on_js_attach_paths(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::attach_paths",
+            lambda manager, result, pid=pane_id: self._on_js_attach_paths(pid, manager, result),
         )
         manager.connect(
             "script-message-received::toggleAgentMode",
@@ -2824,24 +2835,22 @@ class ClaudeCodeWindow(Gtk.Window):
         sidebar.pack_start(search_entry, False, False, 0)
         self._session_search_entry = search_entry
 
-        session_scroll = Gtk.ScrolledWindow()
-        session_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        session_scroll.set_shadow_type(Gtk.ShadowType.NONE)
-        session_scroll.get_style_context().add_class("session-scroll")
-        session_scroll.set_vexpand(True)
-        sidebar.pack_start(session_scroll, True, True, 0)
+        filter_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        filter_row.get_style_context().add_class("session-filter-row")
+        sidebar.pack_start(filter_row, False, False, 0)
 
-        session_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        session_list.get_style_context().add_class("session-list")
-        session_scroll.add(session_list)
-        self._session_list_box = session_list
-
-        empty = Gtk.Label(label="No chats yet. Click + New Chat.")
-        empty.set_line_wrap(True)
-        empty.set_xalign(0.0)
-        empty.get_style_context().add_class("session-empty")
-        session_list.pack_start(empty, False, False, 0)
-        self._session_empty_label = empty
+        filter_items = (
+            ("all", "All"),
+            ("active", "Active"),
+            ("archived", "Archived"),
+        )
+        for key, label in filter_items:
+            button = Gtk.Button(label=label)
+            button.set_relief(Gtk.ReliefStyle.NONE)
+            button.get_style_context().add_class("session-filter-pill")
+            button.connect("clicked", self._on_session_filter_clicked, key)
+            filter_row.pack_start(button, False, False, 0)
+            self._session_filter_buttons[key] = button
 
         bulk_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         bulk_row.get_style_context().add_class("session-filter-row")
@@ -2865,22 +2874,24 @@ class ClaudeCodeWindow(Gtk.Window):
         bulk_row.pack_start(delete_selected_button, False, False, 0)
         self._session_delete_selected_button = delete_selected_button
 
-        filter_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        filter_row.get_style_context().add_class("session-filter-row")
-        sidebar.pack_start(filter_row, False, False, 0)
+        session_scroll = Gtk.ScrolledWindow()
+        session_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        session_scroll.set_shadow_type(Gtk.ShadowType.NONE)
+        session_scroll.get_style_context().add_class("session-scroll")
+        session_scroll.set_vexpand(True)
+        sidebar.pack_start(session_scroll, True, True, 0)
 
-        filter_items = (
-            ("all", "All"),
-            ("active", "Active"),
-            ("archived", "Archived"),
-        )
-        for key, label in filter_items:
-            button = Gtk.Button(label=label)
-            button.set_relief(Gtk.ReliefStyle.NONE)
-            button.get_style_context().add_class("session-filter-pill")
-            button.connect("clicked", self._on_session_filter_clicked, key)
-            filter_row.pack_start(button, False, False, 0)
-            self._session_filter_buttons[key] = button
+        session_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        session_list.get_style_context().add_class("session-list")
+        session_scroll.add(session_list)
+        self._session_list_box = session_list
+
+        empty = Gtk.Label(label="No chats yet. Click + New Chat.")
+        empty.set_line_wrap(True)
+        empty.set_xalign(0.0)
+        empty.get_style_context().add_class("session-empty")
+        session_list.pack_start(empty, False, False, 0)
+        self._session_empty_label = empty
 
         self._update_session_filter_buttons()
         self._sidebar_expanded_only_widgets = [
@@ -4021,9 +4032,20 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _render_active_session_view(self) -> None:
         session = self._get_active_session()
-        self._clear_messages()
+        history_payload: list[dict[str, str]] = []
         if session is not None and session.history:
-            self._replay_history(session.history)
+            for msg in session.history:
+                role = str(msg.get("role") or "").strip().lower()
+                content = msg.get("content")
+                if not role or not content:
+                    continue
+                if role not in {"user", "assistant", "system"}:
+                    continue
+                history_payload.append({"role": role, "content": str(content)})
+        self._has_messages = bool(history_payload)
+        self._context_char_count = sum(len(entry.get("content", "")) for entry in history_payload)
+        self._update_context_indicator()
+        self._call_js("resetMessageHistory", history_payload)
 
         running_for_active_session = session is not None and self._is_request_bound_to_session(session.id)
         self._call_js("setProcessing", running_for_active_session)
@@ -5449,7 +5471,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 try:
                     # The chat shell is loaded via load_html(); reloading that URI directly can
                     # produce a blank white page on some GTK4/WebKit builds.
-                    self._webview.load_html(CHAT_WEBVIEW_HTML, "")
+                    self._webview.load_html(get_chat_webview_html(), "")
                 except Exception:
                     logger.exception("Could not rebuild WebView content for pane '%s' after settings update.", pane_id)
         self.queue_draw()
@@ -6175,6 +6197,19 @@ class ClaudeCodeWindow(Gtk.Window):
             pane_id,
             js_result,
             max_option_payload_chars=_MAX_JS_OPTION_PAYLOAD_CHARS,
+        )
+
+    def _on_js_attach_paths(
+        self,
+        pane_id: str,
+        _manager: WebKit.UserContentManager,
+        js_result: WebKit.JavascriptResult,
+    ) -> None:
+        on_js_attach_paths(
+            self,
+            pane_id,
+            js_result,
+            max_option_payload_chars=_MAX_JS_SEND_PAYLOAD_CHARS,
         )
 
     def _on_js_stop_process(
