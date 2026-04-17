@@ -984,6 +984,16 @@ popover.path-suggestion-popover {{
 .usage-limit-label.usage-high {{
     color: {ERROR};
 }}
+
+.launcher-window {{
+    border-radius: 24px;
+    border: 1px solid {BORDER_SOFT};
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+}}
+
+.launcher-window .app-root {{
+    border-radius: 24px;
+}}
 """
 
 

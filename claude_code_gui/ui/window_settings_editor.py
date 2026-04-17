@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from claude_code_gui.app.constants import STATUS_INFO
 from claude_code_gui.domain.app_settings import get_default_settings, load_settings, save_settings
-from claude_code_gui.gi_runtime import Gdk, Gtk, Pango
+from claude_code_gui.gi_runtime import Gdk, Gtk, Pango, Adw, GTK4
 
 if TYPE_CHECKING:
     from claude_code_gui.ui.window import ClaudeCodeWindow
@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 def open_settings_editor(window: "ClaudeCodeWindow") -> None:
+    # Keep the full editor as the default on all runtimes for feature parity.
+    # The Adw-only editor currently omits theme palette controls and model editing.
+
     original_payload = load_settings()
     working_payload = copy.deepcopy(original_payload)
     (
@@ -901,3 +904,74 @@ def open_settings_editor(window: "ClaudeCodeWindow") -> None:
         break
 
     dialog.destroy()
+
+def _open_settings_editor_adw(window: "ClaudeCodeWindow") -> None:
+    original_payload = load_settings()
+    working_payload = copy.deepcopy(original_payload)
+
+    pref_window = Adw.PreferencesWindow(transient_for=window, modal=True, title="Settings")
+    
+    # General Page
+    general_page = Adw.PreferencesPage(title="General", icon_name="preferences-system-symbolic")
+    pref_window.add(general_page)
+    
+    general_group = Adw.PreferencesGroup(title="Application Behavior")
+    general_page.add(general_group)
+    
+    # Tray toggle
+    tray_row = Adw.SwitchRow(title="System Tray", subtitle="Enable system tray integration when available")
+    tray_row.set_active(bool(working_payload.get("system_tray_enabled", True)))
+    tray_row.connect("notify::active", lambda row, pspec: working_payload.__setitem__("system_tray_enabled", row.get_active()))
+    general_group.add(tray_row)
+    
+    # Stream speed
+    stream_speed_options: list[tuple[str, int]] = [
+        ("Instant", 0),
+        ("Fast", 30),
+        ("Normal", 80),
+        ("Slow", 160),
+        ("Very slow", 280),
+    ]
+    
+    current_stream_ms = int(working_payload.get("stream_render_throttle_ms", 80))
+    default_index = min(
+        range(len(stream_speed_options)),
+        key=lambda idx: abs(stream_speed_options[idx][1] - current_stream_ms),
+    )
+    
+    stream_row = Adw.ComboRow(title="Chat Speed", subtitle="Chat text reveal speed")
+    model = Gtk.StringList.new([opt[0] for opt in stream_speed_options])
+    stream_row.set_model(model)
+    stream_row.set_selected(default_index)
+    
+    def on_stream_speed_changed(row, pspec):
+        idx = row.get_selected()
+        working_payload["stream_render_throttle_ms"] = stream_speed_options[idx][1]
+        
+    stream_row.connect("notify::selected", on_stream_speed_changed)
+    general_group.add(stream_row)
+
+    # Provider Pages
+    providers = working_payload.get("providers", {})
+    for provider_id, provider_payload in providers.items():
+        name = str(provider_payload.get("name", provider_id))
+        provider_page = Adw.PreferencesPage(title=name)
+        pref_window.add(provider_page)
+        
+        # Add basic provider settings here if needed
+        group = Adw.PreferencesGroup(title=f"{name} Settings")
+        provider_page.add(group)
+        
+        if provider_id.strip().lower() != "gemini":
+            reasoning_row = Adw.SwitchRow(title="Reasoning", subtitle="Enable reasoning controls for this provider")
+            reasoning_row.set_active(bool(provider_payload.get("supports_reasoning", True)))
+            reasoning_row.connect("notify::active", lambda row, pspec, pid=provider_id: working_payload["providers"][pid].__setitem__("supports_reasoning", row.get_active()))
+            group.add(reasoning_row)
+
+    def on_close(widget):
+        save_settings(working_payload)
+        window._apply_settings_payload(working_payload, reload_webviews=True)
+        return False
+
+    pref_window.connect("close-request", on_close)
+    pref_window.present()

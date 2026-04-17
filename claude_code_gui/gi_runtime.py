@@ -96,8 +96,9 @@ class _MissingGLib(types.SimpleNamespace):
         time.sleep(microseconds / 1_000_000)
 
 
-def _build_headless_gi_stubs() -> tuple[Any, Any, _MissingGLib, Any, Any, Any]:
+def _build_headless_gi_stubs() -> tuple[Any, Any, Any, _MissingGLib, Any, Any, Any]:
     return (
+        _missing_placeholder("Adw"),
         _missing_placeholder("Gdk"),
         _missing_placeholder("Gio"),
         _MissingGLib(),
@@ -122,18 +123,27 @@ if not force_headless:
         gi.require_version("WebKit", "6.0")
         GTK4 = True
         WEBKIT6 = True
+
+        # GTK4 block: must work without Adw
         from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit
+
+        try:
+            gi.require_version("Adw", "1")
+            from gi.repository import Adw
+        except (ImportError, ValueError, AttributeError):
+            Adw = None
+
         runtime_loaded = True
     except (ImportError, ValueError, AttributeError):
         pass
 
 if not runtime_loaded:
     try:
-        Gdk, Gio, GLib, Gtk, Pango, WebKit = _build_headless_gi_stubs()
+        Adw, Gdk, Gio, GLib, Gtk, Pango, WebKit = _build_headless_gi_stubs()
         GTK4 = False
         WEBKIT6 = False
     except Exception:
-        Gdk, Gio, GLib, Gtk, Pango, WebKit = _build_headless_gi_stubs()
+        Adw, Gdk, Gio, GLib, Gtk, Pango, WebKit = _build_headless_gi_stubs()
         GTK4 = False
         WEBKIT6 = False
 
@@ -261,7 +271,13 @@ if GTK4:
     Gtk.Image.new_from_icon_name = staticmethod(lambda icon_name, *_args: _image_ctor(icon_name))
 
     if not hasattr(Gtk.Window, "add"):
-        Gtk.Window.add = lambda self, child: self.set_child(child)
+        def _window_add_compat(self, child):
+            if hasattr(self, "set_content"):
+                self.set_content(child)
+                return
+            self.set_child(child)
+
+        Gtk.Window.add = _window_add_compat
 
     if not hasattr(Gtk.Button, "add"):
         Gtk.Button.add = lambda self, child: self.set_child(child)

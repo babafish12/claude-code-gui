@@ -106,7 +106,7 @@ def _run_main_with_stubs(monkeypatch: pytest.MonkeyPatch, *, gtk4: bool) -> list
     calls: list[str] = []
 
     class DummyWindow:
-        def __init__(self) -> None:
+        def __init__(self, **kwargs) -> None:
             calls.append("window_init")
 
         def present(self) -> None:
@@ -115,9 +115,36 @@ def _run_main_with_stubs(monkeypatch: pytest.MonkeyPatch, *, gtk4: bool) -> list
         def show_all(self) -> None:
             calls.append("show_all")
 
+    class DummyApp:
+        def __init__(self, **kwargs) -> None:
+            calls.append("app_init")
+
+        def connect(self, signal, callback) -> None:
+            if signal == "activate":
+                self.activate_callback = callback
+            elif signal == "handle-local-options":
+                pass
+
+        def add_main_option(self, *args, **kwargs) -> None:
+            pass
+
+        def run(self, argv) -> None:
+            calls.append("app_run")
+            if hasattr(self, "activate_callback"):
+                self.activate_callback(self)
+
+        def get_windows(self) -> list:
+            return []
+
     fake_runtime = types.ModuleType("claude_code_gui.gi_runtime")
     fake_runtime.GTK4 = gtk4  # type: ignore[attr-defined]
     fake_runtime.Gtk = types.SimpleNamespace(main=lambda: calls.append("gtk_main"))  # type: ignore[attr-defined]
+    fake_runtime.Adw = types.SimpleNamespace(Application=DummyApp) if gtk4 else None # type: ignore[attr-defined]
+    fake_runtime.Gio = types.SimpleNamespace(
+        ApplicationFlags=types.SimpleNamespace(FLAGS_NONE=0),
+        OptionFlags=types.SimpleNamespace(NONE=0),
+        OptionArg=types.SimpleNamespace(NONE=0),
+    ) # type: ignore[attr-defined]
 
     fake_window_module = types.ModuleType("claude_code_gui.ui.window")
     fake_window_module.ClaudeCodeWindow = DummyWindow  # type: ignore[attr-defined]
@@ -125,6 +152,9 @@ def _run_main_with_stubs(monkeypatch: pytest.MonkeyPatch, *, gtk4: bool) -> list
     monkeypatch.setitem(sys.modules, "claude_code_gui.gi_runtime", fake_runtime)
     monkeypatch.setitem(sys.modules, "claude_code_gui.ui.window", fake_window_module)
 
+    # Reload the module to use the mocked gi_runtime
+    if "claude_code_gui.__main__" in sys.modules:
+        importlib.reload(sys.modules["claude_code_gui.__main__"])
     main_module = importlib.import_module("claude_code_gui.__main__")
     main_module.main()
     return calls
@@ -132,9 +162,10 @@ def _run_main_with_stubs(monkeypatch: pytest.MonkeyPatch, *, gtk4: bool) -> list
 
 def test_main_uses_present_for_gtk4(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _run_main_with_stubs(monkeypatch, gtk4=True) == [
+        "app_init",
+        "app_run",
         "window_init",
         "present",
-        "gtk_main",
     ]
 
 
