@@ -296,6 +296,8 @@ class ClaudeCodeWindow(Gtk.Window):
         self._chat_reveal_widgets: list[tuple[Gtk.Widget, float]] = []
         self._chat_pulse_animation_id: int | None = None
         self._last_slash_commands_cache = ""
+        self._slash_discovery_result_cache: list[dict[str, Any]] | None = None
+        self._slash_discovery_signature: tuple | None = None
 
         self._project_path_entry: Gtk.Entry | None = None
         self._project_path_popover: Gtk.Popover | None = None
@@ -3637,6 +3639,10 @@ class ClaudeCodeWindow(Gtk.Window):
         return title
 
     def _discover_custom_slash_commands(self) -> list[dict[str, Any]]:
+        signature = self._compute_slash_roots_signature()
+        if signature is not None and signature == self._slash_discovery_signature and self._slash_discovery_result_cache is not None:
+            return list(self._slash_discovery_result_cache)
+
         commands: list[dict[str, Any]] = []
         commands_by_key: dict[str, dict[str, Any]] = {}
 
@@ -3730,7 +3736,43 @@ class ClaudeCodeWindow(Gtk.Window):
                 summary = self._read_markdown_summary(skill_doc) or "Custom skill"
                 add_command(skill_dir.name, "S", f"Custom skill: {summary}", providers)
 
+        if signature is not None:
+            self._slash_discovery_signature = signature
+            self._slash_discovery_result_cache = list(commands)
         return commands
+
+    def _compute_slash_roots_signature(self) -> tuple | None:
+        try:
+            project_root = Path(self._project_folder)
+            codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
+            roots = [
+                project_root / ".claude" / "commands",
+                Path.home() / ".claude" / "commands",
+                project_root / ".codex" / "commands",
+                codex_home / "commands",
+                project_root / ".gemini" / "commands",
+                Path.home() / ".gemini" / "commands",
+                project_root / ".agents" / "commands",
+                Path.home() / ".agents" / "commands",
+                project_root / ".agents" / "skills",
+                Path.home() / ".agents" / "skills",
+                project_root / ".codex" / "skills",
+                codex_home / "skills",
+                project_root / ".gemini" / "skills",
+                Path.home() / ".gemini" / "skills",
+                project_root / ".claude" / "skills",
+                Path.home() / ".claude" / "skills",
+            ]
+            parts: list[tuple[str, int]] = []
+            for root in roots:
+                try:
+                    mtime_ns = root.stat().st_mtime_ns if root.is_dir() else -1
+                except OSError:
+                    mtime_ns = -1
+                parts.append((str(root), mtime_ns))
+            return tuple(parts)
+        except Exception:
+            return None
 
     def _refresh_slash_commands(self) -> None:
         commands = self._discover_custom_slash_commands()
