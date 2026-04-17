@@ -68,37 +68,15 @@ class ClaudeProcess:
         if process is None:
             return
 
-        if process.poll() is not None:
-            return
-
-        wait_timeout_s = 0.5
-
-        try:
-            if force:
-                process.kill()
-            else:
-                process.terminate()
-            logger.info("request_stop force=%s", force)
-        except OSError:
-            return
-
-        try:
-            process.wait(timeout=wait_timeout_s)
-            return
-        except subprocess.TimeoutExpired:
-            if force:
+        if process.poll() is None:
+            try:
+                if force:
+                    process.kill()
+                else:
+                    process.terminate()
+                logger.info("request_stop force=%s", force)
+            except OSError:
                 return
-
-        try:
-            process.kill()
-            logger.info("request_stop escalated_to_kill")
-        except OSError:
-            return
-
-        try:
-            process.wait(timeout=wait_timeout_s)
-        except subprocess.TimeoutExpired:
-            logger.warning("request_stop kill_timeout")
 
     def send_permission_response(self, *, action: str, comment: str = "", request_id: str = "") -> bool:
         normalized_action = str(action or "").strip().lower()

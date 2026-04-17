@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import ast
+import base64
 import json
 import logging
+import mimetypes
 import os
-import threading
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from claude_code_gui.app.constants import (
+    ATTACHMENT_MAX_BYTES,
     CONNECTION_STARTING,
     SESSION_STATUS_ACTIVE,
     SESSION_STATUS_ERROR,
@@ -22,11 +24,12 @@ from claude_code_gui.app.constants import (
 )
 from claude_code_gui.core.time_utils import current_timestamp
 from claude_code_gui.domain.claude_types import ClaudeRunConfig
-from claude_code_gui.gi_runtime import GLib, GTK4, Gio, Gtk
+from claude_code_gui.gi_runtime import GTK4, Gio, Gtk
 from claude_code_gui.services.attachment_service import (
+    MAX_ATTACHMENTS_PER_MESSAGE,
+    MAX_ATTACHMENT_TOTAL_BYTES,
     cleanup_temp_paths,
     compose_message_with_attachments,
-    encode_host_attachment_payloads,
     materialize_attachments,
     parse_send_payload,
 )
@@ -169,6 +172,80 @@ def on_js_attach_file(
     if action is None:
         return
     window._set_status_message("Opening file chooser...", STATUS_INFO)
+    added_count = 0
+    skipped_count = 0
+    added_bytes = 0
+
+    def _add_selected_file(selected: str) -> bool:
+        nonlocal added_count, skipped_count, added_bytes
+
+        if added_count >= MAX_ATTACHMENTS_PER_MESSAGE:
+            skipped_count += 1
+            return False
+
+        if not os.path.isfile(selected):
+            skipped_count += 1
+            return False
+
+        try:
+            file_size = os.path.getsize(selected)
+        except OSError as error:
+            skipped_count += 1
+            window._set_status_message(f"Could not read file: {error}", STATUS_WARNING)
+            return False
+
+        if file_size > ATTACHMENT_MAX_BYTES:
+            skipped_count += 1
+            window._set_status_message(
+                f"Attachment exceeds {ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit: {os.path.basename(selected)}",
+                STATUS_WARNING,
+            )
+            window._add_system_message("One or more attachments exceeded size limit.")
+            return False
+        if added_bytes + file_size > MAX_ATTACHMENT_TOTAL_BYTES:
+            skipped_count += 1
+            window._set_status_message(
+                "Attachment selection exceeds total size limit for one message.",
+                STATUS_WARNING,
+            )
+            window._add_system_message("Attachment total size limit reached.")
+            return False
+
+        try:
+            with open(selected, "rb") as handle:
+                raw_bytes = handle.read()
+        except OSError as error:
+            skipped_count += 1
+            window._set_status_message(f"Could not read file: {error}", STATUS_WARNING)
+            return False
+
+        mime_type, _ = mimetypes.guess_type(selected)
+        if not mime_type:
+            mime_type = "application/octet-stream"
+        if mime_type == "application/octet-stream":
+            lower_suffix = Path(selected).suffix.lower()
+            mime_type = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+                ".gif": "image/gif",
+                ".svg": "image/svg+xml",
+                ".bmp": "image/bmp",
+                ".avif": "image/avif",
+                ".heic": "image/heic",
+            }.get(lower_suffix, mime_type)
+
+        payload = {
+            "name": os.path.basename(selected),
+            "path": selected,
+            "type": mime_type,
+            "data": f"data:{mime_type};base64,{base64.b64encode(raw_bytes).decode('ascii')}",
+        }
+        window._call_js("addHostAttachment", payload)
+        added_count += 1
+        added_bytes += file_size
+        return True
 
     attach_folder = str(Path.home())
     if os.path.isdir(window._project_folder):
@@ -254,48 +331,18 @@ def on_js_attach_file(
     if not selected_paths:
         return
 
-    window._set_status_message("Preparing attachments...", STATUS_INFO)
+    for selected in selected_paths:
+        _add_selected_file(selected)
 
-    def _apply_encoded_attachments(
-        payloads: list[dict[str, str]],
-        skipped_count: int,
-        hit_file_size_limit: bool,
-        hit_total_size_limit: bool,
-    ) -> bool:
-        if not window._activate_existing_pane(pane_id):
-            return False
-        added_count = 0
-        for payload in payloads:
-            window._call_js("addHostAttachment", payload)
-            added_count += 1
-        if hit_file_size_limit:
-            window._add_system_message("One or more attachments exceeded size limit.")
-        if hit_total_size_limit:
-            window._add_system_message("Attachment total size limit reached.")
-        if added_count == 0 and skipped_count == 0:
-            return False
-        if skipped_count:
-            window._set_status_message(
-                f"{added_count} attached, {skipped_count} skipped.",
-                STATUS_WARNING,
-            )
-            return False
+    if added_count == 0 and skipped_count == 0:
+        return
+    if skipped_count:
+        window._set_status_message(
+            f"{added_count} attached, {skipped_count} skipped.",
+            STATUS_WARNING if skipped_count > 0 else STATUS_INFO,
+        )
+    else:
         window._set_status_message(f"{added_count} file(s) attached.", STATUS_INFO)
-        return False
-
-    def _encode_selected_files() -> None:
-        payloads, skipped_count, hit_file_size_limit, hit_total_size_limit = encode_host_attachment_payloads(
-            selected_paths
-        )
-        GLib.idle_add(
-            _apply_encoded_attachments,
-            payloads,
-            skipped_count,
-            hit_file_size_limit,
-            hit_total_size_limit,
-        )
-
-    threading.Thread(target=_encode_selected_files, daemon=True).start()
 
 
 def on_js_permission_response(
@@ -536,135 +583,117 @@ def on_js_send_message(
                 STATUS_WARNING,
             )
 
+    if window._active_session_id is None:
+        if os.path.isdir(window._project_folder):
+            window._start_new_session(window._project_folder, reset_conversation=False)
+        else:
+            window._set_status_message("No active session", STATUS_ERROR)
+            window._add_system_message("Create a session first.")
+            return
+
+    if window._claude_process.is_running():
+        window._add_system_message(f"{window._active_provider.name} is still responding. Please wait.")
+        return
+
+    active_session = window._get_active_session()
+    if active_session is None:
+        window._set_status_message("No active session", STATUS_ERROR)
+        window._add_system_message("No active session available.")
+        return
+
+    if not os.path.isdir(window._project_folder):
+        window._set_status_message("Session folder not found", STATUS_ERROR)
+        window._add_system_message("The selected project folder no longer exists.")
+        window._set_active_session_status(SESSION_STATUS_ERROR)
+        return
+
     _, model_value = window._model_options[window._selected_model_index]
     _, permission_value, _ = window._permission_options[window._selected_permission_index]
     reasoning_value = window._reasoning_value_from_index(window._selected_reasoning_index)
     if not window._active_provider.supports_reasoning:
         reasoning_value = "medium"
 
-    def _continue_send_with_attachments(attachment_paths: list[str]) -> bool:
-        if not window._activate_existing_pane(pane_id):
-            cleanup_temp_paths(attachment_paths)
-            return False
+    attachment_paths = materialize_attachments(attachments)
+    composed_message = compose_message_with_attachments(message, attachment_paths)
+    if not composed_message.strip():
+        cleanup_temp_paths(attachment_paths)
+        return
 
-        if window._active_session_id is None:
-            if os.path.isdir(window._project_folder):
-                window._start_new_session(window._project_folder, reset_conversation=False)
-            else:
-                cleanup_temp_paths(attachment_paths)
-                window._set_status_message("No active session", STATUS_ERROR)
-                window._add_system_message("Create a session first.")
-                return False
+    if window._is_primary_pane(pane_id) and window._agentctl_auto_enabled:
+        composed_message = f"{agentctl_hint}\n\nUser request:\n{composed_message}"
 
-        if window._claude_process.is_running():
-            cleanup_temp_paths(attachment_paths)
-            window._add_system_message(f"{window._active_provider.name} is still responding. Please wait.")
-            return False
+    window._has_messages = True
+    window._context_char_count += len(composed_message)
+    window._update_context_indicator()
 
-        active_session = window._get_active_session()
-        if active_session is None:
-            cleanup_temp_paths(attachment_paths)
-            window._set_status_message("No active session", STATUS_ERROR)
-            window._add_system_message("No active session available.")
-            return False
+    # Do not create an empty assistant row immediately on send.
+    # The row will be created when the first assistant chunk arrives.
+    window._pulse_chat_shell()
+    window._set_connection_state(CONNECTION_STARTING)
+    window._set_status_message(f"Sending message to {window._active_provider.name}...", STATUS_INFO)
+    active_caps = window._cli_caps_for(window._active_provider_id)
 
-        if not os.path.isdir(window._project_folder):
-            cleanup_temp_paths(attachment_paths)
-            window._set_status_message("Session folder not found", STATUS_ERROR)
-            window._add_system_message("The selected project folder no longer exists.")
-            window._set_active_session_status(SESSION_STATUS_ERROR)
-            return False
+    active_session.status = SESSION_STATUS_ACTIVE
+    active_session.last_used_at = current_timestamp()
+    window._save_sessions_safe("Could not save sessions")
+    window._refresh_session_list()
 
-        composed_message = compose_message_with_attachments(message, attachment_paths)
-        if not composed_message.strip():
-            cleanup_temp_paths(attachment_paths)
-            return False
+    window._add_to_history("user", composed_message)
+    window._permission_request_pending = False
 
-        if window._is_primary_pane(pane_id) and window._agentctl_auto_enabled:
-            composed_message = f"{agentctl_hint}\n\nUser request:\n{composed_message}"
+    request_token = str(uuid.uuid4())
+    previous_request_token = window._active_request_token
+    previous_request_session_id = window._active_request_session_id
+    window._active_request_token = request_token
+    window._active_request_session_id = active_session.id
+    logger.info(
+        "pane=%s request=%s provider=%s session=%s send_start",
+        pane_id,
+        request_token,
+        window._active_provider_id,
+        active_session.id,
+    )
+    config = ClaudeRunConfig(
+        binary_path=window._binary_path,
+        message=composed_message,
+        cwd=window._project_folder,
+        model=model_value,
+        permission_mode=permission_value,
+        conversation_id=window._conversation_id,
+        supports_model_flag=active_caps.supports_model_flag,
+        supports_permission_flag=active_caps.supports_permission_flag,
+        supports_output_format_flag=active_caps.supports_output_format_flag,
+        supports_stream_json=active_caps.supports_stream_json,
+        supports_json=active_caps.supports_json,
+        supports_include_partial_messages=active_caps.supports_include_partial_messages,
+        stream_json_requires_verbose=window._stream_json_requires_verbose,
+        reasoning_level=reasoning_value,
+        supports_reasoning_flag=(
+            active_caps.supports_reasoning_flag
+            or window._active_provider_id in {"codex", "gemini"}
+        )
+        and window._active_provider.supports_reasoning,
+        allowed_tools=list(window._allowed_tools) if window._allowed_tools else None,
+        provider_id=window._active_provider_id,
+    )
+    started = window._claude_process.send_message(request_token=request_token, config=config)
 
-        window._has_messages = True
-        window._context_char_count += len(composed_message)
+    if not started:
+        cleanup_temp_paths(attachment_paths)
+        window._context_char_count = max(0, window._context_char_count - len(composed_message))
         window._update_context_indicator()
-
-        # Do not create an empty assistant row immediately on send.
-        # The row will be created when the first assistant chunk arrives.
-        window._pulse_chat_shell()
-        window._set_connection_state(CONNECTION_STARTING)
-        window._set_status_message(f"Sending message to {window._active_provider.name}...", STATUS_INFO)
-        active_caps = window._cli_caps_for(window._active_provider_id)
-
-        active_session.status = SESSION_STATUS_ACTIVE
-        active_session.last_used_at = current_timestamp()
-        window._save_sessions_safe("Could not save sessions")
-        window._refresh_session_list()
-
-        window._add_to_history("user", composed_message)
-        window._permission_request_pending = False
-
-        request_token = str(uuid.uuid4())
-        previous_request_token = window._active_request_token
-        previous_request_session_id = window._active_request_session_id
-        window._active_request_token = request_token
-        window._active_request_session_id = active_session.id
-        logger.info(
-            "pane=%s request=%s provider=%s session=%s send_start",
+        window._active_request_token = previous_request_token
+        window._active_request_session_id = previous_request_session_id
+        window._finish_assistant_message(target_session_id=active_session.id)
+        window._set_typing(False)
+        window._refresh_connection_state()
+        window._set_status_message("A request is already running", STATUS_WARNING)
+        logger.warning(
+            "pane=%s request=%s provider=%s send_rejected_already_running",
             pane_id,
             request_token,
             window._active_provider_id,
-            active_session.id,
         )
-        config = ClaudeRunConfig(
-            binary_path=window._binary_path,
-            message=composed_message,
-            cwd=window._project_folder,
-            model=model_value,
-            permission_mode=permission_value,
-            conversation_id=window._conversation_id,
-            supports_model_flag=active_caps.supports_model_flag,
-            supports_permission_flag=active_caps.supports_permission_flag,
-            supports_output_format_flag=active_caps.supports_output_format_flag,
-            supports_stream_json=active_caps.supports_stream_json,
-            supports_json=active_caps.supports_json,
-            supports_include_partial_messages=active_caps.supports_include_partial_messages,
-            stream_json_requires_verbose=window._stream_json_requires_verbose,
-            reasoning_level=reasoning_value,
-            supports_reasoning_flag=(
-                active_caps.supports_reasoning_flag
-                or window._active_provider_id in {"codex", "gemini"}
-            )
-            and window._active_provider.supports_reasoning,
-            allowed_tools=list(window._allowed_tools) if window._allowed_tools else None,
-            provider_id=window._active_provider_id,
-        )
-        started = window._claude_process.send_message(request_token=request_token, config=config)
+        return
 
-        if not started:
-            cleanup_temp_paths(attachment_paths)
-            window._context_char_count = max(0, window._context_char_count - len(composed_message))
-            window._update_context_indicator()
-            window._active_request_token = previous_request_token
-            window._active_request_session_id = previous_request_session_id
-            window._finish_assistant_message(target_session_id=active_session.id)
-            window._set_typing(False)
-            window._refresh_connection_state()
-            window._set_status_message("A request is already running", STATUS_WARNING)
-            logger.warning(
-                "pane=%s request=%s provider=%s send_rejected_already_running",
-                pane_id,
-                request_token,
-                window._active_provider_id,
-            )
-            return False
-
-        window._request_temp_files[request_token] = attachment_paths
-        return False
-
-    if attachments:
-        window._set_status_message("Preparing attachments...", STATUS_INFO)
-
-    def _materialize_attachments_worker() -> None:
-        attachment_paths = materialize_attachments(attachments)
-        GLib.idle_add(_continue_send_with_attachments, attachment_paths)
-
-    threading.Thread(target=_materialize_attachments_worker, daemon=True).start()
+    window._request_temp_files[request_token] = attachment_paths
