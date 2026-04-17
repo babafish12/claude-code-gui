@@ -248,8 +248,8 @@ class PaneController:
 class ClaudeCodeWindow(Gtk.Window):
     """Single-window Claude Code shell with WebKit2 chat UI and session context."""
 
-    def __init__(self) -> None:
-        super().__init__(title=APP_NAME)
+    def __init__(self, **kwargs) -> None:
+        super().__init__(title=APP_NAME, **kwargs)
         initial_settings = load_settings()
         preferred_provider = normalize_provider_id(str(initial_settings.get("active_provider_id") or DEFAULT_PROVIDER_ID))
         self._active_provider_id: str = preferred_provider
