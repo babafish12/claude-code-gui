@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from claude_code_gui.gi_runtime import Gdk, Gio, GLib, Gtk, Pango, WebKit, GTK4
+from claude_code_gui.gi_runtime import Adw, Gdk, Gio, GLib, Gtk, Pango, WebKit, GTK4
 
 from claude_code_gui.app.constants import (
     APP_DEFAULT_HEIGHT,
@@ -243,13 +243,20 @@ class PaneController:
         self._is_agent = False
         self._agent_name: str | None = None
         self._agent_status: str = ""
+        self._typing_cleared_request_token: str | None = None
 
 
-class ClaudeCodeWindow(Gtk.Window):
+class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
     """Single-window Claude Code shell with WebKit2 chat UI and session context."""
 
-    def __init__(self) -> None:
-        super().__init__(title=APP_NAME)
+    def __init__(self, **kwargs) -> None:
+        self._launcher_mode = kwargs.pop("launcher_mode", False)
+        if "title" not in kwargs:
+            kwargs["title"] = APP_NAME
+        super().__init__(**kwargs)
+        if self._launcher_mode:
+            self.set_decorated(False)
+            self.get_style_context().add_class("launcher-window")
         initial_settings = load_settings()
         preferred_provider = normalize_provider_id(str(initial_settings.get("active_provider_id") or DEFAULT_PROVIDER_ID))
         self._active_provider_id: str = preferred_provider
@@ -295,6 +302,8 @@ class ClaudeCodeWindow(Gtk.Window):
         self._chat_reveal_animation_id: int | None = None
         self._chat_reveal_widgets: list[tuple[Gtk.Widget, float]] = []
         self._chat_pulse_animation_id: int | None = None
+        self._context_indicator_throttle_id: int | None = None
+        self._context_indicator_last_update_us = 0
         self._last_slash_commands_cache = ""
 
         self._project_path_entry: Gtk.Entry | None = None
@@ -316,6 +325,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._session_filter_buttons: dict[str, Gtk.Button] = {}
         self._session_filter = "all"
         self._session_search_query = ""
+        self._session_search_debounce_id: int | None = None
         self._window_has_focus = True
         self._notification_counter = 0
         self._app_icon_path: Path | None = _resolve_app_icon_path()
@@ -365,6 +375,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._bind_gtk_animation_setting()
         self._install_css()
         self._build_ui()
+        self._install_drop_target()
         self._apply_provider_branding()
         self._load_sessions_into_state()
         self._refresh_session_list()
@@ -403,8 +414,56 @@ class ClaudeCodeWindow(Gtk.Window):
         self._start_status_fade_in()
         self._refresh_connection_state()
 
+    def set_launcher_mode(self, enabled: bool) -> None:
+        if self._launcher_mode == enabled:
+            return
+        self._launcher_mode = enabled
+        self.set_decorated(not enabled)
+        if enabled:
+            self.get_style_context().add_class("launcher-window")
+            if self._sidebar_container:
+                self._sidebar_container.set_visible(False)
+        else:
+            self.get_style_context().remove_class("launcher-window")
+            if self._sidebar_container:
+                self._sidebar_container.set_visible(self._sidebar_expanded)
+
+    def _install_drop_target(self) -> None:
+        if not GTK4:
+            return
+        target = Gtk.DropTarget.new(Gio.File, Gdk.DragAction.COPY)
+        target.connect("drop", self._on_drop)
+        self.add_controller(target)
+
+    def _on_drop(self, _target: Gtk.DropTarget, value: Gio.File, _x: float, _y: float) -> bool:
+        if not value:
+            return False
+        path = value.get_path()
+        if path:
+            self._handle_external_file_attach(path)
+            return True
+        return False
+
+    def _handle_external_file_attach(self, path: str) -> None:
+        # Re-use existing attachment logic
+        if self._active_pane_id:
+            self._call_js_in_pane(self._active_pane_id, "externalFileDropped", path)
+
     @staticmethod
     def _set_dark_theme_preference() -> None:
+        if Adw and GTK4:
+            try:
+                style_manager = Adw.StyleManager.get_default()
+                if style_manager is not None and hasattr(style_manager, "set_color_scheme"):
+                    color_scheme = getattr(Adw.ColorScheme, "PREFER_DARK", None)
+                    if color_scheme is None:
+                        color_scheme = getattr(Adw.ColorScheme, "FORCE_DARK", None)
+                    if color_scheme is not None:
+                        style_manager.set_color_scheme(color_scheme)
+            except Exception:
+                pass
+            return
+
         settings = Gtk.Settings.get_default()
         if settings is not None:
             settings.set_property("gtk-application-prefer-dark-theme", True)
@@ -1184,6 +1243,13 @@ class ClaudeCodeWindow(Gtk.Window):
         root.get_style_context().add_class("app-root")
         self.add(root)
 
+        if Adw and GTK4:
+            header = Adw.HeaderBar()
+            root.append(header)
+            # Add a title widget
+            title = Adw.WindowTitle(title=APP_NAME)
+            header.set_title_widget(title)
+        
         content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         content.get_style_context().add_class("main-content")
         root.pack_start(content, True, True, 0)
@@ -2671,7 +2737,27 @@ class ClaudeCodeWindow(Gtk.Window):
         if ctrl and keyval == Gdk.KEY_Tab:
             self._cycle_pane_focus(forward=True)
             return True
+
+        if keyval == Gdk.KEY_Escape:
+            self._on_cancel_request()
+            return True
+
+        if keyval == Gdk.KEY_Up:
+            # We only want to trigger this if the input might be empty.
+            # But the window doesn't know the input state.
+            # We'll call a JS function that checks it.
+            if self._active_pane_id:
+                self._call_js_in_pane(self._active_pane_id, "handleWindowKeyUp")
+            return False
+
         return False
+
+    def _on_cancel_request(self) -> None:
+        if self._active_pane_id:
+            pane = self._pane_registry[self._active_pane_id]
+            if pane._claude_process and pane._claude_process.is_running():
+                pane._claude_process.stop()
+                self._set_status_message("Request cancelled.", STATUS_INFO)
 
     def _window_is_focused(self) -> bool:
         return bool(self.is_active() or self._window_has_focus)
@@ -3543,7 +3629,13 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _on_session_search_changed(self, entry: Gtk.Entry) -> None:
         self._session_search_query = entry.get_text().strip().casefold()
+        self._cancel_timer("_session_search_debounce_id")
+        self._session_search_debounce_id = GLib.timeout_add(150, self._refresh_session_search_debounced)
+
+    def _refresh_session_search_debounced(self) -> bool:
+        self._session_search_debounce_id = None
         self._refresh_session_list()
+        return False
 
     def _get_filtered_sessions(self) -> list[SessionRecord]:
         provider_sessions = [s for s in self._sessions if s.provider == self._active_provider_id]
@@ -4681,6 +4773,35 @@ class ClaudeCodeWindow(Gtk.Window):
         if self._context_progress is not None:
             self._context_progress.set_tooltip_text(tooltip)
 
+    def _flush_context_indicator_update(self) -> bool:
+        self._context_indicator_throttle_id = None
+        self._context_indicator_last_update_us = GLib.get_monotonic_time()
+        self._update_context_indicator()
+        return False
+
+    def _queue_context_indicator_update(self, *, immediate: bool = False) -> None:
+        if immediate:
+            self._cancel_timer("_context_indicator_throttle_id")
+            self._context_indicator_last_update_us = GLib.get_monotonic_time()
+            self._update_context_indicator()
+            return
+
+        if self._context_indicator_throttle_id is not None:
+            return
+
+        now_us = GLib.get_monotonic_time()
+        if self._context_indicator_last_update_us <= 0:
+            elapsed_ms = 1_000_000
+        else:
+            elapsed_ms = int((now_us - self._context_indicator_last_update_us) / 1000)
+        if elapsed_ms >= 250:
+            self._context_indicator_last_update_us = now_us
+            self._update_context_indicator()
+            return
+
+        delay_ms = max(1, 250 - max(0, elapsed_ms))
+        self._context_indicator_throttle_id = GLib.timeout_add(delay_ms, self._flush_context_indicator_update)
+
     def _set_connection_state(self, state: str) -> None:
         text_map = {
             CONNECTION_CONNECTED: "Connected",
@@ -4728,7 +4849,6 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _set_status_message(self, message: str, severity: str = STATUS_MUTED) -> None:
         self._last_status_message = message
-        self._update_project_folder_labels()
         if self._connection_dot is not None:
             existing = self._connection_dot.get_tooltip_text() or "Disconnected"
             state_text = existing.splitlines()[0] if existing else "Disconnected"
@@ -6199,6 +6319,9 @@ class ClaudeCodeWindow(Gtk.Window):
         with self._pane_context(pane_id):
             if not self._is_current_request(request_token):
                 return
+            pane = self._pane_by_id(pane_id)
+            if pane is not None and running:
+                pane._typing_cleared_request_token = None
             request_session_id = self._active_request_session_id
             request_visible = bool(request_session_id) and request_session_id == self._active_session_id
 
@@ -6213,8 +6336,9 @@ class ClaudeCodeWindow(Gtk.Window):
             self._call_js("setProcessing", running if request_visible else False)
             if request_visible:
                 self._set_typing(running)
+            if not running:
+                self._queue_context_indicator_update(immediate=True)
 
-            pane = self._pane_by_id(pane_id)
             if running and pane is not None and pane._is_agent:
                 self._set_pane_agent_status(pane_id, "working")
 
@@ -6232,10 +6356,12 @@ class ClaudeCodeWindow(Gtk.Window):
                 return
             request_session_id = self._active_request_session_id
             request_visible = bool(request_session_id) and request_session_id == self._active_session_id
-            if request_visible:
+            pane = self._pane_by_id(pane_id)
+            if request_visible and pane is not None and pane._typing_cleared_request_token != request_token:
                 self._set_typing(False)
+                pane._typing_cleared_request_token = request_token
             self._context_char_count += len(chunk)
-            self._update_context_indicator()
+            self._queue_context_indicator_update()
             self._append_assistant_chunk(chunk, sync_ui=request_visible)
 
     def _on_process_system_message(self, pane_id: str, request_token: str, message: str) -> None:
@@ -6308,6 +6434,7 @@ class ClaudeCodeWindow(Gtk.Window):
             request_session_id = self._active_request_session_id
             request_visible = bool(request_session_id) and request_session_id == self._active_session_id
             self._invalidate_active_request()
+            self._queue_context_indicator_update(immediate=True)
             if request_visible:
                 self._set_typing(False)
             assistant_output_text = str(self._active_assistant_message or "")
@@ -6520,6 +6647,8 @@ class ClaudeCodeWindow(Gtk.Window):
             "_chat_reveal_animation_id",
             "_chat_pulse_animation_id",
             "_session_timer_id",
+            "_context_indicator_throttle_id",
+            "_session_search_debounce_id",
         ):
             self._cancel_timer(attr)
 

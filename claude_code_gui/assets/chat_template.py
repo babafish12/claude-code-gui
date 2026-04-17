@@ -2871,7 +2871,22 @@ button:disabled {
     gap: 8px;
 }
 
+.token-fade-in {
+    animation: token-fade-in var(--motion-fast) var(--ease-enter) forwards;
+}
+
+.assistant-message > * {
+    animation: token-fade-in var(--motion-fast) var(--ease-enter) forwards;
+}
+
+@keyframes token-fade-in {
+
+    from { opacity: 0; transform: translateY(2px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
 .thinking-shell {
+
     display: flex;
     flex-direction: column;
     align-items: flex-start;
@@ -3457,6 +3472,7 @@ body.reduced-motion *::after {
     const WAIT_STATUS_MIN_INTERVAL_MS = 1000;
     const WAIT_STATUS_FADE_MS = 180;
     const WAIT_STATUS_MAX_COMMAND_LENGTH = 40;
+    const SLASH_REFRESH_DEBOUNCE_MS = 140;
     const WAIT_FALLBACK_MESSAGES = Object.freeze([
         "Thinking...",
         "Still working...",
@@ -3515,6 +3531,7 @@ body.reduced-motion *::after {
     let activeProviderName = "Claude";
     let activePopup = null;
     let lastUserPayload = null;
+    let lastUserPrompt = "";
     let currentFolderDisplay = "~";
     let attachments = [];
     let attachmentCounter = 0;
@@ -3544,6 +3561,7 @@ body.reduced-motion *::after {
     let slashSelectedIndex = 0;
     let slashFilteredItems = [];
     let activeSlashInput = null;
+    let slashRefreshTimer = null;
     const LANGUAGE_EXTENSION_MAP = Object.freeze({
         bash: ".sh",
         c: ".c",
@@ -6339,6 +6357,10 @@ body.reduced-motion *::after {
             return;
         }
 
+        if (text) {
+            lastUserPrompt = text;
+        }
+
         const outgoing = {
             text: text,
             attachments: outgoingAttachments,
@@ -7437,26 +7459,18 @@ body.reduced-motion *::after {
         const hasDetail = hasDiff || !!commandText || !!outputText;
 
         const rowObj = createMessageRow("tool");
-        const card = document.createElement("div");
-        card.className = "tool-card";
+        const details = document.createElement("details");
+        details.className = "tool-card";
         toolCardCounter += 1;
-        card.id = "tool-card-" + toolCardCounter;
+        details.id = "tool-card-" + toolCardCounter;
 
-        const header = document.createElement("div");
-        header.className = "tool-header";
-
-        var caretEl = null;
-        if (hasDetail) {
-            caretEl = document.createElement("span");
-            caretEl.className = "tool-caret";
-            caretEl.textContent = "\u25B6";
-            header.appendChild(caretEl);
-        }
+        const summary = document.createElement("summary");
+        summary.className = "tool-header";
 
         const nameEl = document.createElement("span");
         nameEl.className = "tool-name";
         nameEl.textContent = toolName;
-        header.appendChild(nameEl);
+        summary.appendChild(nameEl);
 
         if (filePath) {
             const pathEl = document.createElement("span");
@@ -7466,14 +7480,13 @@ body.reduced-motion *::after {
                 displayPath = "\u2026" + displayPath.slice(-57);
             }
             pathEl.textContent = displayPath;
-            header.appendChild(pathEl);
+            summary.appendChild(pathEl);
         }
 
-        card.appendChild(header);
+        details.appendChild(summary);
 
         var detailEl = null;
         var summaryEntry = null;
-        var openByDefault = false;
 
         if (hasDetail) {
             detailEl = document.createElement("div");
@@ -7556,25 +7569,16 @@ body.reduced-motion *::after {
                 detailEl.appendChild(outputBlock);
             }
 
-            card.appendChild(detailEl);
-            detailEl.classList.toggle("open", openByDefault);
-            if (caretEl) {
-                caretEl.classList.toggle("open", openByDefault);
+            details.appendChild(detailEl);
+            if (openByDefault) {
+                details.open = true;
             }
-
-            header.addEventListener("click", function () {
-                var isOpen = detailEl.classList.toggle("open");
-                if (caretEl) {
-                    caretEl.classList.toggle("open", isOpen);
-                }
-                scrollToBottom(false);
-            });
         }
 
-        registerToolArtifact(data, card);
-        rowObj.inner.appendChild(card);
+        registerToolArtifact(data, details);
+        rowObj.inner.appendChild(details);
         if (toolUseId) {
-            seenToolUseIds[toolUseId] = card;
+            seenToolUseIds[toolUseId] = details;
         }
         trackToolEvent(summaryEntry, rowObj.row);
         scrollToBottom(true);
@@ -8828,7 +8832,13 @@ var GLASS_BUTTON_SELECTOR = [
     }
 
     function requestSlashCommandsRefresh() {
-        postToHost("refreshSlashCommands", "refresh");
+        if (slashRefreshTimer) {
+            return;
+        }
+        slashRefreshTimer = window.setTimeout(function () {
+            slashRefreshTimer = null;
+            postToHost("refreshSlashCommands", "refresh");
+        }, SLASH_REFRESH_DEBOUNCE_MS);
     }
 
     function renderSlashDropdown(dropdownEl, items) {
@@ -9003,6 +9013,14 @@ var GLASS_BUTTON_SELECTOR = [
                     closeSlashDropdown();
                     return;
                 }
+            }
+            if (event.key === "ArrowUp" && !inputEl.value.trim() && lastUserPrompt) {
+                event.preventDefault();
+                inputEl.value = lastUserPrompt;
+                autoResizeInput(inputEl);
+                inputEl.focus();
+                inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+                return;
             }
             if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -9403,13 +9421,8 @@ var GLASS_BUTTON_SELECTOR = [
                     targetCard.classList.remove("tool-card-highlight");
                 }, 1200);
 
-                const targetDetail = targetCard.querySelector(".tool-detail");
-                const targetCaret = targetCard.querySelector(".tool-caret");
-                if (targetDetail && !targetDetail.classList.contains("open")) {
-                    targetDetail.classList.add("open");
-                    if (targetCaret) {
-                        targetCaret.classList.add("open");
-                    }
+                if (targetCard.tagName === "DETAILS" && !targetCard.open) {
+                    targetCard.open = true;
                 }
             }
             return;
@@ -9517,9 +9530,24 @@ var GLASS_BUTTON_SELECTOR = [
     attachInputBehavior(welcomeInputEl);
     attachInputBehavior(chatInputEl);
 
+    window.handleWindowKeyUp = function () {
+        const inputEl = activeInput();
+        if (inputEl && !inputEl.value.trim() && lastUserPrompt) {
+            inputEl.value = lastUserPrompt;
+            autoResizeInput(inputEl);
+            inputEl.focus();
+            inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+        }
+    };
+
     window.addUserMessage = addUserMessage;
     window.addAssistantMessage = addAssistantMessage;
     window.startAssistantMessage = startAssistantMessage;
+    window.externalFileDropped = function (path) {
+        if (!path) return;
+        postToHost("attachFile", { path: path });
+    };
+
     window.appendAssistantChunk = appendAssistantChunk;
     window.finishAssistantMessage = finishAssistantMessage;
     window.addSystemMessage = addSystemMessage;
