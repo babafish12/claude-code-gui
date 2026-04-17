@@ -1373,10 +1373,6 @@ button:disabled {
     font-size: 15px;
 }
 
-.assistant-message.streaming-plain {
-    white-space: pre-wrap;
-}
-
 .streaming-cursor {
     display: inline-block;
     width: 2px;
@@ -3500,7 +3496,6 @@ body.reduced-motion *::after {
     let currentAssistantRow = null;
     let currentAssistantBody = null;
     let currentAssistantRaw = "";
-    let assistantMarkdownFinalized = false;
     let assistantHasFirstChunk = false;
     let assistantPhase = ASSISTANT_PHASE.IDLE;
     let renderQueued = false;
@@ -8089,7 +8084,6 @@ body.reduced-motion *::after {
 
         currentAssistantRow = rowObj.row;
         currentAssistantBody = body;
-        assistantMarkdownFinalized = false;
     }
 
     function startAssistantMessage() {
@@ -8103,7 +8097,6 @@ body.reduced-motion *::after {
 
         currentAssistantRaw = "";
         assistantHasFirstChunk = false;
-        assistantMarkdownFinalized = false;
 
         if (!userScrolledUp) {
             scrollToBottom(true);
@@ -8114,13 +8107,10 @@ body.reduced-motion *::after {
         if (!currentAssistantBody) {
             return;
         }
-        if (!assistantMarkdownFinalized) {
-            currentAssistantBody.classList.add("streaming-plain");
-            currentAssistantBody.textContent = currentAssistantRaw;
-        }
+        currentAssistantBody.innerHTML = markdownToHtml(currentAssistantRaw);
         currentAssistantBody.dataset.raw = currentAssistantRaw;
         currentAssistantBody.dataset.rawMarkdown = currentAssistantRaw;
-        if (showCursor && !assistantMarkdownFinalized) {
+        if (showCursor) {
             const cursor = document.createElement("span");
             cursor.className = "streaming-cursor";
             currentAssistantBody.appendChild(cursor);
@@ -8128,17 +8118,6 @@ body.reduced-motion *::after {
                 cursor.classList.add("is-visible");
             });
         }
-    }
-
-    function finalizeAssistantContentRender() {
-        if (!currentAssistantBody) {
-            return;
-        }
-        currentAssistantBody.classList.remove("streaming-plain");
-        currentAssistantBody.innerHTML = markdownToHtml(currentAssistantRaw);
-        currentAssistantBody.dataset.raw = currentAssistantRaw;
-        currentAssistantBody.dataset.rawMarkdown = currentAssistantRaw;
-        assistantMarkdownFinalized = true;
     }
 
     function normalizeStreamRenderThrottle(value) {
@@ -8243,10 +8222,8 @@ body.reduced-motion *::after {
             if (!hasMessages) {
                 setChatState(true);
             }
-            if (currentAssistantRaw.trim()) {
-                finalizeAssistantContentRender();
-                registerAssistantArtifacts(currentAssistantBody, currentAssistantRaw);
-            }
+            renderAssistantContent(false);
+            registerAssistantArtifacts(currentAssistantBody, currentAssistantRaw);
             if (!currentAssistantRaw.trim() && currentAssistantRow) {
                 currentAssistantRow.remove();
             }
@@ -8260,7 +8237,6 @@ body.reduced-motion *::after {
         currentAssistantBody = null;
         currentAssistantRow = null;
         currentAssistantRaw = "";
-        assistantMarkdownFinalized = false;
         pendingAssistantText = "";
         finishAfterPendingReveal = false;
         assistantHasFirstChunk = false;
@@ -8406,7 +8382,7 @@ body.reduced-motion *::after {
         }
 
         if (currentAssistantRaw.trim()) {
-            finalizeAssistantContentRender();
+            renderAssistantContent(false);
             registerAssistantArtifacts(currentAssistantBody, currentAssistantRaw);
         } else if (currentAssistantRow) {
             currentAssistantRow.remove();
@@ -8415,7 +8391,6 @@ body.reduced-motion *::after {
         currentAssistantBody = null;
         currentAssistantRow = null;
         currentAssistantRaw = "";
-        assistantMarkdownFinalized = false;
         assistantHasFirstChunk = false;
     }
 
@@ -8477,7 +8452,6 @@ body.reduced-motion *::after {
         clearLongWaitStatusAndTimers(true);
         lastAssistantRenderAt = 0;
         currentAssistantRaw = "";
-        assistantMarkdownFinalized = false;
         pendingAssistantText = "";
         finishAfterPendingReveal = false;
         currentAssistantBody = null;

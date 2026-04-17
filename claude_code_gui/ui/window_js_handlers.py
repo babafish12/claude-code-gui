@@ -33,7 +33,7 @@ from claude_code_gui.services.attachment_service import (
     materialize_attachments,
     parse_send_payload,
 )
-from claude_code_gui.services.binary_probe import get_cached_codex_authentication
+from claude_code_gui.services.binary_probe import is_codex_authenticated
 
 if TYPE_CHECKING:
     from claude_code_gui.ui.window import ClaudeCodeWindow
@@ -569,19 +569,12 @@ def on_js_send_message(
         window._set_status_message(f"{window._active_provider.name} CLI not found", STATUS_ERROR)
         window._add_system_message(f"{window._provider_cli_label()} is not available.")
         return
-    if window._active_provider_id == "codex":
-        auth_state, is_fresh = get_cached_codex_authentication(max_age_seconds=30.0)
-        if not is_fresh and hasattr(window, "_refresh_codex_auth_async"):
-            try:
-                window._refresh_codex_auth_async()
-            except Exception:
-                pass
-        if auth_state is not True:
-            window._refresh_connection_state()
-            window._set_status_message(
-                "Codex login status could not be confirmed; sending anyway.",
-                STATUS_WARNING,
-            )
+    if window._active_provider_id == "codex" and not is_codex_authenticated():
+        window._refresh_connection_state()
+        window._set_status_message(
+            "Codex login status could not be confirmed; sending anyway.",
+            STATUS_WARNING,
+        )
 
     if window._active_session_id is None:
         if os.path.isdir(window._project_folder):

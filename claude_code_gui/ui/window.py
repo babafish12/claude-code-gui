@@ -83,8 +83,7 @@ from claude_code_gui.services.binary_probe import (
     detect_cli_flag_support,
     find_provider_binary,
     detect_provider_model_options,
-    get_cached_codex_authentication,
-    refresh_codex_authentication_cache,
+    is_codex_authenticated,
 )
 from claude_code_gui.storage.config_paths import RECENT_FOLDERS_LIMIT
 from claude_code_gui.storage.recent_folders_store import (
@@ -236,8 +235,6 @@ class PaneController:
         self._active_request_token: str | None = None
         self._active_request_session_id: str | None = None
         self._active_assistant_message = ""
-        self._pending_assistant_chunk_buffer = ""
-        self._pending_assistant_chunk_flush_id: int | None = None
         self._request_temp_files: dict[str, list[str]] = {}
         self._permission_request_pending = False
         self._allowed_tools: set[str] = set()
@@ -368,7 +365,6 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
         self._provider_cli_probe_inflight: set[str] = set()
         self._stream_json_requires_verbose = True
         self._provider_model_probe_done: set[str] = set()
-        self._codex_auth_probe_inflight = False
 
         self._session_started_us = GLib.get_monotonic_time()
         self._session_timer_id: int | None = None
@@ -2680,8 +2676,6 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
             return
 
         with self._pane_context(pane_id):
-            self._cancel_pending_assistant_chunk_flush(pane)
-            pane._pending_assistant_chunk_buffer = ""
             if pane._claude_process is not None:
                 pane._claude_process.stop()
             for paths in pane._request_temp_files.values():
@@ -4848,13 +4842,9 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
         if self._last_request_failed:
             self._set_connection_state(CONNECTION_ERROR)
             return
-        if self._active_provider_id == "codex":
-            auth_state, is_fresh = get_cached_codex_authentication(max_age_seconds=30.0)
-            if not is_fresh:
-                self._refresh_codex_auth_async()
-            if auth_state is not True:
-                self._set_connection_state(CONNECTION_DISCONNECTED)
-                return
+        if self._active_provider_id == "codex" and not is_codex_authenticated():
+            self._set_connection_state(CONNECTION_DISCONNECTED)
+            return
         self._set_connection_state(CONNECTION_CONNECTED)
 
     def _set_status_message(self, message: str, severity: str = STATUS_MUTED) -> None:
@@ -5012,25 +5002,6 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
         self._provider_cli_probe_inflight.discard(normalized_provider_id)
         self._set_cli_caps(normalized_provider_id, caps)
         if normalized_provider_id == self._active_provider_id:
-            self._refresh_connection_state()
-        return False
-
-    def _refresh_codex_auth_async(self, *, force: bool = False) -> None:
-        if self._codex_auth_probe_inflight and not force:
-            return
-        self._codex_auth_probe_inflight = True
-
-        import threading
-
-        def _probe() -> None:
-            authenticated = refresh_codex_authentication_cache()
-            GLib.idle_add(self._apply_codex_auth_probe_result, authenticated)
-
-        threading.Thread(target=_probe, daemon=True).start()
-
-    def _apply_codex_auth_probe_result(self, _authenticated: bool) -> bool:
-        self._codex_auth_probe_inflight = False
-        if self._active_provider_id == "codex":
             self._refresh_connection_state()
         return False
 
@@ -6366,8 +6337,6 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
             if request_visible:
                 self._set_typing(running)
             if not running:
-                if pane is not None:
-                    self._flush_buffered_assistant_chunks(pane_id, request_token)
                 self._queue_context_indicator_update(immediate=True)
 
             if running and pane is not None and pane._is_agent:
@@ -6393,9 +6362,7 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
                 pane._typing_cleared_request_token = request_token
             self._context_char_count += len(chunk)
             self._queue_context_indicator_update()
-            if pane is not None:
-                pane._pending_assistant_chunk_buffer += chunk
-                self._schedule_buffered_assistant_chunk_flush(pane_id, request_token)
+            self._append_assistant_chunk(chunk, sync_ui=request_visible)
 
     def _on_process_system_message(self, pane_id: str, request_token: str, message: str) -> None:
         if pane_id not in self._pane_registry:
@@ -6460,9 +6427,6 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
         with self._pane_context(pane_id):
             temp_paths = self._request_temp_files.pop(request_token, [])
             cleanup_temp_paths(temp_paths)
-            pane = self._pane_by_id(pane_id)
-            if pane is not None:
-                self._flush_buffered_assistant_chunks(pane_id, request_token)
 
             if not self._is_current_request(request_token):
                 return
@@ -6621,50 +6585,7 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
             self._call_js(function_name, *args)
         return False
 
-    @staticmethod
-    def _cancel_pending_assistant_chunk_flush(pane: PaneController) -> None:
-        if pane._pending_assistant_chunk_flush_id is not None:
-            GLib.source_remove(pane._pending_assistant_chunk_flush_id)
-            pane._pending_assistant_chunk_flush_id = None
-
-    def _flush_buffered_assistant_chunks(self, pane_id: str, request_token: str, *, from_timer: bool = False) -> bool:
-        pane = self._pane_by_id(pane_id)
-        if pane is None:
-            return False
-        with self._pane_context(pane_id):
-            if not from_timer and pane._pending_assistant_chunk_flush_id is not None:
-                GLib.source_remove(pane._pending_assistant_chunk_flush_id)
-            pane._pending_assistant_chunk_flush_id = None
-            buffered_chunk = pane._pending_assistant_chunk_buffer
-            pane._pending_assistant_chunk_buffer = ""
-            if not buffered_chunk:
-                return False
-            if not self._is_current_request(request_token):
-                return False
-            request_session_id = self._active_request_session_id
-            request_visible = bool(request_session_id) and request_session_id == self._active_session_id
-            self._append_assistant_chunk(buffered_chunk, sync_ui=request_visible)
-        return False
-
-    def _flush_buffered_assistant_chunks_timer(self, pane_id: str, request_token: str) -> bool:
-        return self._flush_buffered_assistant_chunks(pane_id, request_token, from_timer=True)
-
-    def _schedule_buffered_assistant_chunk_flush(self, pane_id: str, request_token: str) -> None:
-        pane = self._pane_by_id(pane_id)
-        if pane is None or pane._pending_assistant_chunk_flush_id is not None:
-            return
-        pane._pending_assistant_chunk_flush_id = GLib.timeout_add(
-            25,
-            self._flush_buffered_assistant_chunks_timer,
-            pane_id,
-            request_token,
-        )
-
     def _start_assistant_message(self) -> None:
-        pane = self._state_pane()
-        if pane is not None:
-            self._cancel_pending_assistant_chunk_flush(pane)
-            pane._pending_assistant_chunk_buffer = ""
         self._active_assistant_message = ""
         self._call_js("startAssistantMessage")
 
@@ -6688,10 +6609,6 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
         self._call_js("setTyping", value)
 
     def _clear_messages(self) -> None:
-        pane = self._state_pane()
-        if pane is not None:
-            self._cancel_pending_assistant_chunk_flush(pane)
-            pane._pending_assistant_chunk_buffer = ""
         self._has_messages = False
         self._context_char_count = 0
         self._update_context_indicator()
@@ -6705,8 +6622,6 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
 
         for pane_id, pane in self._pane_registry.items():
             with self._pane_context(pane_id):
-                self._cancel_pending_assistant_chunk_flush(pane)
-                pane._pending_assistant_chunk_buffer = ""
                 if pane._claude_process is not None:
                     pane._claude_process.stop()
                 for paths in pane._request_temp_files.values():

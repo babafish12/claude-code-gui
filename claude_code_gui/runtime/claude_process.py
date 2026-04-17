@@ -9,7 +9,6 @@ import re
 import shlex
 import subprocess
 import threading
-import time
 from typing import Any, Callable
 
 from gi.repository import GLib
@@ -356,29 +355,6 @@ class ClaudeProcess:
         seen_permission_signatures: set[str] = set()
         codex_file_change_snapshots: dict[str, dict[str, str | None]] = {}
         last_emitted_assistant_chunk = ""
-        pending_assistant_chunks: list[str] = []
-        chunk_buffer_started_at = 0.0
-        chunk_flush_interval_s = 0.025
-
-        def flush_pending_assistant_chunks(*, force: bool = False) -> None:
-            nonlocal pending_assistant_chunks, chunk_buffer_started_at
-            if not pending_assistant_chunks:
-                return
-            if not force and (time.monotonic() - chunk_buffer_started_at) < chunk_flush_interval_s:
-                return
-            merged = "".join(pending_assistant_chunks)
-            pending_assistant_chunks = []
-            chunk_buffer_started_at = 0.0
-            self._emit_assistant_chunk(request_token, merged)
-
-        def queue_assistant_chunk(text_chunk: str) -> None:
-            nonlocal chunk_buffer_started_at
-            if not text_chunk:
-                return
-            if not pending_assistant_chunks:
-                chunk_buffer_started_at = time.monotonic()
-            pending_assistant_chunks.append(text_chunk)
-            flush_pending_assistant_chunks()
 
         stdout = process.stdout
         if stdout is not None:
@@ -420,7 +396,6 @@ class ClaudeProcess:
                             fallback_tool_data=None,
                         )
                         if permission_payload is not None:
-                            flush_pending_assistant_chunks(force=True)
                             self._emit_permission_request(request_token, permission_payload)
 
                     parsed_events = dialect.parse_line(stripped)
@@ -447,10 +422,9 @@ class ClaudeProcess:
                                     continue
                                 assistant_parts.append(text_chunk)
                                 streamed_assistant = True
-                                queue_assistant_chunk(text_chunk)
+                                self._emit_assistant_chunk(request_token, text_chunk)
 
                         if parsed_event.tool:
-                            flush_pending_assistant_chunks(force=True)
                             tool_payloads = self._expand_tool_payloads(
                                 parsed_event=parsed_event,
                                 provider_id=provider_id,
@@ -476,7 +450,6 @@ class ClaudeProcess:
                             output_tokens = int(parsed_event.usage.get("output_tokens") or 0)
 
                         if parsed_event.error:
-                            flush_pending_assistant_chunks(force=True)
                             if provider_id == "claude" and parsed_event.raw_type == "system":
                                 self._emit_system_message(request_token, parsed_event.error)
                             else:
@@ -492,9 +465,8 @@ class ClaudeProcess:
                             continue
                         assistant_parts.append(line + "\n")
                         streamed_assistant = True
-                        queue_assistant_chunk(line + "\n")
+                        self._emit_assistant_chunk(request_token, line + "\n")
 
-        flush_pending_assistant_chunks(force=True)
         return_code = process.wait()
 
         unsupported_output = False
@@ -536,7 +508,6 @@ class ClaudeProcess:
         if not assistant_text.strip() and isinstance(result_text, str) and result_text.strip():
             assistant_text = result_text
             streamed_assistant = True
-            flush_pending_assistant_chunks(force=True)
             self._emit_assistant_chunk(request_token, result_text)
 
         error_message: str | None = None
