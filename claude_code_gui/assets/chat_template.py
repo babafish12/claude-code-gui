@@ -8823,7 +8823,20 @@ var GLASS_BUTTON_SELECTOR = [
         });
     }
 
+    var slashRefreshDebounceTimer = null;
+    var slashRefreshLastCallAt = 0;
     function requestSlashCommandsRefresh() {
+        var now = Date.now();
+        if (now - slashRefreshLastCallAt < 200) {
+            if (slashRefreshDebounceTimer !== null) return;
+            slashRefreshDebounceTimer = setTimeout(function () {
+                slashRefreshDebounceTimer = null;
+                slashRefreshLastCallAt = Date.now();
+                postToHost("refreshSlashCommands", "refresh");
+            }, 200 - (now - slashRefreshLastCallAt));
+            return;
+        }
+        slashRefreshLastCallAt = now;
         postToHost("refreshSlashCommands", "refresh");
     }
 

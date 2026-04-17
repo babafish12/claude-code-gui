@@ -4735,7 +4735,6 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _set_status_message(self, message: str, severity: str = STATUS_MUTED) -> None:
         self._last_status_message = message
-        self._update_project_folder_labels()
         if self._connection_dot is not None:
             existing = self._connection_dot.get_tooltip_text() or "Disconnected"
             state_text = existing.splitlines()[0] if existing else "Disconnected"
