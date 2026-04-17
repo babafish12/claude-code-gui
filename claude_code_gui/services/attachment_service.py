@@ -17,6 +17,76 @@ MAX_SEND_MESSAGE_CHARS = 120_000
 MAX_DATA_URL_CHARS = ATTACHMENT_MAX_BYTES * 2 + 1024
 
 
+def _guess_attachment_mime_type(path: str) -> str:
+    mime_type, _ = mimetypes.guess_type(path)
+    if not mime_type:
+        mime_type = "application/octet-stream"
+    if mime_type == "application/octet-stream":
+        lower_suffix = os.path.splitext(path)[1].lower()
+        mime_type = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+            ".gif": "image/gif",
+            ".svg": "image/svg+xml",
+            ".bmp": "image/bmp",
+            ".avif": "image/avif",
+            ".heic": "image/heic",
+        }.get(lower_suffix, mime_type)
+    return mime_type
+
+
+def encode_host_attachment_payloads(
+    selected_paths: list[str],
+) -> tuple[list[dict[str, str]], int, bool, bool]:
+    payloads: list[dict[str, str]] = []
+    skipped_count = 0
+    total_bytes = 0
+    hit_file_size_limit = False
+    hit_total_size_limit = False
+
+    for selected in selected_paths:
+        if len(payloads) >= MAX_ATTACHMENTS_PER_MESSAGE:
+            skipped_count += 1
+            continue
+        if not os.path.isfile(selected):
+            skipped_count += 1
+            continue
+        try:
+            file_size = os.path.getsize(selected)
+        except OSError:
+            skipped_count += 1
+            continue
+        if file_size > ATTACHMENT_MAX_BYTES:
+            skipped_count += 1
+            hit_file_size_limit = True
+            continue
+        if total_bytes + file_size > MAX_ATTACHMENT_TOTAL_BYTES:
+            skipped_count += 1
+            hit_total_size_limit = True
+            continue
+        try:
+            with open(selected, "rb") as handle:
+                raw_bytes = handle.read()
+        except OSError:
+            skipped_count += 1
+            continue
+
+        mime_type = _guess_attachment_mime_type(selected)
+        payloads.append(
+            {
+                "name": os.path.basename(selected),
+                "path": selected,
+                "type": mime_type,
+                "data": f"data:{mime_type};base64,{base64.b64encode(raw_bytes).decode('ascii')}",
+            }
+        )
+        total_bytes += file_size
+
+    return payloads, skipped_count, hit_file_size_limit, hit_total_size_limit
+
+
 def decode_data_url(data_url: str) -> tuple[str, bytes] | None:
     if not data_url.startswith("data:"):
         return None

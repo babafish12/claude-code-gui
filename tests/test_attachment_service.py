@@ -133,3 +133,46 @@ def test_materialize_compose_and_cleanup_roundtrip() -> None:
     finally:
         attachment_service.cleanup_temp_paths(paths)
         attachment_service.cleanup_temp_paths(["", paths[0], "/tmp/definitely-not-existing-attachment"])
+
+
+def test_encode_host_attachment_payloads_builds_data_urls(tmp_path: Path) -> None:
+    first = tmp_path / "image.png"
+    first.write_bytes(b"\x89PNG")
+    second = tmp_path / "note.txt"
+    second.write_text("hello", encoding="utf-8")
+
+    payloads, skipped_count, hit_file_size_limit, hit_total_size_limit = attachment_service.encode_host_attachment_payloads(
+        [str(first), str(second)]
+    )
+
+    assert skipped_count == 0
+    assert hit_file_size_limit is False
+    assert hit_total_size_limit is False
+    assert len(payloads) == 2
+    assert payloads[0]["name"] == "image.png"
+    assert payloads[0]["type"] == "image/png"
+    assert payloads[0]["data"].startswith("data:image/png;base64,")
+    assert payloads[1]["name"] == "note.txt"
+    assert payloads[1]["type"] == "text/plain"
+
+
+def test_encode_host_attachment_payloads_respects_limits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    small = tmp_path / "small.txt"
+    small.write_text("abc", encoding="utf-8")
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"x" * 20)
+
+    monkeypatch.setattr(attachment_service, "ATTACHMENT_MAX_BYTES", 10)
+    monkeypatch.setattr(attachment_service, "MAX_ATTACHMENT_TOTAL_BYTES", 5)
+
+    payloads, skipped_count, hit_file_size_limit, hit_total_size_limit = attachment_service.encode_host_attachment_payloads(
+        [str(small), str(big), str(small)]
+    )
+
+    assert len(payloads) == 1
+    assert skipped_count == 2
+    assert hit_file_size_limit is True
+    assert hit_total_size_limit is True
