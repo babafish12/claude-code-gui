@@ -6,13 +6,9 @@ from pathlib import Path
 from claude_code_gui.assets.glass_tokens_web import glass_tokens_style_block
 
 VENDOR_DIR = Path(__file__).parent / "vendor"
-HIGHLIGHT_JS = (VENDOR_DIR / "highlight.min.js").read_text(encoding="utf-8").replace("</script>", "<\\/script>")
-HIGHLIGHT_CSS = (VENDOR_DIR / "highlight-dracula.min.css").read_text(encoding="utf-8").replace("</style>", "<\\/style>")
-MOTION_ONE_JS = (VENDOR_DIR / "motion.min.js").read_text(encoding="utf-8").replace("</script>", "<\\/script>")
-GLASS_STYLE_SNIPPET = glass_tokens_style_block("dark")
+_CHAT_WEBVIEW_HTML_CACHE: str | None = None
 
-CHAT_WEBVIEW_HTML = (
-r"""
+_CHAT_WEBVIEW_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -9783,8 +9779,32 @@ var GLASS_BUTTON_SELECTOR = [
 </body>
 </html>
 """
-    .replace("__INLINE_HIGHLIGHT_CSS__", HIGHLIGHT_CSS)
-    .replace("__INLINE_HIGHLIGHT_JS__", HIGHLIGHT_JS)
-    .replace("__INLINE_MOTION_ONE_JS__", MOTION_ONE_JS)
-    .replace("__GLASS_STYLE_SNIPPET__", GLASS_STYLE_SNIPPET)
-)
+
+
+def get_chat_webview_html() -> str:
+    global _CHAT_WEBVIEW_HTML_CACHE
+    if _CHAT_WEBVIEW_HTML_CACHE is None:
+        highlight_js = (VENDOR_DIR / "highlight.min.js").read_text(encoding="utf-8").replace("</script>", "<\\/script>")
+        highlight_css = (VENDOR_DIR / "highlight-dracula.min.css").read_text(encoding="utf-8").replace(
+            "</style>",
+            "<\\/style>",
+        )
+        motion_one_js = (VENDOR_DIR / "motion.min.js").read_text(encoding="utf-8").replace(
+            "</script>",
+            "<\\/script>",
+        )
+        glass_style_snippet = glass_tokens_style_block("dark")
+        _CHAT_WEBVIEW_HTML_CACHE = (
+            _CHAT_WEBVIEW_TEMPLATE
+            .replace("__INLINE_HIGHLIGHT_CSS__", highlight_css)
+            .replace("__INLINE_HIGHLIGHT_JS__", highlight_js)
+            .replace("__INLINE_MOTION_ONE_JS__", motion_one_js)
+            .replace("__GLASS_STYLE_SNIPPET__", glass_style_snippet)
+        )
+    return _CHAT_WEBVIEW_HTML_CACHE
+
+
+def __getattr__(name: str) -> str:
+    if name == "CHAT_WEBVIEW_HTML":
+        return get_chat_webview_html()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
