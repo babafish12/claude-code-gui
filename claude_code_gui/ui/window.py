@@ -316,6 +316,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._session_filter_buttons: dict[str, Gtk.Button] = {}
         self._session_filter = "all"
         self._session_search_query = ""
+        self._session_search_debounce_id: int | None = None
         self._window_has_focus = True
         self._notification_counter = 0
         self._app_icon_path: Path | None = _resolve_app_icon_path()
@@ -3543,7 +3544,13 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _on_session_search_changed(self, entry: Gtk.Entry) -> None:
         self._session_search_query = entry.get_text().strip().casefold()
+        self._cancel_timer("_session_search_debounce_id")
+        self._session_search_debounce_id = GLib.timeout_add(150, self._refresh_session_search_debounced)
+
+    def _refresh_session_search_debounced(self) -> bool:
+        self._session_search_debounce_id = None
         self._refresh_session_list()
+        return False
 
     def _get_filtered_sessions(self) -> list[SessionRecord]:
         provider_sessions = [s for s in self._sessions if s.provider == self._active_provider_id]
