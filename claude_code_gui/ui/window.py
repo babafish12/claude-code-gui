@@ -308,6 +308,10 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
         self._context_indicator_throttle_id: int | None = None
         self._context_indicator_last_update_us = 0
         self._last_slash_commands_cache = ""
+        self._slash_commands_cached_entries: list[dict[str, Any]] = []
+        self._slash_commands_cache_signature: tuple[tuple[str, str, tuple[str, ...], int], ...] | None = None
+        self._slash_commands_scan_inflight = False
+        self._slash_commands_refresh_requested = False
 
         self._project_path_entry: Gtk.Entry | None = None
         self._project_path_popover: Gtk.Popover | None = None
@@ -3725,7 +3729,57 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
             return line
         return title
 
-    def _discover_custom_slash_commands(self) -> list[dict[str, Any]]:
+    def _slash_command_roots(self) -> tuple[list[tuple[Path, tuple[str, ...]]], list[tuple[Path, tuple[str, ...]]]]:
+        project_root = Path(self._project_folder)
+        codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
+        all_provider_ids: tuple[str, ...] = tuple(PROVIDERS.keys()) or (DEFAULT_PROVIDER_ID,)
+        command_roots: list[tuple[Path, tuple[str, ...]]] = [
+            (project_root / ".claude" / "commands", ("claude",)),
+            (Path.home() / ".claude" / "commands", ("claude",)),
+            (project_root / ".codex" / "commands", ("codex",)),
+            (codex_home / "commands", ("codex",)),
+            (project_root / ".gemini" / "commands", ("gemini",)),
+            (Path.home() / ".gemini" / "commands", ("gemini",)),
+            (project_root / ".agents" / "commands", all_provider_ids),
+            (Path.home() / ".agents" / "commands", all_provider_ids),
+        ]
+        skill_roots: list[tuple[Path, tuple[str, ...]]] = [
+            (project_root / ".agents" / "skills", all_provider_ids),
+            (Path.home() / ".agents" / "skills", all_provider_ids),
+            (project_root / ".codex" / "skills", ("codex",)),
+            (codex_home / "skills", ("codex",)),
+            (project_root / ".gemini" / "skills", ("gemini",)),
+            (Path.home() / ".gemini" / "skills", ("gemini",)),
+            (project_root / ".claude" / "skills", ("claude",)),
+            (Path.home() / ".claude" / "skills", ("claude",)),
+        ]
+        return command_roots, skill_roots
+
+    @staticmethod
+    def _slash_roots_signature(
+        command_roots: list[tuple[Path, tuple[str, ...]]],
+        skill_roots: list[tuple[Path, tuple[str, ...]]],
+    ) -> tuple[tuple[str, str, tuple[str, ...], int], ...]:
+        signature: list[tuple[str, str, tuple[str, ...], int]] = []
+
+        def root_mtime_ns(root: Path) -> int:
+            try:
+                return root.stat().st_mtime_ns if root.is_dir() else -1
+            except OSError:
+                return -1
+
+        for root, providers in command_roots:
+            signature.append(("commands", str(root), tuple(providers), root_mtime_ns(root)))
+        for root, providers in skill_roots:
+            signature.append(("skills", str(root), tuple(providers), root_mtime_ns(root)))
+        return tuple(signature)
+
+    @classmethod
+    def _discover_custom_slash_commands_from_roots(
+        cls,
+        command_roots: list[tuple[Path, tuple[str, ...]]],
+        skill_roots: list[tuple[Path, tuple[str, ...]]],
+    ) -> list[dict[str, Any]]:
         commands: list[dict[str, Any]] = []
         commands_by_key: dict[str, dict[str, Any]] = {}
 
@@ -3738,7 +3792,7 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
             return normalized
 
         def add_command(name: str, icon: str, description: str, providers: list[str] | tuple[str, ...]) -> None:
-            safe_name = self._safe_slash_name(name)
+            safe_name = cls._safe_slash_name(name)
             if not safe_name:
                 return
             provider_list = normalize_providers(providers)
@@ -3757,25 +3811,12 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
             payload = {
                 "name": safe_name,
                 "icon": icon,
-                "description": self._truncate_text(description, 96),
+                "description": cls._truncate_text(description, 96),
                 "providers": provider_list,
             }
             commands_by_key[key] = payload
             commands.append(payload)
 
-        project_root = Path(self._project_folder)
-        codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
-        all_provider_ids: tuple[str, ...] = tuple(PROVIDERS.keys()) or (DEFAULT_PROVIDER_ID,)
-        command_roots: list[tuple[Path, tuple[str, ...]]] = [
-            (project_root / ".claude" / "commands", ("claude",)),
-            (Path.home() / ".claude" / "commands", ("claude",)),
-            (project_root / ".codex" / "commands", ("codex",)),
-            (codex_home / "commands", ("codex",)),
-            (project_root / ".gemini" / "commands", ("gemini",)),
-            (Path.home() / ".gemini" / "commands", ("gemini",)),
-            (project_root / ".agents" / "commands", all_provider_ids),
-            (Path.home() / ".agents" / "commands", all_provider_ids),
-        ]
         for root, providers in command_roots:
             if not root.is_dir():
                 continue
@@ -3789,20 +3830,10 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
                 if any(part.startswith(".") for part in relative.parts):
                     continue
                 slash_name = "/".join(relative.parts)
-                summary = self._read_markdown_summary(command_file) or "Custom slash command"
+                summary = cls._read_markdown_summary(command_file) or "Custom slash command"
                 add_command(slash_name, "C", f"Custom command: {summary}", providers)
 
         skill_doc_names = ("SKILL.md", "skill.md", "skill.markdown")
-        skill_roots: list[tuple[Path, tuple[str, ...]]] = [
-            (project_root / ".agents" / "skills", all_provider_ids),
-            (Path.home() / ".agents" / "skills", all_provider_ids),
-            (project_root / ".codex" / "skills", ("codex",)),
-            (codex_home / "skills", ("codex",)),
-            (project_root / ".gemini" / "skills", ("gemini",)),
-            (Path.home() / ".gemini" / "skills", ("gemini",)),
-            (project_root / ".claude" / "skills", ("claude",)),
-            (Path.home() / ".claude" / "skills", ("claude",)),
-        ]
         for root, providers in skill_roots:
             if not root.is_dir():
                 continue
@@ -3816,18 +3847,52 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
                 skill_dir = skill_doc.parent
                 if skill_dir == root or skill_dir.name.startswith("."):
                     continue
-                summary = self._read_markdown_summary(skill_doc) or "Custom skill"
+                summary = cls._read_markdown_summary(skill_doc) or "Custom skill"
                 add_command(skill_dir.name, "S", f"Custom skill: {summary}", providers)
 
         return commands
 
-    def _refresh_slash_commands(self) -> None:
-        commands = self._discover_custom_slash_commands()
+    def _publish_slash_commands(self, commands: list[dict[str, Any]]) -> None:
         payload = json.dumps(commands, ensure_ascii=False, sort_keys=True)
         if payload == self._last_slash_commands_cache:
             return
         self._last_slash_commands_cache = payload
         self._call_js("updateSlashCommands", commands)
+
+    def _apply_discovered_slash_commands(
+        self,
+        signature: tuple[tuple[str, str, tuple[str, ...], int], ...],
+        commands: list[dict[str, Any]],
+    ) -> bool:
+        self._slash_commands_scan_inflight = False
+        self._slash_commands_cache_signature = signature
+        self._slash_commands_cached_entries = list(commands)
+        self._publish_slash_commands(commands)
+        if self._slash_commands_refresh_requested:
+            self._slash_commands_refresh_requested = False
+            self._refresh_slash_commands()
+        return False
+
+    def _refresh_slash_commands(self) -> None:
+        command_roots, skill_roots = self._slash_command_roots()
+        signature = self._slash_roots_signature(command_roots, skill_roots)
+        if signature == self._slash_commands_cache_signature:
+            self._publish_slash_commands(self._slash_commands_cached_entries)
+            return
+        if self._slash_commands_scan_inflight:
+            self._slash_commands_refresh_requested = True
+            return
+
+        self._slash_commands_scan_inflight = True
+        self._slash_commands_refresh_requested = False
+
+        import threading
+
+        def _scan() -> None:
+            discovered = self._discover_custom_slash_commands_from_roots(command_roots, skill_roots)
+            GLib.idle_add(self._apply_discovered_slash_commands, signature, discovered)
+
+        threading.Thread(target=_scan, daemon=True).start()
 
     def _make_session_row(self, session: SessionRecord, allow_open: bool) -> Gtk.Box:
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
