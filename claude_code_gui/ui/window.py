@@ -317,6 +317,8 @@ class ClaudeCodeWindow(Gtk.Window):
         self._session_filter = "all"
         self._session_search_query = ""
         self._session_search_debounce_id: int | None = None
+        self._typing_cleared_for_request_token: str | None = None
+        self._context_indicator_last_update_us: int = 0
         self._window_has_focus = True
         self._notification_counter = 0
         self._app_icon_path: Path | None = _resolve_app_icon_path()
@@ -6219,6 +6221,9 @@ class ClaudeCodeWindow(Gtk.Window):
             self._call_js("setProcessing", running if request_visible else False)
             if request_visible:
                 self._set_typing(running)
+            if not running:
+                self._context_indicator_last_update_us = GLib.get_monotonic_time()
+                self._update_context_indicator()
 
             pane = self._pane_by_id(pane_id)
             if running and pane is not None and pane._is_agent:
@@ -6238,10 +6243,14 @@ class ClaudeCodeWindow(Gtk.Window):
                 return
             request_session_id = self._active_request_session_id
             request_visible = bool(request_session_id) and request_session_id == self._active_session_id
-            if request_visible:
+            if request_visible and self._typing_cleared_for_request_token != request_token:
                 self._set_typing(False)
+                self._typing_cleared_for_request_token = request_token
             self._context_char_count += len(chunk)
-            self._update_context_indicator()
+            now_us = GLib.get_monotonic_time()
+            if now_us - self._context_indicator_last_update_us >= 250_000:
+                self._context_indicator_last_update_us = now_us
+                self._update_context_indicator()
             self._append_assistant_chunk(chunk, sync_ui=request_visible)
 
     def _on_process_system_message(self, pane_id: str, request_token: str, message: str) -> None:
