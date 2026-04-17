@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 .claude/
+
+# Local/generated artifacts
+.codex
+COURSE.html
+*.bak

@@ -208,6 +208,7 @@ def _coerce_provider(
     provider_id: str,
     discovered_models: dict[str, tuple[ModelOption, ...]],
 ) -> ProviderConfig:
+    provider_key = str(provider_id or "").strip().lower()
     provider_payload = payload if isinstance(payload, dict) else {}
     fallback_payload = DEFAULT_APP_SETTINGS["providers"].get(provider_id, {})
     fallback_models = _coerce_discovered_model_options(fallback_payload.get("model_options"))
@@ -282,6 +283,14 @@ def _coerce_provider(
     if not isinstance(raw_binary_names, list):
         raw_binary_names = []
 
+    supports_reasoning = bool(
+        provider_payload.get("supports_reasoning", fallback_payload.get("supports_reasoning", True))
+        if isinstance(provider_payload, dict)
+        else fallback_payload.get("supports_reasoning", True),
+    )
+    if provider_key == "gemini":
+        supports_reasoning = False
+
     return ProviderConfig(
         id=_coerce_text(provider_payload.get("id"), fallback=provider_id),
         name=_coerce_text(provider_payload.get("name"), fallback=fallback_payload.get("name", "Claude")),
@@ -315,11 +324,7 @@ def _coerce_provider(
             if isinstance(provider_payload, dict)
             else fallback_payload.get("permission_options"),
         ),
-        supports_reasoning=bool(
-            provider_payload.get("supports_reasoning", fallback_payload.get("supports_reasoning", True))
-            if isinstance(provider_payload, dict)
-            else fallback_payload.get("supports_reasoning", True),
-        ),
+        supports_reasoning=supports_reasoning,
     )
 
 

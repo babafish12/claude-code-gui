@@ -138,6 +138,7 @@ def test_normalize_provider_and_settings_icon_and_provider_selection() -> None:
     )
     assert normalized_gemini_provider["icon"] == "gemini-color.svg"
     assert normalized_gemini_provider["binary_names"] == ["gemini"]
+    assert normalized_gemini_provider["supports_reasoning"] is False
 
     normalized_settings = app_settings._normalize_settings(
         {

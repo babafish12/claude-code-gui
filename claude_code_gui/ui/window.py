@@ -383,7 +383,7 @@ class ClaudeCodeWindow(Gtk.Window):
             self._install_window_key_controller()
 
         if self._active_session_id is None:
-            self._set_status_message("No active session. Click + New Chat to start.", STATUS_INFO)
+            self._set_status_message("New chat ready. Type a message to start a fresh session.", STATUS_INFO)
         else:
             self._set_status_message("Session ready. Type a message below.", STATUS_MUTED)
 
@@ -3301,33 +3301,19 @@ class ClaudeCodeWindow(Gtk.Window):
         except (OSError, json.JSONDecodeError, ValueError) as error:
             self._sessions = []
             self._active_session_id = None
+            self._conversation_id = None
             self._set_status_message(f"Could not load sessions: {error}", STATUS_WARNING)
             return
 
-        if not self._sessions:
-            self._active_session_id = None
-            return
+        # Startup should always open in a fresh "new chat" state: no restored active session.
+        self._active_session_id = None
+        self._conversation_id = None
 
-        active_candidates = [
-            s
-            for s in self._sessions
-            if s.provider == self._active_provider_id and s.status != SESSION_STATUS_ARCHIVED
-        ]
-        if not active_candidates:
-            self._active_session_id = None
-            return
-
-        selected = max(active_candidates, key=self._session_sort_key)
         changed = False
-
         for session in self._sessions:
             if session.status == SESSION_STATUS_ACTIVE:
                 session.status = SESSION_STATUS_ENDED
                 changed = True
-
-        self._active_session_id = None
-        self._apply_session_to_controls(selected, add_to_recent=os.path.isdir(selected.project_path))
-        self._conversation_id = None
 
         if changed:
             self._save_sessions_safe("Could not save session state")

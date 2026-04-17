@@ -500,8 +500,13 @@ def open_settings_editor(window: "ClaudeCodeWindow") -> None:
         _add_css_classes(provider_label, "settings-provider-title")
         page.pack_start(provider_label, False, False, 0)
 
-        support_reasoning = Gtk.CheckButton(label="Enable reasoning controls for this provider")
-        support_reasoning.set_active(bool(provider.get("supports_reasoning", True)))
+        is_gemini_provider = provider_id.strip().lower() == "gemini"
+        support_reasoning: Gtk.CheckButton | None = None
+        if is_gemini_provider:
+            provider["supports_reasoning"] = False
+        else:
+            support_reasoning = Gtk.CheckButton(label="Enable reasoning controls for this provider")
+            support_reasoning.set_active(bool(provider.get("supports_reasoning", True)))
 
         preview_frame = Gtk.Frame(label="Preview")
         _add_css_classes(preview_frame, "settings-card")
@@ -586,15 +591,16 @@ def open_settings_editor(window: "ClaudeCodeWindow") -> None:
             else:
                 preview_reason_label.set_text("Reasoning controls: disabled")
 
-        support_reasoning.connect(
-            "toggled",
-            lambda button: (
-                provider.__setitem__("supports_reasoning", bool(button.get_active())),
-                _apply_preview(),
-            ),
-        )
-        _add_css_classes(support_reasoning, "settings-toggle")
-        page.pack_start(support_reasoning, False, False, 0)
+        if support_reasoning is not None:
+            support_reasoning.connect(
+                "toggled",
+                lambda button: (
+                    provider.__setitem__("supports_reasoning", bool(button.get_active())),
+                    _apply_preview(),
+                ),
+            )
+            _add_css_classes(support_reasoning, "settings-toggle")
+            page.pack_start(support_reasoning, False, False, 0)
 
         theme_frame = Gtk.Frame(label="Theme")
         _add_css_classes(theme_frame, "settings-card")

@@ -300,7 +300,7 @@
           "is_advanced": true
         }
       ],
-      "supports_reasoning": true
+      "supports_reasoning": false
     }
   },
   "reasoning_options": [

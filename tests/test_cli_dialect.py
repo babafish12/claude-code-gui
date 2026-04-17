@@ -59,6 +59,15 @@ def test_claude_build_argv_with_ask_permission_mode(run_config: CliRunConfig) ->
     assert "ask" in argv
 
 
+def test_claude_build_argv_omits_reasoning_flag_when_disabled(run_config: CliRunConfig) -> None:
+    run_config.supports_reasoning_flag = False
+    dialect = ClaudeDialect()
+
+    argv = dialect.build_argv("hello", run_config)
+
+    assert "--effort" not in argv
+
+
 def test_claude_build_resume_argv_appends_resume(run_config: CliRunConfig) -> None:
     dialect = ClaudeDialect()
 
@@ -186,6 +195,23 @@ def test_codex_build_argv_permission_mode_mapping() -> None:
 
     assert argv[:2] == ["/usr/bin/codex", "exec"]
     assert "--dangerously-bypass-approvals-and-sandbox" in argv
+
+
+def test_codex_build_argv_adds_reasoning_effort_config_when_enabled() -> None:
+    dialect = CodexDialect()
+    config = CliRunConfig(
+        binary_path="/usr/bin/codex",
+        cwd="/tmp/work",
+        model="gpt-5",
+        permission_mode="ask",
+        reasoning_level="high",
+        supports_reasoning_flag=True,
+    )
+
+    argv = dialect.build_argv("run", config)
+
+    assert "-c" in argv
+    assert "model_reasoning_effort=high" in argv
 
 
 def test_codex_build_argv_with_ask_permission_mode() -> None:
@@ -331,6 +357,56 @@ def test_gemini_build_argv_maps_permission_and_reasoning() -> None:
     assert argv[-2:] == ["-p", "run"]
 
 
+@pytest.mark.parametrize(
+    ("reasoning_level", "expected_model"),
+    [("low", "flash-lite"), ("medium", "flash"), ("high", "pro"), ("xhigh", "pro")],
+)
+def test_gemini_build_argv_maps_auto_model_alias_per_reasoning(
+    reasoning_level: str,
+    expected_model: str,
+) -> None:
+    dialect = GeminiDialect()
+    config = CliRunConfig(
+        binary_path="/usr/bin/gemini",
+        cwd="/tmp/work",
+        model="auto",
+        permission_mode="ask",
+        reasoning_level=reasoning_level,
+        output_format="stream-json",
+        supports_model_flag=True,
+        supports_permission_flag=True,
+        supports_output_format_flag=True,
+        supports_reasoning_flag=True,
+    )
+
+    argv = dialect.build_argv("run", config)
+
+    assert "--model" in argv
+    assert expected_model in argv
+
+
+def test_gemini_build_argv_keeps_auto_model_when_reasoning_disabled() -> None:
+    dialect = GeminiDialect()
+    config = CliRunConfig(
+        binary_path="/usr/bin/gemini",
+        cwd="/tmp/work",
+        model="auto",
+        permission_mode="ask",
+        reasoning_level="high",
+        output_format="stream-json",
+        supports_model_flag=True,
+        supports_permission_flag=True,
+        supports_output_format_flag=True,
+        supports_reasoning_flag=False,
+    )
+
+    argv = dialect.build_argv("run", config)
+
+    assert "--model" in argv
+    assert "auto" in argv
+    assert "pro" not in argv
+
+
 def test_gemini_parse_line_init_and_assistant_message() -> None:
     dialect = GeminiDialect()
     init_events = dialect.parse_line(
@@ -354,3 +430,76 @@ def test_gemini_parse_line_init_and_assistant_message() -> None:
         )
     )
     assert [event.text for event in message_events if event.text] == ["Hello from Gemini"]
+
+
+def test_gemini_parse_line_tool_call_extracts_edit_diff_from_nested_json_args() -> None:
+    dialect = GeminiDialect()
+    events = dialect.parse_line(
+        json.dumps(
+            {
+                "type": "tool_call",
+                "toolCall": {
+                    "id": "tool-1",
+                    "name": "edit",
+                    "arguments": '{"path":"src/app.py","old_string":"old","new_string":"new"}',
+                },
+            }
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].tool is not None
+    assert events[0].tool["name"] == "edit"
+    assert events[0].tool["toolUseId"] == "tool-1"
+    assert events[0].tool["path"] == "src/app.py"
+    assert events[0].tool["old"] == "old"
+    assert events[0].tool["new"] == "new"
+
+
+def test_gemini_parse_line_message_content_extracts_tool_payload_and_output_merge() -> None:
+    dialect = GeminiDialect()
+    message_events = dialect.parse_line(
+        json.dumps(
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "tool-2",
+                        "name": "write",
+                        "args": {
+                            "path": "src/new.py",
+                            "content": "print('ok')",
+                        },
+                    },
+                    {"type": "text", "text": "done"},
+                ],
+            }
+        )
+    )
+
+    assert [event.text for event in message_events if event.text] == ["done"]
+    tool_events = [event.tool for event in message_events if event.tool]
+    assert len(tool_events) == 1
+    assert tool_events[0]["name"] == "write"
+    assert tool_events[0]["toolUseId"] == "tool-2"
+    assert tool_events[0]["path"] == "src/new.py"
+    assert tool_events[0]["new"] == "print('ok')"
+
+    output_events = dialect.parse_line(
+        json.dumps(
+            {
+                "type": "tool_output",
+                "toolUseId": "tool-2",
+                "output": "wrote file",
+            }
+        )
+    )
+
+    assert len(output_events) == 1
+    assert output_events[0].tool is not None
+    assert output_events[0].tool["name"] == "write"
+    assert output_events[0].tool["toolUseId"] == "tool-2"
+    assert output_events[0].tool["path"] == "src/new.py"
+    assert output_events[0].tool["output"] == "wrote file"

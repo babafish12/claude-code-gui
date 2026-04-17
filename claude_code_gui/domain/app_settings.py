@@ -264,7 +264,7 @@ _BUILTIN_DEFAULT_APP_SETTINGS: dict[str, Any] = {
                 {"label": "Plan mode", "value": "plan", "is_advanced": False},
                 {"label": "YOLO (Advanced)", "value": "bypassPermissions", "is_advanced": True},
             ],
-            "supports_reasoning": True,
+            "supports_reasoning": False,
         },
     },
     "reasoning_options": [
@@ -638,6 +638,9 @@ def _normalize_provider(payload: Any, fallback: dict[str, Any]) -> dict[str, Any
         or (not has_explicit_path and icon_name.startswith("gemini"))
     ):
         normalized["icon"] = "gemini-color.svg"
+
+    if provider_id_lower == "gemini":
+        normalized["supports_reasoning"] = False
 
     return normalized
 

@@ -591,6 +591,9 @@ class ClaudeDialect:
 class GeminiDialect:
     """Gemini argv builder + stream parser for headless JSON/stream-json events."""
 
+    def __init__(self) -> None:
+        self._pending_tools: dict[str, dict[str, Any]] = {}
+
     def build_argv(self, prompt: str, config: CliRunConfig) -> list[str]:
         argv = [config.binary_path]
         argv.extend(self._build_common_flags(config))
@@ -636,26 +639,37 @@ class GeminiDialect:
 
         if event_type == "message":
             role = self._coerce_text(event.get("role")).lower()
-            text = self._extract_text_payload(
-                event.get("content")
-                or event.get("text")
-                or event.get("message")
-            )
+            message_content = event.get("content")
+            text = self._extract_text_payload(message_content or event.get("text") or event.get("message"))
             if session_id:
                 parsed_events.append(ParsedEvent(session_id=session_id, raw_type=event_type))
             if role == "assistant" and text:
                 parsed_events.append(ParsedEvent(text=text, raw_type=event_type))
             elif role not in {"user", "assistant"} and text:
                 parsed_events.append(ParsedEvent(text=text, raw_type=event_type))
+            if isinstance(message_content, list):
+                for block in message_content:
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = str(block.get("type") or "").strip().lower()
+                    if self._looks_like_tool_call_event(block_type, block):
+                        tool_payload = self._parse_tool_payload(block)
+                        if tool_payload is not None:
+                            parsed_events.append(ParsedEvent(tool=tool_payload, raw_type=block_type or event_type))
+                        continue
+                    if self._looks_like_tool_output_event(block_type, block):
+                        tool_payload = self._parse_tool_output_payload(block)
+                        if tool_payload is not None:
+                            parsed_events.append(ParsedEvent(tool=tool_payload, raw_type=block_type or event_type))
             return parsed_events
 
-        if event_type in {"tool_call", "tool_use", "tool", "function_call"}:
+        if self._looks_like_tool_call_event(event_type, event):
             tool_payload = self._parse_tool_payload(event)
             if tool_payload is not None:
                 parsed_events.append(ParsedEvent(tool=tool_payload, raw_type=event_type))
             return parsed_events
 
-        if event_type in {"tool_output", "tool_result"}:
+        if self._looks_like_tool_output_event(event_type, event):
             tool_payload = self._parse_tool_output_payload(event)
             if tool_payload is not None:
                 parsed_events.append(ParsedEvent(tool=tool_payload, raw_type=event_type))
@@ -725,27 +739,157 @@ class GeminiDialect:
         }
         return usage_payload
 
+    @staticmethod
+    def _looks_like_tool_call_event(event_type: str, event: dict[str, Any]) -> bool:
+        if event_type in {"tool_call", "tool_use", "tool", "function_call", "toolcall", "functioncall"}:
+            return True
+        return any(
+            isinstance(event.get(key), dict)
+            for key in ("tool_call", "toolCall", "function_call", "functionCall")
+        )
+
+    @staticmethod
+    def _looks_like_tool_output_event(event_type: str, event: dict[str, Any]) -> bool:
+        if event_type in {"tool_output", "tool_result", "tooloutput", "toolresult"}:
+            return True
+        return any(
+            isinstance(event.get(key), dict)
+            for key in ("tool_output", "toolOutput", "tool_result", "toolResult")
+        )
+
+    @staticmethod
+    def _parse_json_object(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, list):
+            if any(isinstance(entry, dict) for entry in value):
+                return {"edits": value}
+            return {}
+        if not isinstance(value, str):
+            return {}
+        text = value.strip()
+        if not text or text[0] not in "{[":
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list) and any(isinstance(entry, dict) for entry in parsed):
+            return {"edits": parsed}
+        return {}
+
+    def _event_like_payload(self, event: dict[str, Any]) -> dict[str, Any]:
+        for key in ("tool_call", "toolCall", "function_call", "functionCall", "tool", "function"):
+            raw_value = event.get(key)
+            if isinstance(raw_value, dict):
+                return raw_value
+        return event
+
+    def _extract_tool_input(self, event: dict[str, Any], nested_event: dict[str, Any]) -> dict[str, Any]:
+        candidates: list[Any] = [
+            nested_event.get("args"),
+            nested_event.get("arguments"),
+            nested_event.get("input"),
+            nested_event.get("parameters"),
+            event.get("args"),
+            event.get("arguments"),
+            event.get("input"),
+            event.get("parameters"),
+        ]
+        function_payload = nested_event.get("function")
+        if isinstance(function_payload, dict):
+            candidates.extend(
+                [
+                    function_payload.get("args"),
+                    function_payload.get("arguments"),
+                    function_payload.get("input"),
+                    function_payload.get("parameters"),
+                ]
+            )
+
+        for candidate in candidates:
+            parsed = self._parse_json_object(candidate)
+            if parsed:
+                return parsed
+
+        return {}
+
+    @staticmethod
+    def _clip_text(value: str, *, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        return value[:limit]
+
+    def _collect_edit_series(self, edits: Any, *, keys: tuple[str, ...]) -> str:
+        if not isinstance(edits, list):
+            return ""
+
+        chunks: list[str] = []
+        for entry in edits:
+            if not isinstance(entry, dict):
+                continue
+            for key in keys:
+                value = self._extract_text_payload(entry.get(key))
+                if value:
+                    chunks.append(value)
+                    break
+
+        if not chunks:
+            return ""
+        return "\n\n".join(chunks)
+
     def _parse_tool_payload(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        nested_event = self._event_like_payload(event)
+        tool_input = self._extract_tool_input(event, nested_event)
+
         tool_name = self._coerce_text(
-            event.get("tool")
+            nested_event.get("tool")
+            or nested_event.get("tool_name")
+            or nested_event.get("name")
+            or nested_event.get("function_name")
+            or (
+                nested_event.get("function", {}).get("name")
+                if isinstance(nested_event.get("function"), dict)
+                else ""
+            )
+            or event.get("tool")
             or event.get("tool_name")
             or event.get("name")
-            or event.get("function")
+            or event.get("function_name")
+            or (
+                event.get("function", {}).get("name")
+                if isinstance(event.get("function"), dict)
+                else event.get("function")
+            )
         ) or "tool"
-        raw_input = event.get("args") or event.get("arguments") or event.get("input")
-        tool_input = raw_input if isinstance(raw_input, dict) else {}
 
         payload: dict[str, Any] = {"name": tool_name}
 
         tool_use_id = self._coerce_text(
-            event.get("tool_use_id")
+            nested_event.get("tool_use_id")
+            or nested_event.get("toolUseId")
+            or nested_event.get("call_id")
+            or nested_event.get("callId")
+            or nested_event.get("id")
+            or event.get("tool_use_id")
             or event.get("toolUseId")
+            or event.get("call_id")
+            or event.get("callId")
             or event.get("id")
         )
         if tool_use_id:
             payload["toolUseId"] = tool_use_id
 
-        command = self._coerce_text(tool_input.get("command") or event.get("command"))
+        command = self._coerce_text(
+            tool_input.get("command")
+            or tool_input.get("cmd")
+            or nested_event.get("command")
+            or nested_event.get("cmd")
+            or event.get("command")
+            or event.get("cmd")
+        )
         if command:
             payload["command"] = command[:400]
 
@@ -753,22 +897,150 @@ class GeminiDialect:
             tool_input.get("path")
             or tool_input.get("file_path")
             or tool_input.get("file")
+            or tool_input.get("target_file")
+            or tool_input.get("target_path")
+            or nested_event.get("path")
+            or nested_event.get("file_path")
             or event.get("path")
             or event.get("file_path")
         )
         if path:
             payload["path"] = path
 
-        description = self._extract_text_payload(event.get("description") or tool_input.get("description"))
+        description = self._extract_text_payload(
+            nested_event.get("description")
+            or event.get("description")
+            or tool_input.get("description")
+        )
         if description:
             payload["description"] = description[:400]
 
+        normalized_tool = tool_name.strip().lower()
+        old_text = ""
+        new_text = ""
+        content_text = ""
+
+        def _pick_text(*values: Any) -> str:
+            for value in values:
+                text = self._extract_text_payload(value)
+                if text:
+                    return text
+            return ""
+
+        if normalized_tool in {"edit", "multiedit"}:
+            old_text = _pick_text(
+                tool_input.get("old_string"),
+                tool_input.get("old_content"),
+                tool_input.get("old"),
+                nested_event.get("old_content"),
+                nested_event.get("old"),
+                event.get("old_content"),
+                event.get("old"),
+            )
+            new_text = _pick_text(
+                tool_input.get("new_string"),
+                tool_input.get("new_content"),
+                tool_input.get("new"),
+                nested_event.get("new_content"),
+                nested_event.get("new"),
+                event.get("new_content"),
+                event.get("new"),
+            )
+            if not old_text and not new_text:
+                old_text = self._collect_edit_series(
+                    tool_input.get("edits"),
+                    keys=("old_string", "old_content", "old"),
+                )
+                new_text = self._collect_edit_series(
+                    tool_input.get("edits"),
+                    keys=("new_string", "new_content", "new"),
+                )
+        elif normalized_tool == "write":
+            old_text = _pick_text(
+                tool_input.get("old_content"),
+                tool_input.get("old"),
+                nested_event.get("old_content"),
+                nested_event.get("old"),
+                event.get("old_content"),
+                event.get("old"),
+            )
+            new_text = _pick_text(
+                tool_input.get("content"),
+                tool_input.get("new_content"),
+                tool_input.get("new"),
+                nested_event.get("content"),
+                nested_event.get("new_content"),
+                nested_event.get("new"),
+                event.get("content"),
+                event.get("new_content"),
+                event.get("new"),
+            )
+            content_text = new_text
+        else:
+            old_text = _pick_text(
+                tool_input.get("old_content"),
+                tool_input.get("old"),
+                nested_event.get("old_content"),
+                nested_event.get("old"),
+                event.get("old_content"),
+                event.get("old"),
+            )
+            new_text = _pick_text(
+                tool_input.get("new_content"),
+                tool_input.get("new"),
+                nested_event.get("new_content"),
+                nested_event.get("new"),
+                event.get("new_content"),
+                event.get("new"),
+            )
+
+        if old_text or new_text:
+            clipped_old = self._clip_text(old_text, limit=12000)
+            clipped_new = self._clip_text(new_text, limit=12000)
+            payload["old"] = clipped_old
+            payload["new"] = clipped_new
+            payload["old_content"] = clipped_old
+            payload["new_content"] = clipped_new
+
+        if content_text:
+            payload["content"] = self._clip_text(content_text, limit=12000)
+
+        if tool_use_id:
+            self._pending_tools[tool_use_id] = dict(payload)
         return payload if payload else None
 
     def _parse_tool_output_payload(self, event: dict[str, Any]) -> dict[str, Any] | None:
-        tool_name = self._coerce_text(event.get("tool") or event.get("tool_name") or "tool_result")
+        nested_event = self._event_like_payload(event)
+        tool_use_id = self._coerce_text(
+            nested_event.get("tool_use_id")
+            or nested_event.get("toolUseId")
+            or nested_event.get("call_id")
+            or nested_event.get("callId")
+            or nested_event.get("id")
+            or event.get("tool_use_id")
+            or event.get("toolUseId")
+            or event.get("call_id")
+            or event.get("callId")
+            or event.get("id")
+        )
+        pending_payload = self._pending_tools.pop(tool_use_id, {}) if tool_use_id else {}
+
+        tool_name = self._coerce_text(
+            nested_event.get("tool")
+            or nested_event.get("tool_name")
+            or nested_event.get("name")
+            or event.get("tool")
+            or event.get("tool_name")
+            or event.get("name")
+            or pending_payload.get("name")
+            or "tool_result"
+        )
         output = self._extract_text_payload(
-            event.get("output")
+            nested_event.get("output")
+            or nested_event.get("result")
+            or nested_event.get("content")
+            or nested_event.get("message")
+            or event.get("output")
             or event.get("result")
             or event.get("content")
             or event.get("message")
@@ -776,15 +1048,9 @@ class GeminiDialect:
         if not output:
             return None
 
-        payload: dict[str, Any] = {
-            "name": tool_name,
-            "output": output[:12000],
-        }
-        tool_use_id = self._coerce_text(
-            event.get("tool_use_id")
-            or event.get("toolUseId")
-            or event.get("id")
-        )
+        payload: dict[str, Any] = dict(pending_payload)
+        payload["name"] = tool_name
+        payload["output"] = output[:12000]
         if tool_use_id:
             payload["toolUseId"] = tool_use_id
         return payload

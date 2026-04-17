@@ -51,7 +51,7 @@ def test_providers_registry_contains_expected_entries() -> None:
     assert gemini.binary_names == ("gemini",)
     assert claude.supports_reasoning is True
     assert codex.supports_reasoning is True
-    assert gemini.supports_reasoning is True
+    assert gemini.supports_reasoning is False
 
     for config in (claude, codex, gemini):
         assert config.model_options
