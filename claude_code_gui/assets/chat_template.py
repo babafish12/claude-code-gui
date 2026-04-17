@@ -4751,10 +4751,6 @@ body.reduced-motion *::after {
         return record;
     }
 
-    function appendArtifactIndicator(anchorEl, artifact) {
-        return;
-    }
-
     function extractCodeFences(rawText) {
         const source = String(rawText || "").replace(/\r\n/g, "\n");
         const blocks = [];
@@ -4828,23 +4824,13 @@ body.reduced-motion *::after {
             if (!candidate) {
                 return;
             }
-            const artifact = registerArtifact(candidate);
-            if (!artifact) {
-                return;
-            }
-            const anchor = messageBodyEl.querySelector('.code-block[data-code-index="' + index + '"]');
-            if (anchor) {
-                appendArtifactIndicator(anchor, artifact);
-            }
+            registerArtifact(candidate);
         });
 
         if (!parsedBlocks.length) {
             const structuredCandidate = artifactFromStructuredText(rawText);
             if (structuredCandidate) {
-                const artifact = registerArtifact(structuredCandidate);
-                if (artifact) {
-                    appendArtifactIndicator(messageBodyEl, artifact);
-                }
+                registerArtifact(structuredCandidate);
             }
         }
     }
@@ -4877,16 +4863,13 @@ body.reduced-motion *::after {
 
         const language = normalizeLanguage(languageFromFilename(filePath) || detectStructuredLanguage(content));
         const title = filePath || (toolName + "-artifact");
-        const artifact = registerArtifact({
+        registerArtifact({
             type: filePath ? "file" : "code",
             title: title,
             language: language,
             content: content,
             key: filePath ? ("file:" + filePath.toLowerCase()) : "",
         });
-        if (artifact) {
-            appendArtifactIndicator(cardEl, artifact);
-        }
     }
 
     function resetArtifactsSession() {
@@ -5170,10 +5153,28 @@ body.reduced-motion *::after {
         return fallbackHighlightCode(rawCode);
     }
 
+    function encodeHrefAttribute(url) {
+        return String(url || "").replace(/[&<>"']/g, function (char) {
+            switch (char) {
+                case "&": return "&amp;";
+                case "<": return "&lt;";
+                case ">": return "&gt;";
+                case "\"": return "&quot;";
+                case "'": return "&#39;";
+                default: return char;
+            }
+        });
+    }
+
     function applyInlineMarkdown(text) {
         let out = String(text || "");
-        out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-        out = out.replace(/(^|[\s(])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
+        out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, function (_match, label, url) {
+            return '<a href="' + encodeHrefAttribute(url) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+        });
+        out = out.replace(/(^|[\s(])(https?:\/\/[^\s<]+)/g, function (_match, prefix, url) {
+            const href = encodeHrefAttribute(url);
+            return prefix + '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + url + '</a>';
+        });
         out = out.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
         out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
         out = out.replace(/(^|\W)\*([^*\n]+)\*(?=\W|$)/g, "$1<em>$2</em>");
@@ -6294,11 +6295,30 @@ body.reduced-motion *::after {
                 if (trimmed.indexOf("file://") !== 0) {
                     return;
                 }
-                let decoded = trimmed.slice("file://".length);
+                let rest = trimmed.slice("file://".length);
+                // Normalize file:///path, file://localhost/path and file://host/path.
+                if (rest.charAt(0) === "/") {
+                    // file:/// - already a local absolute path.
+                } else {
+                    const hostEnd = rest.indexOf("/");
+                    if (hostEnd <= 0) {
+                        return;
+                    }
+                    const host = rest.slice(0, hostEnd).toLowerCase();
+                    if (host !== "localhost") {
+                        // Remote host share - we cannot read this directly.
+                        return;
+                    }
+                    rest = rest.slice(hostEnd);
+                }
+                let decoded = rest;
                 try {
-                    decoded = decodeURIComponent(decoded);
+                    decoded = decodeURIComponent(rest);
                 } catch (_error) {
-                    // keep raw value if decode fails
+                    // Keep the raw value when the URI is not percent-encoded.
+                }
+                if (!decoded || decoded.charAt(0) !== "/") {
+                    return;
                 }
                 if (seen.has(decoded)) {
                     return;
