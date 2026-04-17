@@ -7,6 +7,8 @@ import re
 import os
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +26,10 @@ class CliCapabilities:
 
 _MODEL_NAME_PATTERN = re.compile(r"^(?:[0-9]+[.)]?\s*)?(?P<name>[a-zA-Z0-9._/\-]+)(?:\s*[:=-]\s*(?P<label>.+))?$")
 _CODEX_MODELS_CACHE_PATH = Path.home() / ".codex" / "models_cache.json"
+_CODEX_AUTH_CACHE_TTL_SECONDS = 30.0
+_codex_auth_cache_lock = threading.Lock()
+_codex_auth_cache_value: bool | None = None
+_codex_auth_cache_checked_at = 0.0
 
 
 def _strip_ansi(value: str) -> str:
@@ -505,10 +511,30 @@ def detect_cli_flag_support(binary_path: str) -> CliCapabilities:
     return caps
 
 
-def is_codex_authenticated() -> bool:
+def get_cached_codex_authentication(*, max_age_seconds: float = _CODEX_AUTH_CACHE_TTL_SECONDS) -> tuple[bool | None, bool]:
+    with _codex_auth_cache_lock:
+        cached_value = _codex_auth_cache_value
+        checked_at = _codex_auth_cache_checked_at
+    if cached_value is None or checked_at <= 0:
+        return cached_value, False
+    max_age = max(0.0, float(max_age_seconds))
+    is_fresh = (time.monotonic() - checked_at) <= max_age
+    return cached_value, is_fresh
+
+
+def _set_cached_codex_authentication(value: bool) -> bool:
+    normalized = bool(value)
+    with _codex_auth_cache_lock:
+        global _codex_auth_cache_value, _codex_auth_cache_checked_at
+        _codex_auth_cache_value = normalized
+        _codex_auth_cache_checked_at = time.monotonic()
+    return normalized
+
+
+def refresh_codex_authentication_cache() -> bool:
     codex_binary = find_provider_binary(["codex"])
     if not codex_binary:
-        return False
+        return _set_cached_codex_authentication(False)
 
     checks = [
         ["login", "status"],
@@ -532,12 +558,26 @@ def is_codex_authenticated() -> bool:
 
         if not output:
             if result.returncode == 0:
-                return True
+                return _set_cached_codex_authentication(True)
             continue
 
-        if any(marker in output for marker in ("not logged in", "logged out", "not authenticated", "authentication required", "please log in", "login required")):
-            return False
+        if any(
+            marker in output
+            for marker in (
+                "not logged in",
+                "logged out",
+                "not authenticated",
+                "authentication required",
+                "please log in",
+                "login required",
+            )
+        ):
+            return _set_cached_codex_authentication(False)
         if any(marker in output for marker in ("logged in", "authenticated", "already logged in", "you are logged in")):
-            return True
+            return _set_cached_codex_authentication(True)
 
-    return False
+    return _set_cached_codex_authentication(False)
+
+
+def is_codex_authenticated() -> bool:
+    return refresh_codex_authentication_cache()
