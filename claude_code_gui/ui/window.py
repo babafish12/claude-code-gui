@@ -51,7 +51,7 @@ from claude_code_gui.domain.app_settings import (
     load_settings,
     save_settings,
 )
-from claude_code_gui.assets.chat_template import get_chat_webview_html
+from claude_code_gui.assets.chat_template import CHAT_WEBVIEW_HTML
 from claude_code_gui.assets.gtk_css import build_gtk_css
 from claude_code_gui.core.model_permissions import (
     normalize_model_value,
@@ -1539,7 +1539,7 @@ class ClaudeCodeWindow(Adw.ApplicationWindow if (Adw and GTK4) else Gtk.Window):
             if hasattr(settings, "set_enable_javascript"):
                 settings.set_enable_javascript(True)
 
-        webview.load_html(get_chat_webview_html(), "")
+        webview.load_html(CHAT_WEBVIEW_HTML, "")
         shell.add(webview)
         pane._webview = webview
 
