@@ -2871,22 +2871,7 @@ button:disabled {
     gap: 8px;
 }
 
-.token-fade-in {
-    animation: token-fade-in var(--motion-fast) var(--ease-enter) forwards;
-}
-
-.assistant-message > * {
-    animation: token-fade-in var(--motion-fast) var(--ease-enter) forwards;
-}
-
-@keyframes token-fade-in {
-
-    from { opacity: 0; transform: translateY(2px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
 .thinking-shell {
-
     display: flex;
     flex-direction: column;
     align-items: flex-start;
@@ -3472,7 +3457,6 @@ body.reduced-motion *::after {
     const WAIT_STATUS_MIN_INTERVAL_MS = 1000;
     const WAIT_STATUS_FADE_MS = 180;
     const WAIT_STATUS_MAX_COMMAND_LENGTH = 40;
-    const SLASH_REFRESH_DEBOUNCE_MS = 140;
     const WAIT_FALLBACK_MESSAGES = Object.freeze([
         "Thinking...",
         "Still working...",
@@ -3531,7 +3515,6 @@ body.reduced-motion *::after {
     let activeProviderName = "Claude";
     let activePopup = null;
     let lastUserPayload = null;
-    let lastUserPrompt = "";
     let currentFolderDisplay = "~";
     let attachments = [];
     let attachmentCounter = 0;
@@ -3561,7 +3544,6 @@ body.reduced-motion *::after {
     let slashSelectedIndex = 0;
     let slashFilteredItems = [];
     let activeSlashInput = null;
-    let slashRefreshTimer = null;
     const LANGUAGE_EXTENSION_MAP = Object.freeze({
         bash: ".sh",
         c: ".c",
@@ -6357,10 +6339,6 @@ body.reduced-motion *::after {
             return;
         }
 
-        if (text) {
-            lastUserPrompt = text;
-        }
-
         const outgoing = {
             text: text,
             attachments: outgoingAttachments,
@@ -7459,18 +7437,26 @@ body.reduced-motion *::after {
         const hasDetail = hasDiff || !!commandText || !!outputText;
 
         const rowObj = createMessageRow("tool");
-        const details = document.createElement("details");
-        details.className = "tool-card";
+        const card = document.createElement("div");
+        card.className = "tool-card";
         toolCardCounter += 1;
-        details.id = "tool-card-" + toolCardCounter;
+        card.id = "tool-card-" + toolCardCounter;
 
-        const summary = document.createElement("summary");
-        summary.className = "tool-header";
+        const header = document.createElement("div");
+        header.className = "tool-header";
+
+        var caretEl = null;
+        if (hasDetail) {
+            caretEl = document.createElement("span");
+            caretEl.className = "tool-caret";
+            caretEl.textContent = "\u25B6";
+            header.appendChild(caretEl);
+        }
 
         const nameEl = document.createElement("span");
         nameEl.className = "tool-name";
         nameEl.textContent = toolName;
-        summary.appendChild(nameEl);
+        header.appendChild(nameEl);
 
         if (filePath) {
             const pathEl = document.createElement("span");
@@ -7480,13 +7466,14 @@ body.reduced-motion *::after {
                 displayPath = "\u2026" + displayPath.slice(-57);
             }
             pathEl.textContent = displayPath;
-            summary.appendChild(pathEl);
+            header.appendChild(pathEl);
         }
 
-        details.appendChild(summary);
+        card.appendChild(header);
 
         var detailEl = null;
         var summaryEntry = null;
+        var openByDefault = false;
 
         if (hasDetail) {
             detailEl = document.createElement("div");
@@ -7569,16 +7556,25 @@ body.reduced-motion *::after {
                 detailEl.appendChild(outputBlock);
             }
 
-            details.appendChild(detailEl);
-            if (openByDefault) {
-                details.open = true;
+            card.appendChild(detailEl);
+            detailEl.classList.toggle("open", openByDefault);
+            if (caretEl) {
+                caretEl.classList.toggle("open", openByDefault);
             }
+
+            header.addEventListener("click", function () {
+                var isOpen = detailEl.classList.toggle("open");
+                if (caretEl) {
+                    caretEl.classList.toggle("open", isOpen);
+                }
+                scrollToBottom(false);
+            });
         }
 
-        registerToolArtifact(data, details);
-        rowObj.inner.appendChild(details);
+        registerToolArtifact(data, card);
+        rowObj.inner.appendChild(card);
         if (toolUseId) {
-            seenToolUseIds[toolUseId] = details;
+            seenToolUseIds[toolUseId] = card;
         }
         trackToolEvent(summaryEntry, rowObj.row);
         scrollToBottom(true);
@@ -8832,13 +8828,7 @@ var GLASS_BUTTON_SELECTOR = [
     }
 
     function requestSlashCommandsRefresh() {
-        if (slashRefreshTimer) {
-            return;
-        }
-        slashRefreshTimer = window.setTimeout(function () {
-            slashRefreshTimer = null;
-            postToHost("refreshSlashCommands", "refresh");
-        }, SLASH_REFRESH_DEBOUNCE_MS);
+        postToHost("refreshSlashCommands", "refresh");
     }
 
     function renderSlashDropdown(dropdownEl, items) {
@@ -9013,14 +9003,6 @@ var GLASS_BUTTON_SELECTOR = [
                     closeSlashDropdown();
                     return;
                 }
-            }
-            if (event.key === "ArrowUp" && !inputEl.value.trim() && lastUserPrompt) {
-                event.preventDefault();
-                inputEl.value = lastUserPrompt;
-                autoResizeInput(inputEl);
-                inputEl.focus();
-                inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
-                return;
             }
             if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -9421,8 +9403,13 @@ var GLASS_BUTTON_SELECTOR = [
                     targetCard.classList.remove("tool-card-highlight");
                 }, 1200);
 
-                if (targetCard.tagName === "DETAILS" && !targetCard.open) {
-                    targetCard.open = true;
+                const targetDetail = targetCard.querySelector(".tool-detail");
+                const targetCaret = targetCard.querySelector(".tool-caret");
+                if (targetDetail && !targetDetail.classList.contains("open")) {
+                    targetDetail.classList.add("open");
+                    if (targetCaret) {
+                        targetCaret.classList.add("open");
+                    }
                 }
             }
             return;
@@ -9530,24 +9517,9 @@ var GLASS_BUTTON_SELECTOR = [
     attachInputBehavior(welcomeInputEl);
     attachInputBehavior(chatInputEl);
 
-    window.handleWindowKeyUp = function () {
-        const inputEl = activeInput();
-        if (inputEl && !inputEl.value.trim() && lastUserPrompt) {
-            inputEl.value = lastUserPrompt;
-            autoResizeInput(inputEl);
-            inputEl.focus();
-            inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
-        }
-    };
-
     window.addUserMessage = addUserMessage;
     window.addAssistantMessage = addAssistantMessage;
     window.startAssistantMessage = startAssistantMessage;
-    window.externalFileDropped = function (path) {
-        if (!path) return;
-        postToHost("attachFile", { path: path });
-    };
-
     window.appendAssistantChunk = appendAssistantChunk;
     window.finishAssistantMessage = finishAssistantMessage;
     window.addSystemMessage = addSystemMessage;
