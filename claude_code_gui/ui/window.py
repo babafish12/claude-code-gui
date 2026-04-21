@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import base64
 from contextlib import contextmanager
-import copy
 from types import SimpleNamespace
 import json
 import logging
@@ -47,6 +46,7 @@ from claude_code_gui.app.constants import (
     STATUS_WARNING,
 )
 from claude_code_gui.domain.app_settings import (
+    DEFAULT_STARTUP_PROVIDER_MODE,
     get_reasoning_options,
     load_settings,
     save_settings,
@@ -59,7 +59,7 @@ from claude_code_gui.core.model_permissions import (
 )
 from claude_code_gui.core.paths import format_path, normalize_folder, shorten_path
 from claude_code_gui.core.time_utils import current_timestamp, parse_timestamp
-from claude_code_gui.domain.claude_types import ClaudeRunConfig, ClaudeRunResult
+from claude_code_gui.domain.claude_types import ClaudeRunResult
 from claude_code_gui.domain.provider import (
     DEFAULT_PROVIDER_ID,
     PROVIDERS,
@@ -73,9 +73,6 @@ from claude_code_gui.services.attachment_service import (
     MAX_ATTACHMENTS_PER_MESSAGE,
     MAX_ATTACHMENT_TOTAL_BYTES,
     cleanup_temp_paths,
-    compose_message_with_attachments,
-    materialize_attachments,
-    parse_send_payload,
 )
 from claude_code_gui.services.binary_probe import (
     binary_exists,
@@ -98,6 +95,7 @@ from claude_code_gui.ui.window_js_handlers import (
     on_js_attach_file,
     on_js_attach_paths,
     on_js_permission_response,
+    on_js_transcribe_audio,
     on_js_send_message,
 )
 from claude_code_gui.ui.window_settings_editor import open_settings_editor
@@ -157,6 +155,7 @@ _AGENTCTL_COMMAND_KEYWORDS = {
 _MAX_JS_OPTION_PAYLOAD_CHARS = 512
 _MAX_JS_PERMISSION_PAYLOAD_CHARS = 64_000
 _MAX_JS_SEND_PAYLOAD_CHARS = int((MAX_ATTACHMENT_TOTAL_BYTES * 4) / 3) + (MAX_ATTACHMENTS_PER_MESSAGE * 2048) + 256_000
+_MAX_JS_TRANSCRIBE_PAYLOAD_CHARS = int((ATTACHMENT_MAX_BYTES * 4) / 3) + 131_072
 
 _ICONS_DIR = Path(__file__).resolve().parents[2] / "icons"
 
@@ -244,6 +243,23 @@ class PaneController:
         self._is_agent = False
         self._agent_name: str | None = None
         self._agent_status: str = ""
+        self._provider_id_override: str | None = None
+
+
+class TabController:
+    """Tracks one notebook tab's workspace host and active pane."""
+
+    def __init__(self, tab_id: str) -> None:
+        self.tab_id = tab_id
+        self.session_id: str | None = None
+        self.provider_id: str | None = None
+        self._page: Gtk.Box | None = None
+        self._workspace_host: Gtk.Box | None = None
+        self._pane_tree_root_widget: Gtk.Widget | None = None
+        self._active_pane_id: str | None = None
+        self._title_label: Gtk.Label | None = None
+        self._label_box: Gtk.Box | None = None
+        self._close_button: Gtk.Button | None = None
 
 
 class ClaudeCodeWindow(Gtk.Window):
@@ -253,11 +269,14 @@ class ClaudeCodeWindow(Gtk.Window):
         super().__init__(title=APP_NAME, **kwargs)
         initial_settings = load_settings()
         preferred_provider = normalize_provider_id(str(initial_settings.get("active_provider_id") or DEFAULT_PROVIDER_ID))
-        self._active_provider_id: str = preferred_provider
         self._provider_binaries: dict[str, str | None] = {
             provider_id: find_provider_binary(list(provider.binary_names))
             for provider_id, provider in PROVIDERS.items()
         }
+        self._active_provider_id: str = self._resolve_startup_provider_id(
+            initial_settings,
+            preferred_provider_id=preferred_provider,
+        )
         self._agentctl_auto_enabled = bool(initial_settings.get("agentctl_auto_enabled", True))
         self._system_tray_enabled = bool(initial_settings.get("system_tray_enabled", True))
         self._stream_render_throttle_ms = self._normalize_stream_render_throttle_ms(
@@ -271,6 +290,11 @@ class ClaudeCodeWindow(Gtk.Window):
         self._pane_registry: dict[str, PaneController] = {}
         self._workspace_container: Gtk.Widget | None = None
         self._workspace_host: Gtk.Box | None = None
+        self._tab_notebook: Gtk.Notebook | None = None
+        self._tab_controllers: dict[str, TabController] = {}
+        self._active_tab_id: str | None = None
+        self._tab_id_counter = 0
+        self._session_runtime_tracker: set[str] = set()
         self._pane_context_id: str | None = None
         self._pane_id_counter = 0
         self._agent_counter = 0
@@ -734,6 +758,59 @@ class ClaudeCodeWindow(Gtk.Window):
     def _active_provider(self) -> ProviderConfig:
         return PROVIDERS[self._active_provider_id]
 
+    def _tab_for_pane_id(self, pane_id: str | None) -> TabController | None:
+        if pane_id is None:
+            return None
+        for tab in self._tab_controllers.values():
+            if pane_id in self._pane_ids_in_widget(tab._pane_tree_root_widget):
+                return tab
+        return None
+
+    def _tab_effective_provider_id(self, tab_id: str | None) -> str:
+        tab = self._tab_by_id(tab_id)
+        if tab is None:
+            return self._active_provider_id
+        session = self._find_session(tab.session_id)
+        if session is not None and session.provider:
+            return normalize_provider_id(session.provider)
+        if tab.provider_id:
+            return normalize_provider_id(tab.provider_id)
+        return self._active_provider_id
+
+    def _pane_effective_provider_id(self, pane_id: str | None) -> str:
+        pane = self._pane_registry.get(pane_id) if pane_id else None
+        provider_id_override = getattr(pane, "_provider_id_override", None) if pane is not None else None
+        if provider_id_override:
+            return normalize_provider_id(provider_id_override)
+        active_session_id = getattr(pane, "_active_session_id", None) if pane is not None else None
+        if active_session_id:
+            session = self._find_session(active_session_id)
+            if session is not None and session.provider:
+                return normalize_provider_id(session.provider)
+        tab = self._tab_for_pane_id(pane_id) if pane_id else self._active_tab()
+        if tab is not None:
+            return self._tab_effective_provider_id(tab.tab_id)
+        return self._active_provider_id
+
+    def _session_effective_provider_id(
+        self,
+        session_id: str | None,
+        *,
+        fallback_pane_id: str | None = None,
+    ) -> str:
+        session = self._find_session(session_id) if session_id else None
+        if session is not None and session.provider:
+            return normalize_provider_id(session.provider)
+        if fallback_pane_id is not None:
+            return self._pane_effective_provider_id(fallback_pane_id)
+        return self._active_provider_id
+
+    def _pane_effective_provider(self, pane_id: str | None) -> ProviderConfig:
+        return PROVIDERS[self._pane_effective_provider_id(pane_id)]
+
+    def _pane_effective_binary_path(self, pane_id: str | None) -> str | None:
+        return self._provider_binaries.get(self._pane_effective_provider_id(pane_id))
+
     def _provider_display_name(self, provider_id: str | None = None) -> str:
         provider = PROVIDERS[normalize_provider_id(provider_id or self._active_provider_id)]
         return provider.name
@@ -913,20 +990,93 @@ class ClaudeCodeWindow(Gtk.Window):
         self._pane_id_counter += 1
         return f"pane-{self._pane_id_counter}"
 
+    def _new_tab_id(self) -> str:
+        self._tab_id_counter += 1
+        return f"tab-{self._tab_id_counter}"
+
+    def _tab_by_id(self, tab_id: str | None) -> TabController | None:
+        if tab_id is None:
+            return None
+        tab_controllers = getattr(self, "_tab_controllers", None)
+        if tab_controllers is None:
+            return None
+        return tab_controllers.get(tab_id)
+
+    def _active_tab(self) -> TabController | None:
+        return self._tab_by_id(getattr(self, "_active_tab_id", None))
+
+    @staticmethod
+    def _tab_id_for_page(page: Gtk.Widget | None) -> str | None:
+        tab_id = getattr(page, "_tab_id", None)
+        return tab_id if isinstance(tab_id, str) else None
+
+    def _update_tab_title(self, tab_id: str) -> None:
+        tab = self._tab_by_id(tab_id)
+        if tab is None or tab._title_label is None:
+            return
+        session = self._find_session(tab.session_id)
+        if session is None:
+            tab._title_label.set_text("New Chat")
+            return
+        tab._title_label.set_text(self._truncate_text(session.title or "New Chat", 28))
+
+    def _sync_active_tab_state(self) -> None:
+        tab = self._active_tab()
+        if tab is None:
+            return
+        tab._workspace_host = self._workspace_host
+        tab._pane_tree_root_widget = self._workspace_container
+        tab._active_pane_id = self._active_pane_id
+        tab.session_id = self._active_session_id
+        tab.provider_id = self._pane_effective_provider_id(self._active_pane_id)
+        self._update_tab_title(tab.tab_id)
+
+    def _session_ids_in_tab(self, tab: TabController | None) -> set[str]:
+        if tab is None:
+            return set()
+
+        session_ids: set[str] = set()
+        if isinstance(tab.session_id, str) and tab.session_id.strip():
+            session_ids.add(tab.session_id)
+
+        for pane_id in self._pane_ids_in_widget(tab._pane_tree_root_widget):
+            pane = self._pane_by_id(pane_id)
+            if pane is None:
+                continue
+            for candidate in (pane._active_session_id, pane._active_request_session_id):
+                if isinstance(candidate, str) and candidate.strip():
+                    session_ids.add(candidate)
+        return session_ids
+
+    def _archive_session_ids(self, session_ids: set[str]) -> bool:
+        archived = False
+        for session_id in session_ids:
+            session = self._find_session(session_id)
+            if session is None or session.status == SESSION_STATUS_ARCHIVED:
+                continue
+            session.status = SESSION_STATUS_ARCHIVED
+            session.last_used_at = current_timestamp()
+            archived = True
+        return archived
+
     def _pane_by_id(self, pane_id: str | None) -> PaneController | None:
         if pane_id is None:
             return None
-        return self._pane_registry.get(pane_id)
+        pane_registry = getattr(self, "_pane_registry", None)
+        if pane_registry is None:
+            return None
+        return pane_registry.get(pane_id)
 
     def _is_active_pane(self, pane_id: str) -> bool:
         return pane_id == self._active_pane_id
 
     def _state_pane(self) -> PaneController | None:
-        if self._pane_context_id is not None:
+        pane_context_id = getattr(self, "_pane_context_id", None)
+        if pane_context_id is not None:
             # Do not fall back to active pane when a context pane was removed.
             # Falling back can route async callbacks into the wrong pane state.
-            return self._pane_by_id(self._pane_context_id)
-        return self._pane_by_id(self._active_pane_id)
+            return self._pane_by_id(pane_context_id)
+        return self._pane_by_id(getattr(self, "_active_pane_id", None))
 
     def _state_pane_or_raise(self) -> PaneController:
         pane = self._state_pane()
@@ -1047,13 +1197,18 @@ class ClaudeCodeWindow(Gtk.Window):
     @property
     def _active_assistant_message(self) -> str:
         pane = self._state_pane()
-        return pane._active_assistant_message if pane is not None else ""
+        if pane is not None:
+            return pane._active_assistant_message
+        return str(self.__dict__.get("_pane_fallback_active_assistant_message", ""))
 
     @_active_assistant_message.setter
     def _active_assistant_message(self, value: str) -> None:
         pane = self._state_pane()
         if pane is not None:
             pane._active_assistant_message = value
+            self.__dict__.pop("_pane_fallback_active_assistant_message", None)
+            return
+        self.__dict__["_pane_fallback_active_assistant_message"] = str(value)
 
     @property
     def _request_temp_files(self) -> dict[str, list[str]]:
@@ -1091,13 +1246,18 @@ class ClaudeCodeWindow(Gtk.Window):
     @property
     def _has_messages(self) -> bool:
         pane = self._state_pane()
-        return bool(pane._has_messages) if pane is not None else False
+        if pane is not None:
+            return bool(pane._has_messages)
+        return bool(self.__dict__.get("_pane_fallback_has_messages", False))
 
     @_has_messages.setter
     def _has_messages(self, value: bool) -> None:
         pane = self._state_pane()
         if pane is not None:
             pane._has_messages = bool(value)
+            self.__dict__.pop("_pane_fallback_has_messages", None)
+            return
+        self.__dict__["_pane_fallback_has_messages"] = bool(value)
 
     @property
     def _last_request_failed(self) -> bool:
@@ -1221,11 +1381,54 @@ class ClaudeCodeWindow(Gtk.Window):
         wrap.set_vexpand(True)
         panel.pack_start(wrap, True, True, 0)
 
+        notebook = Gtk.Notebook()
+        notebook.set_scrollable(True)
+        notebook.set_show_border(False)
+        notebook.set_hexpand(True)
+        notebook.set_vexpand(True)
+        notebook.get_style_context().add_class("session-tabs-notebook")
+        notebook.connect("switch-page", self._on_workspace_tab_switched)
+        wrap.pack_start(notebook, True, True, 0)
+        self._tab_notebook = notebook
+        self._create_workspace_tab(make_active=True)
+
+        project_path_bar = self._build_project_path_bar()
+        wrap.pack_start(project_path_bar, False, False, 8)
+        return panel
+
+    def _build_workspace_tab_label(self, tab_id: str, title_label: Gtk.Label) -> tuple[Gtk.Box, Gtk.Button]:
+        label_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        label_box.get_style_context().add_class("session-tab-label-box")
+        label_box.pack_start(title_label, True, True, 0)
+
+        close_button = Gtk.Button(label="×")
+        close_button.set_relief(Gtk.ReliefStyle.NONE)
+        close_button.get_style_context().add_class("session-tab-close-button")
+        close_button.set_tooltip_text("Close tab")
+        close_button.connect("clicked", lambda _button, target=tab_id: self._close_workspace_tab(target))
+        label_box.pack_start(close_button, False, False, 0)
+        return label_box, close_button
+
+    def _create_workspace_tab(
+        self,
+        *,
+        make_active: bool = False,
+        provider_id: str | None = None,
+    ) -> str | None:
+        notebook = self._tab_notebook
+        if notebook is None:
+            return None
+
+        tab_id = self._new_tab_id()
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        page.set_hexpand(True)
+        page.set_vexpand(True)
+        page._tab_id = tab_id
+
         workspace_host = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         workspace_host.set_hexpand(True)
         workspace_host.set_vexpand(True)
-        wrap.pack_start(workspace_host, True, True, 0)
-        self._workspace_host = workspace_host
+        page.pack_start(workspace_host, True, True, 0)
 
         initial_pane_id = self._new_pane_id()
         initial_pane = self._create_pane_controller(initial_pane_id)
@@ -1233,15 +1436,132 @@ class ClaudeCodeWindow(Gtk.Window):
         initial_pane._container = initial_view
         initial_view._pane_id = initial_pane_id
         workspace_host.pack_start(initial_view, True, True, 0)
-        self._workspace_container = initial_view
-        self._active_pane_id = initial_pane_id
+
+        title_label = Gtk.Label(label="New Chat")
+        title_label.set_xalign(0.0)
+        title_label.get_style_context().add_class("session-tab-label")
+        tab_label_box, close_button = self._build_workspace_tab_label(tab_id, title_label)
+
+        tab = TabController(tab_id)
+        tab.provider_id = normalize_provider_id(provider_id or self._active_provider_id)
+        tab._page = page
+        tab._workspace_host = workspace_host
+        tab._pane_tree_root_widget = initial_view
+        tab._active_pane_id = initial_pane_id
+        tab._title_label = title_label
+        tab._label_box = tab_label_box
+        tab._close_button = close_button
+        self._tab_controllers[tab_id] = tab
+
+        page_num = notebook.append_page(page, tab_label_box)
+        page.show_all()
         self._update_pane_close_buttons()
         self._update_all_pane_headers()
-        self._set_active_pane(initial_pane_id)
 
-        project_path_bar = self._build_project_path_bar()
-        wrap.pack_start(project_path_bar, False, False, 8)
-        return panel
+        if make_active or self._active_tab_id is None:
+            notebook.set_current_page(page_num)
+            self._set_active_tab(tab_id, grab_focus=True)
+        return tab_id
+
+    def _set_active_tab(self, tab_id: str, *, grab_focus: bool = False) -> None:
+        if getattr(self, "_tab_switch_in_progress", False):
+            return
+        tab = self._tab_by_id(tab_id)
+        if tab is None:
+            return
+
+        self._tab_switch_in_progress = True
+        try:
+            self._active_tab_id = tab_id
+            self._workspace_host = tab._workspace_host
+            self._workspace_container = tab._pane_tree_root_widget
+
+            if self._tab_notebook is not None and tab._page is not None:
+                page_num = self._tab_notebook.page_num(tab._page)
+                if page_num >= 0 and self._tab_notebook.get_current_page() != page_num:
+                    self._tab_notebook.set_current_page(page_num)
+
+            target_pane_id = tab._active_pane_id or self._first_pane_id_in_widget(tab._pane_tree_root_widget)
+            if target_pane_id is not None and target_pane_id in self._pane_registry:
+                self._set_active_pane(target_pane_id, grab_focus=grab_focus)
+        finally:
+            self._tab_switch_in_progress = False
+
+    def _on_workspace_tab_switched(
+        self,
+        notebook: Gtk.Notebook,
+        page: Gtk.Widget,
+        page_num: int,
+    ) -> None:
+        if getattr(self, "_tab_switch_in_progress", False):
+            return
+        current_page = page if page is not None else notebook.get_nth_page(page_num)
+        tab_id = self._tab_id_for_page(current_page)
+        if tab_id is not None:
+            self._set_active_tab(tab_id)
+
+    def _close_workspace_tab(self, tab_id: str) -> None:
+        notebook = self._tab_notebook
+        tab = self._tab_by_id(tab_id)
+        if notebook is None or tab is None or tab._page is None:
+            return
+
+        page_num = notebook.page_num(tab._page)
+        if page_num < 0:
+            return
+
+        page_count = notebook.get_n_pages()
+        preferred_neighbor_id: str | None = None
+        if page_count > 1:
+            neighbor_page_num = page_num + 1 if page_num + 1 < page_count else page_num - 1
+            preferred_neighbor_id = self._tab_id_for_page(notebook.get_nth_page(neighbor_page_num))
+
+        tab_session_ids = self._session_ids_in_tab(tab)
+        for pane_id in self._pane_ids_in_widget(tab._pane_tree_root_widget):
+            pane = self._pane_registry.pop(pane_id, None)
+            if pane is None:
+                continue
+            process = getattr(pane, "_claude_process", None)
+            if process is not None:
+                process.stop()
+            request_temp_files = getattr(pane, "_request_temp_files", None)
+            if isinstance(request_temp_files, dict):
+                for temp_paths in request_temp_files.values():
+                    cleanup_temp_paths(temp_paths)
+                request_temp_files.clear()
+
+        if self._archive_session_ids(tab_session_ids):
+            self._refresh_session_list()
+            self._save_sessions_safe("Could not save sessions")
+
+        was_active = tab_id == self._active_tab_id
+        if was_active:
+            self._active_tab_id = None
+            self._active_pane_id = None
+            self._workspace_host = None
+            self._workspace_container = None
+
+        notebook.remove_page(page_num)
+        self._tab_controllers.pop(tab_id, None)
+        tab._page = None
+        tab._workspace_host = None
+        tab._pane_tree_root_widget = None
+        tab._active_pane_id = None
+        tab._label_box = None
+        tab._close_button = None
+
+        if not self._tab_controllers:
+            self._create_workspace_tab(make_active=True)
+            return
+
+        if was_active and preferred_neighbor_id in self._tab_controllers:
+            self._set_active_tab(preferred_neighbor_id, grab_focus=True)
+            return
+
+        if was_active:
+            fallback_tab_id = self._tab_id_for_page(notebook.get_nth_page(notebook.get_current_page()))
+            if fallback_tab_id in self._tab_controllers:
+                self._set_active_tab(fallback_tab_id, grab_focus=True)
 
     def _create_pane_controller(self, pane_id: str) -> PaneController:
         pane = PaneController(pane_id)
@@ -1378,6 +1698,9 @@ class ClaudeCodeWindow(Gtk.Window):
             "toggleAgentMode",
             "permissionResponse",
             "stopProcess",
+            "transcribeAudio",
+            "transcribe_audio",
+            "voiceTranscribe",
             "refreshSlashCommands",
         ):
             manager.register_script_message_handler(handler_name)
@@ -1450,6 +1773,18 @@ class ClaudeCodeWindow(Gtk.Window):
             lambda manager, result, pid=pane_id: self._on_js_stop_process(pid, manager, result),
         )
         manager.connect(
+            "script-message-received::transcribeAudio",
+            lambda manager, result, pid=pane_id: self._on_js_transcribe_audio(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::transcribe_audio",
+            lambda manager, result, pid=pane_id: self._on_js_transcribe_audio(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::voiceTranscribe",
+            lambda manager, result, pid=pane_id: self._on_js_transcribe_audio(pid, manager, result),
+        )
+        manager.connect(
             "script-message-received::refreshSlashCommands",
             lambda manager, result, pid=pane_id: self._on_js_refresh_slash_commands(pid, manager, result),
         )
@@ -1480,49 +1815,63 @@ class ClaudeCodeWindow(Gtk.Window):
                 settings.set_enable_developer_extras(False)
             if hasattr(settings, "set_enable_javascript"):
                 settings.set_enable_javascript(True)
+            for attr in (
+                "set_enable_media_stream",
+                "set_enable_mediasource",
+                "set_enable_media_capabilities",
+                "set_enable_webaudio",
+                "set_enable_encrypted_media",
+            ):
+                if hasattr(settings, attr):
+                    try:
+                        getattr(settings, attr)(True)
+                    except Exception:
+                        logger.exception("Could not enable WebKit setting '%s'.", attr)
 
-        webview.load_html(get_chat_webview_html(), "")
+        self._connect_optional_signal(
+            webview,
+            "permission-request",
+            self._on_webview_permission_request,
+        )
+
+        webview.load_html(get_chat_webview_html(), "file:///")
         shell.add(webview)
         pane._webview = webview
 
         pane_box.show_all()
         return pane_box
 
-    def _ordered_pane_ids(self) -> list[str]:
+    def _pane_ids_in_widget(self, widget: Gtk.Widget | None) -> list[str]:
         ordered: list[str] = []
 
-        def walk(widget: Gtk.Widget | None) -> None:
-            if widget is None:
+        def walk(current: Gtk.Widget | None) -> None:
+            if current is None:
                 return
-            if isinstance(widget, Gtk.Paned):
-                walk(widget.get_child1())
-                walk(widget.get_child2())
+            if isinstance(current, Gtk.Paned):
+                walk(current.get_child1())
+                walk(current.get_child2())
                 return
-            pane_id = getattr(widget, "_pane_id", None)
+            pane_id = getattr(current, "_pane_id", None)
             if isinstance(pane_id, str) and pane_id in self._pane_registry:
                 ordered.append(pane_id)
 
-        walk(self._workspace_container)
+        walk(widget)
         return ordered
 
+    def _ordered_pane_ids(self) -> list[str]:
+        return self._pane_ids_in_widget(self._workspace_container)
+
     def _first_pane_id_in_widget(self, widget: Gtk.Widget | None) -> str | None:
-        if widget is None:
-            return None
-        pane_id = getattr(widget, "_pane_id", None)
-        if isinstance(pane_id, str) and pane_id in self._pane_registry:
-            return pane_id
-        if isinstance(widget, Gtk.Paned):
-            left = self._first_pane_id_in_widget(widget.get_child1())
-            if left is not None:
-                return left
-            return self._first_pane_id_in_widget(widget.get_child2())
-        return None
+        pane_ids = self._pane_ids_in_widget(widget)
+        return pane_ids[0] if pane_ids else None
 
     def _sync_window_chrome_for_active_pane(self) -> None:
         pane = self._pane_by_id(self._active_pane_id)
         if pane is None:
             return
         active_session = self._find_session(pane._active_session_id)
+        provider_id = self._pane_effective_provider_id(self._active_pane_id)
+        self._set_active_provider_context(provider_id, session=active_session)
         if active_session is not None and active_session.project_path:
             self._project_folder = normalize_folder(active_session.project_path)
             self._set_project_path_entry_text(self._project_folder)
@@ -1544,6 +1893,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 context.add_class("pane-active")
             else:
                 context.remove_class("pane-active")
+        self._sync_active_tab_state()
         self._sync_window_chrome_for_active_pane()
         if grab_focus:
             pane = self._pane_registry[pane_id]
@@ -1840,7 +2190,12 @@ class ClaudeCodeWindow(Gtk.Window):
 
         GLib.timeout_add(30, _apply_split_position)
 
-    def _split_active_pane(self, orientation: Gtk.Orientation) -> str | None:
+    def _split_active_pane(
+        self,
+        orientation: Gtk.Orientation,
+        *,
+        provider_id: str | None = None,
+    ) -> str | None:
         if self._active_pane_id is None:
             return None
         if len(self._pane_registry) >= self._max_panes:
@@ -1897,7 +2252,7 @@ class ClaudeCodeWindow(Gtk.Window):
 
         with self._pane_context(new_pane_id):
             if os.path.isdir(self._project_folder):
-                self._start_new_session(self._project_folder)
+                self._start_new_session(self._project_folder, provider_id=provider_id)
 
         split.show_all()
         try:
@@ -1919,8 +2274,14 @@ class ClaudeCodeWindow(Gtk.Window):
         if pane is None:
             return pane_id
         if pane._is_agent:
-            return pane._agent_name or f"Agent {pane_id.split('-')[-1]}"
-        return f"Pane {pane_id.split('-')[-1]}"
+            base = pane._agent_name or f"Agent {pane_id.split('-')[-1]}"
+        else:
+            base = f"Pane {pane_id.split('-')[-1]}"
+        if pane._provider_id_override:
+            provider = PROVIDERS.get(pane._provider_id_override)
+            if provider is not None and provider.id != self._active_provider_id:
+                return f"{base} · {provider.name}"
+        return base
 
     def _primary_pane_id(self) -> str | None:
         ordered = self._ordered_pane_ids() or list(self._pane_registry.keys())
@@ -1951,13 +2312,31 @@ class ClaudeCodeWindow(Gtk.Window):
                 return str(msg.get("content") or "").strip()
         return ""
 
-    def _send_prompt_to_pane(self, target_pane_id: str, prompt: str, *, keep_focus_on: str | None = None) -> bool:
+    def _send_prompt_to_pane(
+        self,
+        target_pane_id: str,
+        prompt: str,
+        *,
+        keep_focus_on: str | None = None,
+        kind: str = "user",
+    ) -> bool:
         text = str(prompt or "").strip()
         if not text:
             return False
         if target_pane_id not in self._pane_registry:
             return False
-        self._call_js_in_pane(target_pane_id, "hostSendMessage", text)
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized_kind != "agent_prompt":
+            normalized_kind = "user"
+        self._call_js_in_pane(
+            target_pane_id,
+            "hostSendMessage",
+            {
+                "text": text,
+                "attachments": [],
+                "kind": normalized_kind,
+            },
+        )
         if keep_focus_on and keep_focus_on in self._pane_registry and keep_focus_on != target_pane_id:
             def _restore_focus() -> bool:
                 if keep_focus_on in self._pane_registry:
@@ -2231,6 +2610,7 @@ class ClaudeCodeWindow(Gtk.Window):
             return False
 
         subcommand = tokens[1].lower() if len(tokens) > 1 else "help"
+        provider_spawn_keywords = {pid for pid in PROVIDERS.keys()}
         known_subcommands = {
             "help",
             "h",
@@ -2254,12 +2634,15 @@ class ClaudeCodeWindow(Gtk.Window):
             "close",
             "kill",
             "remove",
-        }
+        } | provider_spawn_keywords
         if subcommand in {"help", "h", "?"}:
+            provider_list = ", ".join(sorted(PROVIDERS.keys()))
             self._add_system_message(
                 "Agent commands:\n"
                 "/agent <prompt> - create a worker and send prompt in one command\n"
                 "/agent new [name] [-- prompt] - create agent (optional immediate prompt)\n"
+                f"/agent <provider> [name] [-- prompt] - spawn agent pane using a specific CLI "
+                f"(providers: {provider_list})\n"
                 "/agent list - list panes and agents\n"
                 "/agent focus <target> - focus pane (target: 1, pane-2, next, prev, Agent 1)\n"
                 "/agent send <target> <prompt> - send prompt to pane without leaving main chat\n"
@@ -2267,6 +2650,41 @@ class ClaudeCodeWindow(Gtk.Window):
                 "/agent close [target] - close pane (default: current)\n"
                 "/agent help - show this help",
             )
+            return True
+
+        if subcommand in provider_spawn_keywords:
+            target_provider_id = subcommand
+            remaining_args = tokens[2:]
+            if "--" in remaining_args:
+                custom_name, inline_prompt = self._split_name_and_prompt(remaining_args)
+            else:
+                custom_name = ""
+                inline_prompt = " ".join(remaining_args).strip()
+            new_pane_id = self._create_agent_pane(
+                name=custom_name or None,
+                provider_id=target_provider_id,
+            )
+            if new_pane_id and inline_prompt:
+                delegated_prompt = self._build_worker_handoff_prompt(
+                    target_pane_id=new_pane_id,
+                    prompt=inline_prompt,
+                )
+                if self._send_prompt_to_pane(
+                    new_pane_id,
+                    delegated_prompt,
+                    keep_focus_on=pane_id,
+                    kind="agent_prompt",
+                ):
+                    self._set_pane_agent_status(new_pane_id, "working")
+                    self._set_status_message(
+                        f"Created {self._pane_display_name(new_pane_id)} and dispatched task.",
+                        STATUS_INFO,
+                    )
+                else:
+                    self._set_status_message(
+                        f"Created {self._pane_display_name(new_pane_id)}, but prompt dispatch failed.",
+                        STATUS_WARNING,
+                    )
             return True
 
         if subcommand in {"new", "create", "add", "spawn"}:
@@ -2277,7 +2695,12 @@ class ClaudeCodeWindow(Gtk.Window):
                     target_pane_id=new_pane_id,
                     prompt=inline_prompt,
                 )
-                if self._send_prompt_to_pane(new_pane_id, delegated_prompt, keep_focus_on=pane_id):
+                if self._send_prompt_to_pane(
+                    new_pane_id,
+                    delegated_prompt,
+                    keep_focus_on=pane_id,
+                    kind="agent_prompt",
+                ):
                     self._set_pane_agent_status(new_pane_id, "working")
                     self._set_status_message(
                         f"Created {self._pane_display_name(new_pane_id)} and dispatched task.",
@@ -2335,7 +2758,13 @@ class ClaudeCodeWindow(Gtk.Window):
                     target_pane_id=target_pane_id,
                     prompt=prompt_text,
                 )
-            if not self._send_prompt_to_pane(target_pane_id, prompt_to_send, keep_focus_on=pane_id):
+            prompt_kind = "agent_prompt" if not self._is_primary_pane(target_pane_id) else "user"
+            if not self._send_prompt_to_pane(
+                target_pane_id,
+                prompt_to_send,
+                keep_focus_on=pane_id,
+                kind=prompt_kind,
+            ):
                 self._add_system_message("Could not dispatch prompt to target pane.")
                 return True
             if not self._is_primary_pane(target_pane_id):
@@ -2431,7 +2860,12 @@ class ClaudeCodeWindow(Gtk.Window):
                 target_pane_id=new_pane_id,
                 prompt=inline_prompt,
             )
-            if self._send_prompt_to_pane(new_pane_id, delegated_prompt, keep_focus_on=pane_id):
+            if self._send_prompt_to_pane(
+                new_pane_id,
+                delegated_prompt,
+                keep_focus_on=pane_id,
+                kind="agent_prompt",
+            ):
                 self._set_pane_agent_status(new_pane_id, "working")
                 self._set_status_message(
                     f"Created {self._pane_display_name(new_pane_id)} and dispatched task.",
@@ -2447,8 +2881,14 @@ class ClaudeCodeWindow(Gtk.Window):
         self._add_system_message("Unknown /agent command. Use /agent help.")
         return True
 
-    def _create_agent_pane(self, *, name: str | None = None) -> str | None:
+    def _create_agent_pane(
+        self,
+        *,
+        name: str | None = None,
+        provider_id: str | None = None,
+    ) -> str | None:
         try:
+            normalized_provider_id = normalize_provider_id(provider_id) if provider_id else None
             ordered = self._ordered_pane_ids() or list(self._pane_registry.keys())
             existing_agents: list[str] = []
             for pid in ordered:
@@ -2471,7 +2911,7 @@ class ClaudeCodeWindow(Gtk.Window):
             if split_target and split_target in self._pane_registry:
                 self._set_active_pane(split_target)
 
-            new_pane_id = self._split_active_pane(orientation)
+            new_pane_id = self._split_active_pane(orientation, provider_id=normalized_provider_id)
             if new_pane_id is None:
                 return None
             pane = self._pane_by_id(new_pane_id)
@@ -2480,13 +2920,32 @@ class ClaudeCodeWindow(Gtk.Window):
             pane._is_agent = True
             custom_name = str(name or "").strip()
             pane._agent_name = custom_name or self._next_agent_name()
+            override_provider: ProviderConfig | None = None
+            if normalized_provider_id in PROVIDERS and normalized_provider_id != self._active_provider_id:
+                pane._provider_id_override = normalized_provider_id
+                override_provider = PROVIDERS[normalized_provider_id]
             self._update_pane_header(new_pane_id)
             self._sync_pane_mode_to_webviews(pane_id=new_pane_id)
             with self._pane_context(new_pane_id):
-                self._add_system_message(
-                    f"{pane._agent_name} ready. Use this pane to chat directly with this agent.",
-                )
-            self._set_status_message(f"{pane._agent_name} created.", STATUS_INFO)
+                if override_provider is not None:
+                    binary = self._provider_binaries.get(override_provider.id)
+                    if not binary:
+                        self._add_system_message(
+                            f"{pane._agent_name} ready with {override_provider.name}, "
+                            f"but the {override_provider.name} CLI was not found on PATH."
+                        )
+                    else:
+                        self._add_system_message(
+                            f"{pane._agent_name} ready with {override_provider.name}. "
+                            "Messages from this pane will run through the "
+                            f"{override_provider.name} CLI."
+                        )
+                else:
+                    self._add_system_message(
+                        f"{pane._agent_name} ready. Use this pane to chat directly with this agent.",
+                    )
+            display_label = self._pane_display_name(new_pane_id)
+            self._set_status_message(f"{display_label} created.", STATUS_INFO)
             self._focus_chat_input_in_pane(new_pane_id)
             return new_pane_id
         except Exception:
@@ -3260,13 +3719,16 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _replay_history(self, history: list[dict[str, str]]) -> None:
         for msg in history:
-            role = msg.get("role")
+            role = str(msg.get("role") or "").strip().lower()
             content = msg.get("content")
             if not role or not content:
                 continue
             if role == "user":
                 self._has_messages = True
                 self._call_js("addUserMessage", content)
+            elif role == "agent_prompt":
+                self._has_messages = True
+                self._call_js("addAgentPromptMessage", content)
             elif role == "assistant":
                 self._has_messages = True
                 self._call_js("addAssistantMessage", content)
@@ -3372,11 +3834,28 @@ class ClaudeCodeWindow(Gtk.Window):
         name = Path(folder).name or folder
         return f"{name} - {dt.strftime('%H:%M')}"
 
-    def _create_session_record(self, folder: str) -> SessionRecord:
+    def _create_session_record(
+        self,
+        folder: str,
+        *,
+        provider_id: str | None = None,
+    ) -> SessionRecord:
         normalized = normalize_folder(folder)
         now = current_timestamp()
-        _, model_value = self._model_options[self._selected_model_index]
-        _, permission_value, _ = self._permission_options[self._selected_permission_index]
+        resolved_provider = (
+            normalize_provider_id(provider_id) if provider_id else self._active_provider_id
+        )
+        if resolved_provider == self._active_provider_id:
+            model_value = self._model_options[self._selected_model_index][1]
+            permission_value = self._permission_options[self._selected_permission_index][1]
+        else:
+            provider = PROVIDERS[resolved_provider]
+            provider_models = list(provider.model_options)
+            model_value = provider_models[1][1] if len(provider_models) > 1 else (
+                provider_models[0][1] if provider_models else ""
+            )
+            provider_permissions = list(provider.permission_options)
+            permission_value = provider_permissions[0][1] if provider_permissions else "auto"
         return SessionRecord(
             id=str(uuid.uuid4()),
             title=self._build_session_title(normalized, now),
@@ -3386,7 +3865,7 @@ class ClaudeCodeWindow(Gtk.Window):
             status=SESSION_STATUS_ACTIVE,
             created_at=now,
             last_used_at=now,
-            provider=self._active_provider_id,
+            provider=resolved_provider,
         )
 
     def _set_active_session_status(self, status: str, *, session_id: str | None = None) -> None:
@@ -4039,7 +4518,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 content = msg.get("content")
                 if not role or not content:
                     continue
-                if role not in {"user", "assistant", "system"}:
+                if role not in {"user", "agent_prompt", "assistant", "system"}:
                     continue
                 history_payload.append({"role": role, "content": str(content)})
         self._has_messages = bool(history_payload)
@@ -4062,8 +4541,13 @@ class ClaudeCodeWindow(Gtk.Window):
         session = self._find_session(session_id)
         if session is None:
             return
-        if session.provider != self._active_provider_id:
-            if not self._switch_provider(session.provider):
+        if session.provider != self._pane_effective_provider_id(self._active_pane_id):
+            reason = self._provider_unavailability_reason(
+                session.provider,
+                refresh_binary=True,
+                check_auth=True,
+            )
+            if reason is not None:
                 self._set_status_message(
                     f"Cannot open session: {self._provider_display_name(session.provider)} is unavailable.",
                     STATUS_WARNING,
@@ -4090,6 +4574,13 @@ class ClaudeCodeWindow(Gtk.Window):
 
         self._active_session_id = session.id
         session.status = SESSION_STATUS_ACTIVE
+        active_tab_id = getattr(self, "_active_tab_id", None)
+        self._set_tab_provider_id(active_tab_id, session.provider)
+        if (
+            normalize_provider_id(session.provider) != self._active_provider_id
+            or self._tab_effective_provider_id(active_tab_id) != normalize_provider_id(session.provider)
+        ):
+            self._set_active_provider_context(session.provider, session=session, persist_preference=True)
         self._apply_session_to_controls(session, add_to_recent=os.path.isdir(session.project_path))
         self._refresh_session_list()
         self._save_sessions_safe("Could not save sessions")
@@ -4099,6 +4590,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._permission_request_pending = False
         self._last_request_failed = False
         self._render_active_session_view()
+        self._sync_active_tab_state()
 
         if self._binary_path is None:
             self._set_connection_state(CONNECTION_DISCONNECTED)
@@ -4165,7 +4657,13 @@ class ClaudeCodeWindow(Gtk.Window):
     def _delete_session(self, session_id: str) -> None:
         self._mutate_session_and_reconcile_active(session_id, "delete")
 
-    def _start_new_session(self, folder: str, *, reset_conversation: bool = True) -> None:
+    def _start_new_session(
+        self,
+        folder: str,
+        *,
+        reset_conversation: bool = True,
+        provider_id: str | None = None,
+    ) -> None:
         normalized = normalize_folder(folder)
         if not os.path.isdir(normalized):
             self._set_status_message("Selected path is not a folder", STATUS_ERROR)
@@ -4176,24 +4674,31 @@ class ClaudeCodeWindow(Gtk.Window):
             current.status = SESSION_STATUS_ENDED
             current.last_used_at = current_timestamp()
 
-        created = self._create_session_record(normalized)
+        created = self._create_session_record(normalized, provider_id=provider_id)
         self._sessions.insert(0, created)
         self._active_session_id = created.id
-        self._apply_session_to_controls(created, add_to_recent=True)
+        is_cross_provider = bool(
+            provider_id and normalize_provider_id(provider_id) != self._active_provider_id
+        )
+        if not is_cross_provider:
+            self._apply_session_to_controls(created, add_to_recent=True)
         self._refresh_session_list()
         self._save_sessions_safe("Could not save sessions")
 
         if reset_conversation:
             self._reset_conversation_state("New session started")
 
-        if self._binary_path is None:
+        resolved_binary = self._provider_binaries.get(created.provider)
+        if resolved_binary is None:
             self._set_connection_state(CONNECTION_DISCONNECTED)
-            self._set_status_message(f"{self._active_provider.name} CLI not found", STATUS_ERROR)
+            provider_name = PROVIDERS[created.provider].name
+            self._set_status_message(f"{provider_name} CLI not found", STATUS_ERROR)
             self._set_active_session_status(SESSION_STATUS_ERROR)
             return
 
         self._refresh_connection_state()
         self._set_status_message("New session ready", STATUS_INFO)
+        self._sync_active_tab_state()
         pane_id = self._active_pane_id
         if pane_id is not None:
             GLib.timeout_add(100, lambda pid=pane_id: self._call_js_in_pane(pid, "focusInput"))
@@ -5188,7 +5693,28 @@ class ClaudeCodeWindow(Gtk.Window):
             self._set_status_message("Current project folder is not available", STATUS_ERROR)
             self._prompt_for_project_folder()
             return
+        current_pane = self._pane_by_id(self._active_pane_id)
+        current_process = getattr(current_pane, "_claude_process", None)
+        current_session_id = getattr(current_pane, "_active_session_id", None)
+        tracker = getattr(self, "_session_runtime_tracker", set())
+        if (
+            current_process is not None
+            and current_process.is_running()
+        ) or (
+            isinstance(tracker, set)
+            and isinstance(current_session_id, str)
+            and current_session_id in tracker
+        ):
+            self._open_new_session_tab(self._project_folder)
+            return
         self._start_new_session(self._project_folder)
+
+    def _open_new_session_tab(self, folder: str) -> None:
+        tab_id = self._create_workspace_tab(make_active=True)
+        if tab_id is None:
+            self._set_status_message("Could not open a new chat tab.", STATUS_ERROR)
+            return
+        self._start_new_session(folder)
 
     def _on_new_agent_clicked(self, _button: Gtk.Button) -> None:
         self._create_agent_pane()
@@ -5266,6 +5792,44 @@ class ClaudeCodeWindow(Gtk.Window):
                 ordered.append(provider_id)
         return ordered
 
+    def _resolve_startup_provider_id(
+        self,
+        settings_payload: dict[str, Any],
+        *,
+        preferred_provider_id: str,
+    ) -> str:
+        normalized_preferred_provider_id = normalize_provider_id(preferred_provider_id)
+        startup_mode = str(
+            settings_payload.get("startup_provider_mode") or DEFAULT_STARTUP_PROVIDER_MODE
+        ).strip().lower()
+        if startup_mode == DEFAULT_STARTUP_PROVIDER_MODE:
+            return normalized_preferred_provider_id
+
+        requested_provider_id = normalize_provider_id(startup_mode)
+        if self._provider_unavailability_reason(
+            requested_provider_id,
+            refresh_binary=False,
+            check_auth=True,
+        ) is None:
+            return requested_provider_id
+
+        if self._provider_unavailability_reason(
+            normalized_preferred_provider_id,
+            refresh_binary=False,
+            check_auth=True,
+        ) is None:
+            return normalized_preferred_provider_id
+
+        for provider_id in self._provider_display_order():
+            if self._provider_unavailability_reason(
+                provider_id,
+                refresh_binary=False,
+                check_auth=True,
+            ) is None:
+                return provider_id
+
+        return requested_provider_id
+
     def _provider_unavailability_reason(
         self,
         provider_id: str,
@@ -5335,9 +5899,16 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _on_provider_button_clicked(self, _button: Gtk.Button, provider_id: str) -> None:
         normalized_provider_id = normalize_provider_id(provider_id)
-        if normalized_provider_id == self._active_provider_id:
+        active_provider_id = self._pane_effective_provider_id(self._active_pane_id)
+        if normalized_provider_id == active_provider_id:
+            pane_id = self._active_pane_id
+            if pane_id is not None:
+                self._focus_chat_input_in_pane(pane_id)
             return
-        self._switch_provider(normalized_provider_id)
+        if self._active_tab_has_chat_activity():
+            self._open_provider_tab(normalized_provider_id)
+            return
+        self._switch_active_tab_provider(normalized_provider_id)
 
     def _provider_theme_variables(self, provider: ProviderConfig) -> dict[str, str]:
         accent_r, accent_g, accent_b = provider.accent_rgb
@@ -5427,13 +5998,30 @@ class ClaudeCodeWindow(Gtk.Window):
         return payload
 
     def _sync_provider_state_to_webview(self, *, pane_id: str | None = None) -> None:
-        provider = self._active_provider
         target_panes = [pane_id] if pane_id is not None else list(self._pane_registry.keys())
         for target in target_panes:
             if target not in self._pane_registry:
                 continue
             pane = self._pane_by_id(target)
+            provider_id = self._pane_effective_provider_id(target)
+            provider = PROVIDERS[provider_id]
             pane_mode = "agent" if (pane is not None and pane._is_agent) else "main"
+            session = self._find_session(pane._active_session_id) if pane is not None else None
+            model_value = normalize_model_value(
+                session.model if session is not None else self._provider_default_model_value(provider.id),
+                provider=provider.id,
+            )
+            permission_value = normalize_permission_value(
+                session.permission_mode if session is not None else self._provider_default_permission_value(provider.id),
+                provider=provider.id,
+            )
+            reasoning_value = (
+                session.reasoning_level
+                if session is not None and provider.supports_reasoning
+                else self._reasoning_value_from_index(self._selected_reasoning_index)
+            )
+            if not provider.supports_reasoning:
+                reasoning_value = "medium"
             with self._pane_context(target):
                 self._call_js("setReducedMotion", self._reduced_motion_from_gtk())
                 self._call_js("applyProviderTheme", self._provider_theme_variables(provider))
@@ -5452,9 +6040,9 @@ class ClaudeCodeWindow(Gtk.Window):
                     },
                 )
                 self._call_js("setReasoningVisible", provider.supports_reasoning)
-                self._update_status_model_and_permission()
+                self._call_js("updateModel", model_value)
+                self._call_js("updatePermission", permission_value)
                 if provider.supports_reasoning:
-                    reasoning_value = self._reasoning_value_from_index(self._selected_reasoning_index)
                     self._call_js("updateReasoningLevel", reasoning_value)
 
     def _reload_all_webviews(self, *, skip_history_replay: bool = False) -> None:
@@ -5471,7 +6059,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 try:
                     # The chat shell is loaded via load_html(); reloading that URI directly can
                     # produce a blank white page on some GTK4/WebKit builds.
-                    self._webview.load_html(get_chat_webview_html(), "")
+                    self._webview.load_html(get_chat_webview_html(), "file:///")
                 except Exception:
                     logger.exception("Could not rebuild WebView content for pane '%s' after settings update.", pane_id)
         self.queue_draw()
@@ -5585,6 +6173,181 @@ class ClaudeCodeWindow(Gtk.Window):
         if not provider.supports_reasoning:
             self._selected_reasoning_index = self._reasoning_index_from_value("medium")
             return
+
+    def _provider_default_model_value(self, provider_id: str) -> str:
+        provider = PROVIDERS[normalize_provider_id(provider_id)]
+        provider_models = list(provider.model_options)
+        if len(provider_models) > 1:
+            return provider_models[1][1]
+        if provider_models:
+            return provider_models[0][1]
+        return ""
+
+    def _provider_default_permission_value(self, provider_id: str) -> str:
+        provider = PROVIDERS[normalize_provider_id(provider_id)]
+        provider_permissions = list(provider.permission_options)
+        return provider_permissions[0][1] if provider_permissions else "auto"
+
+    def _set_tab_provider_id(self, tab_id: str | None, provider_id: str) -> None:
+        tab = self._tab_by_id(tab_id)
+        if tab is not None:
+            tab.provider_id = normalize_provider_id(provider_id)
+
+    def _set_active_provider_context(
+        self,
+        provider_id: str,
+        *,
+        session: SessionRecord | None = None,
+        persist_preference: bool = False,
+    ) -> bool:
+        normalized_provider_id = normalize_provider_id(provider_id)
+        if normalized_provider_id not in PROVIDERS:
+            return False
+
+        provider = PROVIDERS[normalized_provider_id]
+        binary_path = self._provider_binaries.get(normalized_provider_id)
+        self._active_provider_id = normalized_provider_id
+        self._binary_path = binary_path
+        self._set_tab_provider_id(getattr(self, "_active_tab_id", None), normalized_provider_id)
+        self._detect_provider_models_async(binary_path, normalized_provider_id)
+        self._detect_cli_flag_support_async(binary_path or "", normalized_provider_id)
+        self._set_provider_option_lists(
+            normalized_provider_id,
+            preferred_model=session.model if session is not None else None,
+            preferred_permission=session.permission_mode if session is not None else None,
+            preserve_previous_model=session is None,
+        )
+        if session is not None:
+            if provider.supports_reasoning:
+                self._selected_reasoning_index = self._reasoning_index_from_value(session.reasoning_level)
+            else:
+                session.reasoning_level = "medium"
+                self._selected_reasoning_index = self._reasoning_index_from_value("medium")
+        elif not provider.supports_reasoning:
+            self._selected_reasoning_index = self._reasoning_index_from_value("medium")
+
+        self._swap_css(
+            provider.colors,
+            provider.accent_rgb,
+            provider.accent_soft_rgb,
+            reduced_motion=self._reduced_motion_from_gtk(),
+        )
+        self._update_provider_toggle_button()
+        self._apply_provider_branding()
+        self._refresh_connection_state()
+        if persist_preference:
+            self._persist_active_provider_preference()
+        return True
+
+    def _pane_has_chat_activity(self, pane_id: str | None) -> bool:
+        pane = self._pane_by_id(pane_id)
+        if pane is None:
+            return False
+
+        process = getattr(pane, "_claude_process", None)
+        if process is not None and process.is_running():
+            return True
+
+        if str(getattr(pane, "_active_request_session_id", "") or "").strip():
+            return True
+        if str(getattr(pane, "_active_session_id", "") or "").strip():
+            return True
+        if str(getattr(pane, "_active_assistant_message", "") or "").strip():
+            return True
+        if bool(getattr(pane, "_has_messages", False)) or bool(getattr(pane, "_conversation_id", None)):
+            return True
+
+        tracker = getattr(self, "_session_runtime_tracker", set())
+        if not isinstance(tracker, set):
+            return False
+        return any(
+            isinstance(session_id, str) and session_id in tracker
+            for session_id in (
+                getattr(pane, "_active_session_id", None),
+                getattr(pane, "_active_request_session_id", None),
+            )
+        )
+
+    def _active_tab_has_chat_activity(self) -> bool:
+        tab = self._active_tab()
+        if tab is None:
+            return self._pane_has_chat_activity(self._active_pane_id)
+
+        pane_ids = self._pane_ids_in_widget(tab._pane_tree_root_widget)
+        if not pane_ids and tab._active_pane_id is not None:
+            pane_ids = [tab._active_pane_id]
+
+        for pane_id in pane_ids:
+            if self._pane_has_chat_activity(pane_id):
+                return True
+        return False
+
+    def _switch_active_tab_provider(self, provider_id: str) -> bool:
+        normalized_provider_id = normalize_provider_id(provider_id)
+        reason = self._provider_unavailability_reason(
+            normalized_provider_id,
+            refresh_binary=True,
+            check_auth=True,
+        )
+        if reason is not None:
+            self._show_provider_unavailable_error(PROVIDERS[normalized_provider_id], reason)
+            self._update_provider_toggle_button()
+            return False
+
+        active_session = self._get_active_session()
+        if active_session is not None and active_session.status != SESSION_STATUS_ARCHIVED:
+            active_session.status = SESSION_STATUS_ENDED
+            active_session.last_used_at = current_timestamp()
+
+        self._active_session_id = None
+        self._conversation_id = None
+        self._allowed_tools = set()
+        self._permission_request_pending = False
+        self._last_request_failed = False
+        self._active_assistant_message = ""
+        self._has_messages = False
+        self._clear_messages()
+        self._show_welcome()
+        self._set_typing(False)
+        self._sync_active_tab_state()
+        self._set_active_provider_context(normalized_provider_id, persist_preference=True)
+        self._refresh_session_list()
+        self._save_sessions_safe("Could not save sessions")
+        self._set_status_message(f"Switched to {PROVIDERS[normalized_provider_id].name}", STATUS_INFO)
+
+        pane_id = self._active_pane_id
+        if pane_id is not None:
+            GLib.timeout_add(100, lambda pid=pane_id: self._call_js_in_pane(pid, "focusInput"))
+        return True
+
+    def _open_provider_tab(self, provider_id: str) -> bool:
+        normalized_provider_id = normalize_provider_id(provider_id)
+        reason = self._provider_unavailability_reason(
+            normalized_provider_id,
+            refresh_binary=True,
+            check_auth=True,
+        )
+        if reason is not None:
+            self._show_provider_unavailable_error(PROVIDERS[normalized_provider_id], reason)
+            self._update_provider_toggle_button()
+            return False
+
+        tab_id = self._create_workspace_tab(
+            make_active=True,
+            provider_id=normalized_provider_id,
+        )
+        if tab_id is None:
+            self._set_status_message("Could not open a new chat tab.", STATUS_ERROR)
+            return False
+
+        self._set_tab_provider_id(tab_id, normalized_provider_id)
+        self._persist_active_provider_preference()
+        self._set_status_message(f"{PROVIDERS[normalized_provider_id].name} ready in new tab", STATUS_INFO)
+
+        pane_id = self._active_pane_id
+        if pane_id is not None:
+            GLib.timeout_add(100, lambda pid=pane_id: self._call_js_in_pane(pid, "focusInput"))
+        return True
 
     def _stop_running_request_for_provider_switch(self) -> bool:
         all_stopped = True
@@ -6067,6 +6830,20 @@ class ClaudeCodeWindow(Gtk.Window):
             self._chat_shell.get_style_context().remove_class("chat-focused")
         return False
 
+    def _on_webview_permission_request(
+        self,
+        _webview: WebKit.WebView,
+        request: Any,
+    ) -> bool:
+        user_media_cls = getattr(WebKit, "UserMediaPermissionRequest", None)
+        if user_media_cls is not None and isinstance(request, user_media_cls):
+            try:
+                request.allow()
+            except Exception:
+                logger.exception("Could not allow WebView user-media permission request.")
+            return True
+        return False
+
     def _on_js_change_model(
         self,
         pane_id: str,
@@ -6212,6 +6989,19 @@ class ClaudeCodeWindow(Gtk.Window):
             max_option_payload_chars=_MAX_JS_SEND_PAYLOAD_CHARS,
         )
 
+    def _on_js_transcribe_audio(
+        self,
+        pane_id: str,
+        _manager: WebKit.UserContentManager,
+        js_result: WebKit.JavascriptResult,
+    ) -> None:
+        on_js_transcribe_audio(
+            self,
+            pane_id,
+            js_result,
+            max_audio_payload_chars=_MAX_JS_TRANSCRIBE_PAYLOAD_CHARS,
+        )
+
     def _on_js_stop_process(
         self,
         pane_id: str,
@@ -6286,12 +7076,17 @@ class ClaudeCodeWindow(Gtk.Window):
                 return
             request_session_id = self._active_request_session_id
             request_visible = bool(request_session_id) and request_session_id == self._active_session_id
+            request_provider_id = self._session_effective_provider_id(
+                request_session_id,
+                fallback_pane_id=pane_id,
+            )
+            request_provider = PROVIDERS[request_provider_id]
 
             logger.info(
                 "pane=%s request=%s provider=%s running=%s",
                 pane_id,
                 request_token,
-                self._active_provider_id,
+                request_provider_id,
                 running,
             )
 
@@ -6308,7 +7103,7 @@ class ClaudeCodeWindow(Gtk.Window):
 
             if running and request_visible and self._is_active_pane(pane_id):
                 self._set_connection_state(CONNECTION_STARTING)
-                self._set_status_message(f"{self._active_provider.name} is responding...", STATUS_INFO)
+                self._set_status_message(f"{request_provider.name} is responding...", STATUS_INFO)
 
     def _on_process_assistant_chunk(self, pane_id: str, request_token: str, chunk: str) -> None:
         if pane_id not in self._pane_registry:
@@ -6340,12 +7135,15 @@ class ClaudeCodeWindow(Gtk.Window):
                 return
             request_session_id = self._active_request_session_id
             request_visible = bool(request_session_id) and request_session_id == self._active_session_id
+            request_provider_name = self._provider_display_name(
+                self._session_effective_provider_id(request_session_id, fallback_pane_id=pane_id)
+            )
             if request_visible:
                 self._add_system_message(message)
             if not self._permission_request_pending and self._is_permission_request_message(message):
                 self._permission_request_pending = True
                 self.send_notification(
-                    f"{self._active_provider.name} needs permission",
+                    f"{request_provider_name} needs permission",
                     "A tool permission request is waiting for your input.",
                     urgency="critical",
                 )
@@ -6363,16 +7161,21 @@ class ClaudeCodeWindow(Gtk.Window):
                 return
             if not payload:
                 return
+            request_session_id = self._active_request_session_id
+            request_provider_id = self._session_effective_provider_id(
+                request_session_id,
+                fallback_pane_id=pane_id,
+            )
+            request_provider_name = self._provider_display_name(request_provider_id)
 
             logger.info(
                 "pane=%s request=%s provider=%s permission_request tool=%s",
                 pane_id,
                 request_token,
-                self._active_provider_id,
+                request_provider_id,
                 str(payload.get("toolName") or ""),
             )
 
-            request_session_id = self._active_request_session_id
             request_visible = bool(request_session_id) and request_session_id == self._active_session_id
             if request_visible:
                 self._set_typing(False)
@@ -6382,7 +7185,7 @@ class ClaudeCodeWindow(Gtk.Window):
             if not self._permission_request_pending:
                 self._permission_request_pending = True
                 self.send_notification(
-                    f"{self._active_provider.name} needs permission",
+                    f"{request_provider_name} needs permission",
                     "A tool permission request is waiting for your input.",
                     urgency="critical",
                 )
@@ -6399,6 +7202,11 @@ class ClaudeCodeWindow(Gtk.Window):
 
             request_session_id = self._active_request_session_id
             request_visible = bool(request_session_id) and request_session_id == self._active_session_id
+            request_provider_id = self._session_effective_provider_id(
+                request_session_id,
+                fallback_pane_id=pane_id,
+            )
+            request_provider = PROVIDERS[request_provider_id]
             self._invalidate_active_request()
             if request_visible:
                 self._set_typing(False)
@@ -6428,13 +7236,13 @@ class ClaudeCodeWindow(Gtk.Window):
                     "pane=%s request=%s provider=%s complete success=1",
                     pane_id,
                     request_token,
-                    self._active_provider_id,
+                    request_provider_id,
                 )
                 self._last_request_failed = False
                 if self._is_active_pane(pane_id):
                     self._refresh_connection_state()
                     if request_visible:
-                        self._set_status_message(f"{self._active_provider.name} response received", STATUS_MUTED)
+                        self._set_status_message(f"{request_provider.name} response received", STATUS_MUTED)
                     else:
                         self._set_status_message("Background session finished.", STATUS_MUTED)
                 self._set_active_session_status(SESSION_STATUS_ACTIVE, session_id=request_session_id)
@@ -6463,20 +7271,20 @@ class ClaudeCodeWindow(Gtk.Window):
                     self._execute_agentctl_from_assistant(pane_id, assistant_output_text)
                 if had_assistant_output:
                     self.send_notification(
-                        f"{self._active_provider.name} response complete",
-                        f"{self._active_provider.name} finished responding.",
+                        f"{request_provider.name} response complete",
+                        f"{request_provider.name} finished responding.",
                     )
                 if should_close_agent_pane:
                     self._close_pane(pane_id)
                     self._set_status_message(f"{closed_agent_name} finished and was closed.", STATUS_INFO)
                 return
 
-            error_message = result.error_message or f"{self._active_provider.name} request failed"
+            error_message = result.error_message or f"{request_provider.name} request failed"
             logger.warning(
                 "pane=%s request=%s provider=%s complete success=0 error=%s",
                 pane_id,
                 request_token,
-                self._active_provider_id,
+                request_provider_id,
                 error_message,
             )
             self._last_request_failed = True
@@ -6499,7 +7307,7 @@ class ClaudeCodeWindow(Gtk.Window):
             self._set_active_session_status(SESSION_STATUS_ERROR, session_id=request_session_id)
             if request_visible:
                 self._add_system_message(error_message)
-            self.send_notification(f"{self._active_provider.name} error", error_message, urgency="critical")
+            self.send_notification(f"{request_provider.name} error", error_message, urgency="critical")
 
     def _enqueue_javascript(self, script: str) -> None:
         if not script:

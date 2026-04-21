@@ -34,40 +34,20 @@ def build_gtk_css(
     ERROR = colors["error"]
     SUCCESS = colors["success"]
     BUTTON_BG = colors["button_bg"]
-    BUTTON_BG_HOVER = colors["button_bg_hover"]
-    BUTTON_BG_ACTIVE = colors["button_bg_active"]
-    NEW_SESSION_BG = colors["new_session_bg"]
-    NEW_SESSION_BORDER = colors["new_session_border"]
-    SIDEBAR_TOGGLE_COLLAPSED_BG = colors["sidebar_toggle_collapsed_bg"]
-    MENU_BG = colors["menu_bg"]
     POPOVER_BG = colors["popover_bg"]
     SESSION_FILTER_BG = colors["session_filter_bg"]
     SESSION_FILTER_HOVER_BG = colors["session_filter_hover_bg"]
     SESSION_FILTER_ACTIVE_FG = colors["session_filter_active_fg"]
-    SESSION_ROW_HOVER_BG = colors["session_row_hover_bg"]
-    SESSION_ROW_ACTIVE_BG = colors["session_row_active_bg"]
     STATUS_DOT_ENDED = colors["status_dot_ended"]
     STATUS_DOT_ARCHIVED = colors["status_dot_archived"]
     CONTEXT_TROUGH_BG = colors["context_trough_bg"]
     SESSION_META_TIME = colors["session_meta_time"]
 
     accent_r, accent_g, accent_b = accent_rgb
-    ACCENT_RGBA_035 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.35)"
-    ACCENT_RGBA_03 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.3)"
-    ACCENT_RGBA_025 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.25)"
-    ACCENT_RGBA_02 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.2)"
     ACCENT_RGBA_018 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.18)"
-    ACCENT_RGBA_045 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.45)"
     ACCENT_RGBA_012 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.12)"
     ACCENT_RGBA_011 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.11)"
-    ACCENT_RGBA_034 = f"rgba({accent_r}, {accent_g}, {accent_b}, 0.34)"
     accent_soft_r, accent_soft_g, accent_soft_b = accent_soft_rgb
-    ACCENT_SOFT_RGBA_045 = (
-        f"rgba({accent_soft_r}, {accent_soft_g}, {accent_soft_b}, 0.45)"
-    )
-    ACCENT_SOFT_RGBA_04 = (
-        f"rgba({accent_soft_r}, {accent_soft_g}, {accent_soft_b}, 0.4)"
-    )
     ACCENT_SOFT_RGBA_018 = (
         f"rgba({accent_soft_r}, {accent_soft_g}, {accent_soft_b}, 0.18)"
     )
@@ -349,6 +329,72 @@ notebook.settings-notebook > header > tabs > tab:checked {{
     border-color: {ACCENT_SOFT};
     color: {FOREGROUND};
     background: @glass_tint_interactive_hover;
+}}
+
+notebook.session-tabs-notebook {{
+    background: transparent;
+    border: none;
+}}
+
+notebook.session-tabs-notebook > header {{
+    background: transparent;
+    border: none;
+    padding: 0 0 10px;
+}}
+
+notebook.session-tabs-notebook > header > tabs > tab {{
+    margin: 0 6px 0 0;
+    border: 1px solid {BORDER_SOFT};
+    border-radius: {GLASS_RADII["pill"]}px;
+    background: @glass_tint_base;
+    color: {FOREGROUND_MUTED};
+    padding: 5px 12px;
+    box-shadow: none;
+    transition:
+        background-color {button_transition} {GLASS_SPRING_CSS["standard"]},
+        border-color {button_transition} {GLASS_SPRING_CSS["standard"]},
+        box-shadow {button_transition} {GLASS_SPRING_CSS["standard"]};
+}}
+
+notebook.session-tabs-notebook > header > tabs > tab:hover {{
+    background: @glass_tint_interactive;
+    border-color: @glass_tint_interactive_hover;
+}}
+
+notebook.session-tabs-notebook > header > tabs > tab:checked {{
+    border-color: {ACCENT_SOFT};
+    background: @glass_tint_interactive_hover;
+}}
+
+label.session-tab-label {{
+    color: {FOREGROUND_MUTED};
+    font-size: 11px;
+    font-weight: 700;
+}}
+
+notebook.session-tabs-notebook > header > tabs > tab:checked label.session-tab-label {{
+    color: {FOREGROUND};
+}}
+
+.session-tab-close-button {{
+    min-width: 18px;
+    min-height: 18px;
+    padding: 0;
+    border-radius: 9px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: {FOREGROUND_MUTED};
+    box-shadow: none;
+}}
+
+.session-tab-close-button:hover {{
+    background: @glass_tint_interactive_hover;
+    border-color: {ACCENT_SOFT};
+    color: {FOREGROUND};
+}}
+
+notebook.session-tabs-notebook > header > tabs > tab:checked .session-tab-close-button {{
+    color: {FOREGROUND};
 }}
 
 .settings-page {{

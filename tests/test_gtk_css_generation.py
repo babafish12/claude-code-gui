@@ -9,6 +9,14 @@ from claude_code_gui.domain.provider import PROVIDERS
 pytestmark = pytest.mark.gtk_css
 
 
+def _rule_block(css: str, selector: str) -> str:
+    start = css.find(selector)
+    assert start != -1
+    end = css.find("}", start)
+    assert end != -1
+    return css[start:end]
+
+
 def test_glass_define_colors_prelude_is_present() -> None:
     generated = build_gtk_css(
         PROVIDERS["claude"].colors,
@@ -56,6 +64,26 @@ def test_phase3_button_rules_have_no_raw_rgba_outside_prelude() -> None:
     assert start != -1 and end != -1 and end > start
     phase_block = generated[start:end]
     assert "var(--" not in phase_block
+
+
+def test_session_tabs_use_glass_chip_styles() -> None:
+    generated = build_gtk_css(
+        PROVIDERS["claude"].colors,
+        PROVIDERS["claude"].accent_rgb,
+        PROVIDERS["claude"].accent_soft_rgb,
+    )
+    tab_hover_rule = _rule_block(generated, "notebook.session-tabs-notebook > header > tabs > tab:hover {")
+    tab_checked_rule = _rule_block(generated, "notebook.session-tabs-notebook > header > tabs > tab:checked {")
+
+    assert "notebook.session-tabs-notebook > header > tabs > tab {" in generated
+    assert "notebook.session-tabs-notebook > header > tabs > tab:hover {" in generated
+    assert "notebook.session-tabs-notebook > header > tabs > tab:checked {" in generated
+    assert ".session-tab-close-button {" in generated
+    assert "@glass_tint_base" in generated
+    assert "background:" in tab_hover_rule
+    assert "border-color:" in tab_hover_rule
+    assert "background:" in tab_checked_rule
+    assert "border-color:" in tab_checked_rule
 
 
 def test_claude_css_is_byte_identical() -> None:

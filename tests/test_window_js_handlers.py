@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,6 +13,7 @@ from claude_code_gui.app.constants import (
 )
 from claude_code_gui.gi_runtime import Gdk
 
+from claude_code_gui.ui import window as window_module
 from claude_code_gui.ui.window import ClaudeCodeWindow
 
 pytestmark = pytest.mark.unit
@@ -95,9 +97,52 @@ class _FakeClaudeProcess:
 class _SwitchFakeProcess:
     def __init__(self, *, running: bool) -> None:
         self._running = running
+        self.stop_calls = 0
 
     def is_running(self) -> bool:
         return self._running
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        self._running = False
+
+
+class _FakeNotebookPage:
+    def __init__(self, tab_id: str) -> None:
+        self._tab_id = tab_id
+
+
+class _FakeNotebook:
+    def __init__(self, pages: list[_FakeNotebookPage], *, current_page: int = 0) -> None:
+        self.pages = list(pages)
+        self.current_page = current_page
+
+    def page_num(self, page: _FakeNotebookPage) -> int:
+        try:
+            return self.pages.index(page)
+        except ValueError:
+            return -1
+
+    def get_n_pages(self) -> int:
+        return len(self.pages)
+
+    def get_nth_page(self, page_num: int) -> _FakeNotebookPage | None:
+        if 0 <= page_num < len(self.pages):
+            return self.pages[page_num]
+        return None
+
+    def remove_page(self, page_num: int) -> None:
+        self.pages.pop(page_num)
+        if not self.pages:
+            self.current_page = -1
+        elif self.current_page >= len(self.pages):
+            self.current_page = len(self.pages) - 1
+
+    def set_current_page(self, page_num: int) -> None:
+        self.current_page = page_num
+
+    def get_current_page(self) -> int:
+        return self.current_page
 
 
 def _build_permission_window() -> tuple[ClaudeCodeWindow, _FakeClaudeProcess]:
@@ -113,6 +158,76 @@ def _build_permission_window() -> tuple[ClaudeCodeWindow, _FakeClaudeProcess]:
     window._add_system_message = lambda *_args, **_kwargs: None
     window._allowed_tools = set()
     return window, process
+
+
+def _build_cross_provider_agent_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    active_provider_id: str,
+) -> tuple[ClaudeCodeWindow, list[str | None]]:
+    window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+    monkeypatch.setattr(window_module.GLib, "timeout_add", lambda *_args, **_kwargs: 1)
+
+    window._pane_context_id = None
+    window._pane_id_counter = 1
+    window._agent_counter = 0
+    window._max_panes = 4
+    window._active_provider_id = active_provider_id
+    window._project_folder = str(tmp_path)
+    window._provider_binaries = {
+        "claude": "/usr/bin/claude",
+        "codex": "/usr/bin/codex",
+    }
+    window._sessions = []
+    window._pane_registry = {
+        "pane-1": SimpleNamespace(
+            _is_agent=False,
+            _agent_name=None,
+            _agent_status="",
+            _agent_status_label=None,
+            _title_label=None,
+            _session_label=None,
+            _active_session_id=None,
+            _provider_id_override=None,
+        )
+    }
+    window._active_pane_id = "pane-1"
+    window._ordered_pane_ids = lambda: list(window._pane_registry.keys())
+    window._primary_pane_id = lambda: "pane-1"
+    window._set_active_pane = lambda pane_id, grab_focus=False: setattr(window, "_active_pane_id", pane_id)
+    window._update_pane_header = lambda _pane_id: None
+    window._sync_pane_mode_to_webviews = lambda pane_id=None: None
+    window._focus_chat_input_in_pane = lambda _pane_id: None
+    window._refresh_session_list = lambda: None
+    window._save_sessions_safe = lambda _context: True
+    window._refresh_connection_state = lambda: None
+    window._reset_conversation_state = lambda *_args, **_kwargs: None
+    window._set_connection_state = lambda *_args, **_kwargs: None
+    window._set_status_message = lambda *_args, **_kwargs: None
+    window._add_system_message = lambda *_args, **_kwargs: None
+
+    split_provider_calls: list[str | None] = []
+
+    def _fake_split_active_pane(_orientation: Any, *, provider_id: str | None = None) -> str:
+        split_provider_calls.append(provider_id)
+        new_pane_id = window._new_pane_id()
+        window._pane_registry[new_pane_id] = SimpleNamespace(
+            _is_agent=False,
+            _agent_name=None,
+            _agent_status="",
+            _agent_status_label=None,
+            _title_label=None,
+            _session_label=None,
+            _active_session_id=None,
+            _provider_id_override=None,
+        )
+        with window._pane_context(new_pane_id):
+            window._start_new_session(window._project_folder, provider_id=provider_id)
+        return new_pane_id
+
+    window._split_active_pane = _fake_split_active_pane
+    return window, split_provider_calls
 
 
 def test_extract_action_from_js_result_supports_string_and_json_payloads() -> None:
@@ -250,12 +365,13 @@ def test_agent_send_wraps_worker_prompt_with_handoff_protocol() -> None:
 
     window._is_primary_pane = lambda pane_id: pane_id == "pane-1"
     window._resolve_pane_target = lambda _reference, current_pane_id: "pane-2" if current_pane_id == "pane-1" else None
-    window._send_prompt_to_pane = lambda target_pane_id, prompt, keep_focus_on=None: (
+    window._send_prompt_to_pane = lambda target_pane_id, prompt, keep_focus_on=None, kind="user": (
         sent_payload.update(
             {
                 "target": target_pane_id,
                 "prompt": prompt,
                 "keep_focus_on": keep_focus_on,
+                "kind": kind,
             }
         )
         or True
@@ -293,6 +409,7 @@ def test_agent_send_wraps_worker_prompt_with_handoff_protocol() -> None:
     assert handled is True
     assert sent_payload["target"] == "pane-2"
     assert sent_payload["keep_focus_on"] == "pane-1"
+    assert sent_payload["kind"] == "agent_prompt"
     prompt_text = str(sent_payload["prompt"] or "")
     assert "You are Worker 1, a worker agent." in prompt_text
     assert "Never output or execute /agent, /pane, @agentctl, agentctl commands." in prompt_text
@@ -304,6 +421,56 @@ def test_agent_send_wraps_worker_prompt_with_handoff_protocol() -> None:
     assert "Bitte bearbeite vube/test.txt und entferne Zeile 3" in prompt_text
     assert statuses and statuses[-1] == "Prompt sent to Worker 1."
     assert system_messages == []
+
+
+@pytest.mark.parametrize(
+    ("active_provider_id", "requested_provider_id"),
+    [("claude", "codex"), ("codex", "claude")],
+)
+def test_agent_provider_spawn_creates_session_for_requested_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    active_provider_id: str,
+    requested_provider_id: str,
+) -> None:
+    window, split_provider_calls = _build_cross_provider_agent_window(
+        tmp_path,
+        monkeypatch,
+        active_provider_id=active_provider_id,
+    )
+
+    handled = window._handle_agent_command("pane-1", f"/agent {requested_provider_id}")
+
+    assert handled is True
+    assert split_provider_calls == [requested_provider_id]
+    new_pane = window._pane_by_id("pane-2")
+    assert new_pane is not None
+    assert new_pane._provider_id_override == requested_provider_id
+    created_session = window._find_session(new_pane._active_session_id)
+    assert created_session is not None
+    assert created_session.provider == requested_provider_id
+
+
+def test_send_prompt_to_pane_passes_message_kind_to_webview() -> None:
+    window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+    calls: list[tuple[str, str, dict[str, object]]] = []
+    window._pane_registry = {"pane-2": SimpleNamespace()}
+    window._call_js_in_pane = lambda pane_id, function_name, payload: calls.append((pane_id, function_name, payload)) or True
+
+    sent = window._send_prompt_to_pane("pane-2", " delegated task ", kind="agent_prompt")
+
+    assert sent is True
+    assert calls == [
+        (
+            "pane-2",
+            "hostSendMessage",
+            {
+                "text": "delegated task",
+                "attachments": [],
+                "kind": "agent_prompt",
+            },
+        )
+    ]
 
 
 def test_extract_agent_status_marker_parses_done_and_blocked() -> None:
@@ -419,6 +586,7 @@ def test_switch_to_session_keeps_running_request_in_background() -> None:
     window._pane_context_id = "p1"
     window._active_pane_id = "p1"
     window._pane_registry = {"p1": pane}
+    window._active_tab_id = None
     window._active_provider_id = "claude"
     window._binary_path = "/usr/bin/claude"
     window._session_search_query = ""
@@ -428,7 +596,11 @@ def test_switch_to_session_keeps_running_request_in_background() -> None:
     window._refresh_connection_state = lambda: None
     window._apply_session_to_controls = lambda _session, add_to_recent: None
     window._render_active_session_view = lambda: None
-    window._switch_provider = lambda _provider_id: True
+    window._sync_active_tab_state = lambda: None
+    window._set_tab_provider_id = lambda _tab_id, _provider_id: None
+    window._set_active_provider_context = (
+        lambda _provider_id, *, session=None, persist_preference=False: True
+    )
     status_messages: list[str] = []
     window._set_status_message = lambda message, _severity=None: status_messages.append(message)
 
@@ -466,6 +638,116 @@ def test_switch_to_session_keeps_running_request_in_background() -> None:
     assert any("continues in background" in message for message in status_messages)
 
 
+def test_pane_effective_provider_prefers_session_provider_over_global() -> None:
+    window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+    pane = SimpleNamespace(
+        _provider_id_override=None,
+        _active_session_id="session-1",
+    )
+    window._pane_registry = {"pane-1": pane}
+    window._tab_controllers = {}
+    window._active_provider_id = "gemini"
+    session = SimpleNamespace(provider="claude")
+    window._find_session = lambda session_id: session if session_id == "session-1" else None
+
+    assert window._pane_effective_provider_id("pane-1") == "claude"
+
+
+def test_sync_window_chrome_for_active_pane_uses_active_session_provider() -> None:
+    window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+    session = SimpleNamespace(provider="gemini", project_path="/tmp/project")
+    pane = SimpleNamespace(_active_session_id="session-1")
+    provider_calls: list[tuple[str, object]] = []
+    project_paths: list[str] = []
+
+    window._active_pane_id = "pane-1"
+    window._pane_registry = {"pane-1": pane}
+    window._find_session = lambda session_id: session if session_id == "session-1" else None
+    window._pane_effective_provider_id = lambda pane_id: "gemini" if pane_id == "pane-1" else "claude"
+    window._set_active_provider_context = (
+        lambda provider_id, *, session=None, persist_preference=False: provider_calls.append((provider_id, session))
+    )
+    window._set_project_path_entry_text = lambda path_value: project_paths.append(path_value)
+    window._update_project_folder_labels = lambda: None
+    window._update_status_model_and_permission = lambda: None
+    window._refresh_connection_state = lambda: None
+    window._refresh_session_list = lambda: None
+    window._update_all_pane_headers = lambda: None
+
+    window._sync_window_chrome_for_active_pane()
+
+    assert provider_calls == [("gemini", session)]
+    assert project_paths == ["/tmp/project"]
+
+
+def test_switch_to_session_rebinds_provider_context_for_target_session() -> None:
+    window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+    session1 = SimpleNamespace(
+        id="s1",
+        provider="claude",
+        status=SESSION_STATUS_ACTIVE,
+        last_used_at="2026-01-01T10:00:00+00:00",
+        project_path="/tmp/project",
+        history=[],
+        conversation_id=None,
+        title="chat 1",
+        model="sonnet",
+        permission_mode="auto",
+        reasoning_level="medium",
+    )
+    session2 = SimpleNamespace(
+        id="s2",
+        provider="gemini",
+        status=SESSION_STATUS_ENDED,
+        last_used_at="2026-01-01T09:00:00+00:00",
+        project_path="/tmp/project",
+        history=[],
+        conversation_id=None,
+        title="chat 2",
+        model="pro",
+        permission_mode="auto",
+        reasoning_level="medium",
+    )
+    pane = SimpleNamespace(
+        _active_session_id="s1",
+        _active_request_token=None,
+        _active_request_session_id=None,
+        _claude_process=_SwitchFakeProcess(running=False),
+    )
+    provider_calls: list[tuple[str, object]] = []
+    tab_provider_calls: list[tuple[str | None, str]] = []
+
+    window._pane_context_id = "pane-1"
+    window._active_pane_id = "pane-1"
+    window._pane_registry = {"pane-1": pane}
+    window._active_tab_id = "tab-1"
+    window._active_provider_id = "claude"
+    window._provider_unavailability_reason = lambda *_args, **_kwargs: None
+    window._pane_effective_provider_id = lambda _pane_id: "claude"
+    window._save_sessions_safe = lambda _context: True
+    window._refresh_session_list = lambda: None
+    window._refresh_connection_state = lambda: None
+    window._apply_session_to_controls = lambda _session, add_to_recent: None
+    window._render_active_session_view = lambda: None
+    window._sync_active_tab_state = lambda: None
+    window._set_status_message = lambda *_args, **_kwargs: None
+    window._set_connection_state = lambda *_args, **_kwargs: None
+    window._binary_path = "/usr/bin/gemini"
+    window._set_tab_provider_id = lambda tab_id, provider_id: tab_provider_calls.append((tab_id, provider_id))
+    window._set_active_provider_context = (
+        lambda provider_id, *, session=None, persist_preference=False: provider_calls.append((provider_id, session))
+    )
+    window._sessions = [session1, session2]
+    window._find_session = lambda sid: session1 if sid == "s1" else (session2 if sid == "s2" else None)
+    window._get_active_session = lambda: window._find_session(window._active_session_id)
+
+    window._switch_to_session("s2")
+
+    assert window._active_session_id == "s2"
+    assert provider_calls == [("gemini", session2)]
+    assert tab_provider_calls == [("tab-1", "gemini")]
+
+
 def test_replay_history_uses_static_assistant_message_rendering() -> None:
     window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
     calls: list[tuple[str, str]] = []
@@ -478,6 +760,7 @@ def test_replay_history_uses_static_assistant_message_rendering() -> None:
     window._replay_history(
         [
             {"role": "user", "content": "u1"},
+            {"role": "agent_prompt", "content": "p1"},
             {"role": "assistant", "content": "a1"},
             {"role": "system", "content": "s1"},
         ]
@@ -485,6 +768,340 @@ def test_replay_history_uses_static_assistant_message_rendering() -> None:
 
     assert calls == [
         ("addUserMessage", "u1"),
+        ("addAgentPromptMessage", "p1"),
         ("addAssistantMessage", "a1"),
         ("addSystemMessage", "s1"),
     ]
+
+
+def test_render_active_session_view_preserves_agent_prompt_role_in_history_payload() -> None:
+    window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+    js_calls: list[tuple[str, object]] = []
+    session = SimpleNamespace(
+        id="s1",
+        history=[
+            {"role": "agent_prompt", "content": "delegated"},
+            {"role": "assistant", "content": "done"},
+        ],
+    )
+    window._get_active_session = lambda: session
+    window._is_request_bound_to_session = lambda _session_id: False
+    window._call_js = lambda function_name, payload: js_calls.append((function_name, payload))
+    window._set_typing = lambda _value: None
+    window._update_context_indicator = lambda: None
+    window._active_assistant_message = ""
+    window._has_messages = False
+    window._context_char_count = 0
+
+    window._render_active_session_view()
+
+    assert js_calls[0] == (
+        "resetMessageHistory",
+        [
+            {"role": "agent_prompt", "content": "delegated"},
+            {"role": "assistant", "content": "done"},
+        ],
+    )
+    assert window._has_messages is True
+
+
+class TestSessionTabs:
+    def test_provider_button_same_provider_only_focuses_current_tab(self) -> None:
+        window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+        focused: list[str] = []
+        opened_tabs: list[str] = []
+        switched_tabs: list[str] = []
+
+        window._active_pane_id = "pane-1"
+        window._pane_effective_provider_id = lambda _pane_id: "claude"
+        window._focus_chat_input_in_pane = lambda pane_id: focused.append(pane_id)
+        window._active_tab_has_chat_activity = lambda: True
+        window._open_provider_tab = lambda provider_id: opened_tabs.append(provider_id)
+        window._switch_active_tab_provider = lambda provider_id: switched_tabs.append(provider_id)
+
+        window._on_provider_button_clicked(None, "claude")
+
+        assert focused == ["pane-1"]
+        assert opened_tabs == []
+        assert switched_tabs == []
+
+    def test_provider_button_with_active_chat_opens_new_tab(self) -> None:
+        window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+        opened_tabs: list[str] = []
+        switched_tabs: list[str] = []
+
+        window._active_pane_id = "pane-1"
+        window._pane_effective_provider_id = lambda _pane_id: "claude"
+        window._active_tab_has_chat_activity = lambda: True
+        window._open_provider_tab = lambda provider_id: opened_tabs.append(provider_id)
+        window._switch_active_tab_provider = lambda provider_id: switched_tabs.append(provider_id)
+
+        window._on_provider_button_clicked(None, "gemini")
+
+        assert opened_tabs == ["gemini"]
+        assert switched_tabs == []
+
+    def test_provider_button_with_split_tab_chat_in_sibling_pane_opens_new_tab(self) -> None:
+        window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+        opened_tabs: list[str] = []
+        switched_tabs: list[str] = []
+
+        window._active_pane_id = "pane-1"
+        window._active_tab_id = "tab-1"
+        window._active_provider_id = "claude"
+        window._tab_controllers = {
+            "tab-1": SimpleNamespace(
+                tab_id="tab-1",
+                _pane_tree_root_widget=object(),
+                _active_pane_id="pane-1",
+            )
+        }
+        window._pane_registry = {
+            "pane-1": SimpleNamespace(
+                _claude_process=_SwitchFakeProcess(running=False),
+                _active_session_id=None,
+                _active_request_session_id=None,
+                _active_assistant_message="",
+                _has_messages=False,
+                _conversation_id=None,
+            ),
+            "pane-2": SimpleNamespace(
+                _claude_process=_SwitchFakeProcess(running=False),
+                _active_session_id="session-2",
+                _active_request_session_id=None,
+                _active_assistant_message="",
+                _has_messages=False,
+                _conversation_id=None,
+            ),
+        }
+        window._session_runtime_tracker = set()
+        window._pane_ids_in_widget = lambda _widget: ["pane-1", "pane-2"]
+        session = SimpleNamespace(
+            id="session-2",
+            status=SESSION_STATUS_ACTIVE,
+            history=[{"role": "user", "content": "hello"}],
+            conversation_id="conv-2",
+        )
+        window._find_session = lambda sid: session if sid == "session-2" else None
+        window._pane_effective_provider_id = lambda _pane_id: "claude"
+        window._open_provider_tab = lambda provider_id: opened_tabs.append(provider_id)
+        window._switch_active_tab_provider = lambda provider_id: switched_tabs.append(provider_id)
+
+        window._on_provider_button_clicked(None, "gemini")
+
+        assert window._active_tab_has_chat_activity() is True
+        assert opened_tabs == ["gemini"]
+        assert switched_tabs == []
+
+    def test_provider_button_without_active_chat_reuses_current_tab(self) -> None:
+        window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+        opened_tabs: list[str] = []
+        switched_tabs: list[str] = []
+
+        window._active_pane_id = "pane-1"
+        window._pane_effective_provider_id = lambda _pane_id: "claude"
+        window._active_tab_has_chat_activity = lambda: False
+        window._open_provider_tab = lambda provider_id: opened_tabs.append(provider_id)
+        window._switch_active_tab_provider = lambda provider_id: switched_tabs.append(provider_id)
+
+        window._on_provider_button_clicked(None, "gemini")
+
+        assert opened_tabs == []
+        assert switched_tabs == ["gemini"]
+
+    def test_new_chat_busy_opens_new_tab(self, tmp_path: Path) -> None:
+        window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+        opened_tabs: list[str] = []
+        started_sessions: list[str] = []
+        window._project_folder = str(tmp_path)
+        window._pane_context_id = None
+        window._active_pane_id = "pane-1"
+        window._pane_registry = {
+            "pane-1": SimpleNamespace(
+                _claude_process=_SwitchFakeProcess(running=True),
+                _active_session_id="session-1",
+            )
+        }
+        window._set_status_message = lambda *_args, **_kwargs: None
+        window._prompt_for_project_folder = lambda: None
+        window._open_new_session_tab = lambda folder: opened_tabs.append(folder)
+        window._start_new_session = lambda folder: started_sessions.append(folder)
+        window._session_runtime_tracker = set()
+
+        window._on_new_session_clicked(None)
+
+        assert opened_tabs == [str(tmp_path)]
+        assert started_sessions == []
+
+    def test_new_chat_never_run_reuses_tab(self, tmp_path: Path) -> None:
+        window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+        opened_tabs: list[str] = []
+        started_sessions: list[str] = []
+        window._project_folder = str(tmp_path)
+        window._pane_context_id = None
+        window._active_pane_id = "pane-1"
+        window._pane_registry = {
+            "pane-1": SimpleNamespace(
+                _claude_process=_SwitchFakeProcess(running=False),
+                _active_session_id="session-1",
+            )
+        }
+        window._set_status_message = lambda *_args, **_kwargs: None
+        window._prompt_for_project_folder = lambda: None
+        window._open_new_session_tab = lambda folder: opened_tabs.append(folder)
+        window._start_new_session = lambda folder: started_sessions.append(folder)
+        window._session_runtime_tracker = set()
+
+        window._on_new_session_clicked(None)
+
+        assert opened_tabs == []
+        assert started_sessions == [str(tmp_path)]
+
+    def test_new_chat_previously_run_opens_new_tab(self, tmp_path: Path) -> None:
+        window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+        opened_tabs: list[str] = []
+        started_sessions: list[str] = []
+        window._project_folder = str(tmp_path)
+        window._pane_context_id = None
+        window._active_pane_id = "pane-1"
+        window._pane_registry = {
+            "pane-1": SimpleNamespace(
+                _claude_process=_SwitchFakeProcess(running=False),
+                _active_session_id="session-1",
+            )
+        }
+        window._set_status_message = lambda *_args, **_kwargs: None
+        window._prompt_for_project_folder = lambda: None
+        window._open_new_session_tab = lambda folder: opened_tabs.append(folder)
+        window._start_new_session = lambda folder: started_sessions.append(folder)
+        window._session_runtime_tracker = {"session-1"}
+
+        window._on_new_session_clicked(None)
+
+        assert opened_tabs == [str(tmp_path)]
+        assert started_sessions == []
+
+    def test_close_active_tab_falls_to_neighbor(self) -> None:
+        window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+        page_1 = _FakeNotebookPage("tab-1")
+        page_2 = _FakeNotebookPage("tab-2")
+        notebook = _FakeNotebook([page_1, page_2], current_page=0)
+        pane_1_process = _SwitchFakeProcess(running=False)
+        pane_2_process = _SwitchFakeProcess(running=True)
+        session_1 = SimpleNamespace(
+            id="session-1",
+            status=SESSION_STATUS_ACTIVE,
+            last_used_at="2026-01-01T10:00:00+00:00",
+        )
+        session_2 = SimpleNamespace(
+            id="session-2",
+            status=SESSION_STATUS_ACTIVE,
+            last_used_at="2026-01-01T09:00:00+00:00",
+        )
+        activated_tabs: list[str] = []
+        created_tabs: list[str] = []
+        saved_contexts: list[str] = []
+        refresh_calls = 0
+
+        window._tab_notebook = notebook
+        window._tab_controllers = {
+            "tab-1": SimpleNamespace(
+                tab_id="tab-1",
+                _page=page_1,
+                _workspace_host=None,
+                _pane_tree_root_widget=SimpleNamespace(_pane_id="pane-1"),
+                _active_pane_id="pane-1",
+                session_id="session-1",
+                _title_label=None,
+                _label_box=None,
+                _close_button=None,
+            ),
+            "tab-2": SimpleNamespace(
+                tab_id="tab-2",
+                _page=page_2,
+                _workspace_host=None,
+                _pane_tree_root_widget=SimpleNamespace(_pane_id="pane-2"),
+                _active_pane_id="pane-2",
+                session_id="session-2",
+                _title_label=None,
+                _label_box=None,
+                _close_button=None,
+            ),
+        }
+        window._active_tab_id = "tab-1"
+        window._active_pane_id = "pane-1"
+        window._workspace_host = None
+        window._workspace_container = SimpleNamespace(_pane_id="pane-1")
+        window._pane_registry = {
+            "pane-1": SimpleNamespace(
+                _claude_process=pane_1_process,
+                _request_temp_files={},
+                _active_session_id="session-1",
+                _active_request_session_id=None,
+            ),
+            "pane-2": SimpleNamespace(
+                _claude_process=pane_2_process,
+                _request_temp_files={},
+                _active_session_id="session-2",
+                _active_request_session_id=None,
+            ),
+        }
+        window._sessions = [session_1, session_2]
+        window._find_session = lambda sid: session_1 if sid == "session-1" else (session_2 if sid == "session-2" else None)
+        window._set_active_tab = lambda tab_id, grab_focus=False: (
+            activated_tabs.append(tab_id),
+            setattr(window, "_active_tab_id", tab_id),
+        )
+
+        def _record_refresh() -> None:
+            nonlocal refresh_calls
+            refresh_calls += 1
+
+        window._refresh_session_list = _record_refresh
+        window._save_sessions_safe = lambda context: saved_contexts.append(context) or True
+        window._update_pane_close_buttons = lambda: None
+        window._update_all_pane_headers = lambda: None
+
+        def _create_workspace_tab(*, make_active: bool = False) -> str:
+            created_tabs.append("tab-3")
+            page_3 = _FakeNotebookPage("tab-3")
+            notebook.pages.append(page_3)
+            window._tab_controllers["tab-3"] = SimpleNamespace(
+                tab_id="tab-3",
+                _page=page_3,
+                _workspace_host=None,
+                _pane_tree_root_widget=SimpleNamespace(_pane_id="pane-3"),
+                _active_pane_id="pane-3",
+                _title_label=None,
+                _label_box=None,
+                _close_button=None,
+            )
+            window._pane_registry["pane-3"] = SimpleNamespace(
+                _claude_process=_SwitchFakeProcess(running=False),
+                _request_temp_files={},
+            )
+            if make_active:
+                notebook.set_current_page(notebook.page_num(page_3))
+                window._active_tab_id = "tab-3"
+            return "tab-3"
+
+        window._create_workspace_tab = _create_workspace_tab
+
+        window._close_workspace_tab("tab-1")
+
+        assert activated_tabs == ["tab-2"]
+        assert pane_1_process.stop_calls == 1
+        assert session_1.status == SESSION_STATUS_ARCHIVED
+        assert session_2.status == SESSION_STATUS_ACTIVE
+        assert "tab-1" not in window._tab_controllers
+        assert notebook.get_n_pages() == 1
+
+        window._close_workspace_tab("tab-2")
+
+        assert pane_2_process.stop_calls == 1
+        assert session_2.status == SESSION_STATUS_ARCHIVED
+        assert created_tabs == ["tab-3"]
+        assert notebook.get_n_pages() == 1
+        assert set(window._tab_controllers) == {"tab-3"}
+        assert refresh_calls == 2
+        assert saved_contexts == ["Could not save sessions", "Could not save sessions"]
