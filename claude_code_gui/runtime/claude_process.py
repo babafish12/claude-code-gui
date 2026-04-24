@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 import subprocess
 import threading
 import time
@@ -49,6 +50,8 @@ class ClaudeProcess:
         self._running = False
         self._stop_requested = False
         self._process: subprocess.Popen[str] | None = None
+        self._active_request_token: str | None = None
+        self._pending_permission_request_ids: set[str] = set()
         self._permission_counter = 0
         self._dialects: dict[str, CliDialect] = {
             "claude": ClaudeDialect(),
@@ -71,34 +74,19 @@ class ClaudeProcess:
         if process.poll() is not None:
             return
 
-        wait_timeout_s = 0.5
-
         try:
-            if force:
+            if process.pid > 0:
+                os.killpg(
+                    os.getpgid(process.pid),
+                    signal.SIGKILL if force else signal.SIGTERM,
+                )
+            elif force:
                 process.kill()
             else:
                 process.terminate()
             logger.info("request_stop force=%s", force)
         except OSError:
             return
-
-        try:
-            process.wait(timeout=wait_timeout_s)
-            return
-        except subprocess.TimeoutExpired:
-            if force:
-                return
-
-        try:
-            process.kill()
-            logger.info("request_stop escalated_to_kill")
-        except OSError:
-            return
-
-        try:
-            process.wait(timeout=wait_timeout_s)
-        except subprocess.TimeoutExpired:
-            logger.warning("request_stop kill_timeout")
 
     def send_permission_response(self, *, action: str, comment: str = "", request_id: str = "") -> bool:
         normalized_action = str(action or "").strip().lower()
@@ -119,17 +107,34 @@ class ClaudeProcess:
         with self._lock:
             process = self._process
             running = self._running and not self._stop_requested
+            active_request_token = self._active_request_token
+            pending_ids = set(self._pending_permission_request_ids)
 
-        if not running or process is None or process.stdin is None or process.poll() is not None:
+        if (
+            not request_id
+            or request_id not in pending_ids
+            or not running
+            or process is None
+            or process.stdin is None
+            or process.poll() is not None
+        ):
             return False
 
         try:
             process.stdin.write(payload)
             process.stdin.flush()
         except (OSError, ValueError):
+            with self._lock:
+                self._pending_permission_request_ids.discard(request_id)
+            if active_request_token:
+                self._emit_system_message(
+                    active_request_token,
+                    "Could not send permission response to the running process.",
+                )
             return False
 
-        _ = request_id
+        with self._lock:
+            self._pending_permission_request_ids.discard(request_id)
         return True
 
     def send_message(self, *, request_token: str, config: ClaudeRunConfig) -> bool:
@@ -138,6 +143,8 @@ class ClaudeProcess:
                 return False
             self._running = True
             self._stop_requested = False
+            self._active_request_token = request_token
+            self._pending_permission_request_ids.clear()
 
         worker = threading.Thread(
             target=self._run,
@@ -170,6 +177,9 @@ class ClaudeProcess:
 
         try:
             for index, (mode, include_reasoning) in enumerate(mode_attempts):
+                with self._lock:
+                    if self._stop_requested:
+                        break
                 if index > 0:
                     prev_mode, prev_include_reasoning = mode_attempts[index - 1]
                     if mode != prev_mode:
@@ -189,6 +199,9 @@ class ClaudeProcess:
                 )
 
                 final_result = result
+                with self._lock:
+                    if self._stop_requested:
+                        break
                 if unsupported_output and index < len(mode_attempts) - 1:
                     logger.info(
                         "request=%s provider=%s fallback_next_attempt mode=%s include_reasoning=%s",
@@ -203,9 +216,11 @@ class ClaudeProcess:
             with self._lock:
                 self._running = False
                 self._process = None
+                self._active_request_token = None
+                self._pending_permission_request_ids.clear()
                 was_stopped = self._stop_requested
 
-            if was_stopped and not final_result.success and not final_result.error_message:
+            if was_stopped and not final_result.success:
                 final_result.error_message = "Request stopped"
 
             self._emit_running_changed(request_token, False)
@@ -268,6 +283,7 @@ class ClaudeProcess:
     ) -> CliRunConfig:
         provider_id = normalize_provider_id(config.provider_id)
         is_codex = provider_id == "codex"
+        is_claude = provider_id == "claude"
 
         return CliRunConfig(
             binary_path=config.binary_path,
@@ -275,15 +291,87 @@ class ClaudeProcess:
             model=config.model,
             permission_mode=config.permission_mode,
             reasoning_level=config.reasoning_level,
-            allowed_tools=list(config.allowed_tools) if config.allowed_tools else None,
             output_format=mode,
-            supports_model_flag=config.supports_model_flag or is_codex,
+            # Claude and Codex both support an explicit model flag in supported versions.
+            # Keep model routing enabled even if help-probing was inconclusive.
+            supports_model_flag=config.supports_model_flag or is_codex or is_claude,
             supports_permission_flag=config.supports_permission_flag or is_codex,
             supports_output_format_flag=config.supports_output_format_flag or is_codex,
             supports_include_partial_messages=config.supports_include_partial_messages,
             stream_json_requires_verbose=config.stream_json_requires_verbose,
             supports_reasoning_flag=config.supports_reasoning_flag and include_reasoning,
         )
+
+    @staticmethod
+    def _close_process_pipes(process: subprocess.Popen[str]) -> None:
+        for handle in (
+            getattr(process, "stdin", None),
+            getattr(process, "stdout", None),
+            getattr(process, "stderr", None),
+        ):
+            if handle is None:
+                continue
+            try:
+                handle.close()
+            except (OSError, AttributeError):
+                continue
+
+    @staticmethod
+    def _signal_process_group(process: subprocess.Popen[str], *, force: bool) -> None:
+        try:
+            pid = int(getattr(process, "pid", 0) or 0)
+            if pid > 0:
+                os.killpg(
+                    os.getpgid(pid),
+                    signal.SIGKILL if force else signal.SIGTERM,
+                )
+            elif force:
+                process.kill()
+            else:
+                process.terminate()
+        except OSError:
+            return
+
+    def _cleanup_spawned_process(self, process: subprocess.Popen[str]) -> None:
+        self._close_process_pipes(process)
+        if process.poll() is None:
+            self._signal_process_group(process, force=False)
+            try:
+                process.wait(timeout=0.5)
+            except TypeError:
+                process.wait()
+            except subprocess.TimeoutExpired:
+                self._signal_process_group(process, force=True)
+                try:
+                    process.wait(timeout=0.5)
+                except TypeError:
+                    process.wait()
+                except subprocess.TimeoutExpired:
+                    logger.warning("request_cleanup kill_timeout pid=%s", getattr(process, "pid", None))
+
+    @staticmethod
+    def _is_capability_fallback_output(provider_id: str, mode: str, captured_output: list[str]) -> bool:
+        if mode not in {"stream-json", "json"}:
+            return False
+        combined = "\n".join(captured_output).lower()
+        capability_markers = (
+            "unknown option",
+            "invalid value",
+            "requires --verbose",
+            "only works with --print",
+            "must be one of",
+            "unknown config",
+            "unrecognized argument",
+            "unrecognized arguments",
+            "invalid argument",
+            "unknown flag",
+            "model_reasoning_effort",
+        )
+        if "output-format" in combined and any(marker in combined for marker in capability_markers):
+            return True
+        if provider_id == "codex" and any(marker in combined for marker in capability_markers):
+            return True
+        return False
 
     def _run_single_attempt(
         self,
@@ -333,6 +421,7 @@ class ClaudeProcess:
                 errors="replace",
                 bufsize=1,
                 env=process_env,
+                start_new_session=True,
             )
             if provider_id == "codex":
                 # Codex consumes stdin when present and waits for EOF.
@@ -365,147 +454,141 @@ class ClaudeProcess:
         with self._lock:
             self._process = process
 
-        assistant_parts: list[str] = []
-        streamed_assistant = False
-        detected_conversation_id = config.conversation_id
-        result_text: str | None = None
-        error_messages: list[str] = []
-        captured_output: list[str] = []
-        parsed_json = False
-        cost_usd = 0.0
-        input_tokens = 0
-        output_tokens = 0
-        seen_permission_signatures: set[str] = set()
-        codex_file_change_snapshots: dict[str, dict[str, str | None]] = {}
-        last_emitted_assistant_chunk = ""
-        pending_assistant_chunks: list[str] = []
-        chunk_buffer_started_at = 0.0
-        chunk_flush_interval_s = 0.025
-
-        def flush_pending_assistant_chunks(*, force: bool = False) -> None:
-            nonlocal pending_assistant_chunks, chunk_buffer_started_at
-            if not pending_assistant_chunks:
-                return
-            if not force and (time.monotonic() - chunk_buffer_started_at) < chunk_flush_interval_s:
-                return
-            merged = "".join(pending_assistant_chunks)
-            pending_assistant_chunks = []
+        process_exited = False
+        try:
+            assistant_parts: list[str] = []
+            streamed_assistant = False
+            detected_conversation_id = config.conversation_id
+            result_text: str | None = None
+            error_messages: list[str] = []
+            captured_output: list[str] = []
+            cost_usd = 0.0
+            input_tokens = 0
+            output_tokens = 0
+            seen_permission_signatures: set[str] = set()
+            codex_file_change_snapshots: dict[str, dict[str, str | None]] = {}
+            last_emitted_assistant_chunk = ""
+            pending_assistant_chunks: list[str] = []
             chunk_buffer_started_at = 0.0
-            self._emit_assistant_chunk(request_token, merged)
+            chunk_flush_interval_s = 0.025
 
-        def queue_assistant_chunk(text_chunk: str) -> None:
-            nonlocal chunk_buffer_started_at
-            if not text_chunk:
-                return
-            if not pending_assistant_chunks:
-                chunk_buffer_started_at = time.monotonic()
-            pending_assistant_chunks.append(text_chunk)
-            flush_pending_assistant_chunks()
+            def flush_pending_assistant_chunks(*, force: bool = False) -> None:
+                nonlocal pending_assistant_chunks, chunk_buffer_started_at
+                if not pending_assistant_chunks:
+                    return
+                if not force and (time.monotonic() - chunk_buffer_started_at) < chunk_flush_interval_s:
+                    return
+                merged = "".join(pending_assistant_chunks)
+                pending_assistant_chunks = []
+                chunk_buffer_started_at = 0.0
+                self._emit_assistant_chunk(request_token, merged)
 
-        stdout = process.stdout
-        if stdout is not None:
-            for raw_line in stdout:
-                if raw_line is None:
-                    continue
+            def queue_assistant_chunk(text_chunk: str) -> None:
+                nonlocal chunk_buffer_started_at
+                if not text_chunk:
+                    return
+                if not pending_assistant_chunks:
+                    chunk_buffer_started_at = time.monotonic()
+                pending_assistant_chunks.append(text_chunk)
+                flush_pending_assistant_chunks()
 
-                line = raw_line.rstrip("\n")
-                stripped = line.strip()
-                if stripped:
-                    captured_output.append(stripped)
-                    if len(captured_output) > 120:
-                        captured_output = captured_output[-120:]
-
-                with self._lock:
-                    if self._stop_requested:
-                        break
-
-                if mode in {"stream-json", "json"}:
-                    event = self._parse_json_line(stripped)
-                    if event is not None:
-                        parsed_json = True
-
-                    if event is None and provider_id == "codex":
+            stdout = process.stdout
+            if stdout is not None:
+                for raw_line in stdout:
+                    if raw_line is None:
                         continue
 
-                    suppressed_tool_use_ids: set[str] = set()
-                    suppress_tools_without_id = False
-                    if provider_id == "claude" and mode == "stream-json":
-                        if isinstance(event, dict):
-                            suppressed_tool_use_ids, suppress_tools_without_id = self._emit_claude_permission_requests(
-                                request_token=request_token,
-                                event=event,
-                            )
-                    elif isinstance(event, dict) and self._requires_permission(event):
-                        permission_payload = self._extract_permission_request(
-                            event,
-                            request_token=request_token,
-                            fallback_tool_data=None,
-                        )
-                        if permission_payload is not None:
-                            flush_pending_assistant_chunks(force=True)
-                            self._emit_permission_request(request_token, permission_payload)
+                    line = raw_line.rstrip("\n")
+                    stripped = line.strip()
+                    if stripped:
+                        captured_output.append(stripped)
+                        if len(captured_output) > 120:
+                            captured_output = captured_output[-120:]
 
-                    parsed_events = dialect.parse_line(stripped)
-                    for parsed_event in parsed_events:
-                        if parsed_event.session_id:
-                            detected_conversation_id = parsed_event.session_id
+                    with self._lock:
+                        if self._stop_requested:
+                            break
 
-                        if parsed_event.text:
-                            if parsed_event.raw_type == "result":
-                                result_text = parsed_event.text
-                            else:
-                                text_chunk = str(parsed_event.text)
-                                if (
-                                    len(text_chunk) >= 8
-                                    and text_chunk == last_emitted_assistant_chunk
-                                ):
-                                    continue
-                                last_emitted_assistant_chunk = text_chunk
-                                if self._maybe_emit_text_permission_request(
+                    if mode in {"stream-json", "json"}:
+                        event = self._parse_json_line(stripped)
+                        if event is None and provider_id == "codex":
+                            continue
+
+                        suppressed_tool_use_ids: set[str] = set()
+                        suppress_tools_without_id = False
+                        if provider_id == "claude" and mode == "stream-json":
+                            if isinstance(event, dict):
+                                suppressed_tool_use_ids, suppress_tools_without_id = self._emit_claude_permission_requests(
                                     request_token=request_token,
-                                    text=text_chunk,
-                                    seen_signatures=seen_permission_signatures,
-                                ):
-                                    continue
-                                assistant_parts.append(text_chunk)
-                                streamed_assistant = True
-                                queue_assistant_chunk(text_chunk)
-
-                        if parsed_event.tool:
-                            flush_pending_assistant_chunks(force=True)
-                            tool_payloads = self._expand_tool_payloads(
-                                parsed_event=parsed_event,
-                                provider_id=provider_id,
-                                cwd=config.cwd,
-                                codex_file_change_snapshots=codex_file_change_snapshots,
-                            )
-                            for tool_payload in tool_payloads:
-                                tool_use_id = str(tool_payload.get("toolUseId") or "").strip()
-                                if tool_use_id and tool_use_id in suppressed_tool_use_ids:
-                                    continue
-                                if suppress_tools_without_id and not tool_use_id:
-                                    continue
-                                self._emit_system_message(
-                                    request_token,
-                                    json.dumps(tool_payload, ensure_ascii=False),
+                                    event=event,
                                 )
+                        elif isinstance(event, dict) and self._requires_permission(event):
+                            permission_payload = self._extract_permission_request(
+                                event,
+                                request_token=request_token,
+                                fallback_tool_data=None,
+                            )
+                            if permission_payload is not None:
+                                flush_pending_assistant_chunks(force=True)
+                                self._emit_permission_request(request_token, permission_payload)
 
-                        if parsed_event.usage:
-                            raw_cost = parsed_event.usage.get("total_cost_usd")
-                            if isinstance(raw_cost, (int, float)):
-                                cost_usd = float(raw_cost)
-                            input_tokens = int(parsed_event.usage.get("input_tokens") or 0)
-                            output_tokens = int(parsed_event.usage.get("output_tokens") or 0)
+                        parsed_events = dialect.parse_line(stripped)
+                        for parsed_event in parsed_events:
+                            if parsed_event.session_id:
+                                detected_conversation_id = parsed_event.session_id
 
-                        if parsed_event.error:
-                            flush_pending_assistant_chunks(force=True)
-                            if provider_id == "claude" and parsed_event.raw_type == "system":
-                                self._emit_system_message(request_token, parsed_event.error)
-                            else:
-                                error_messages.append(parsed_event.error)
+                            if parsed_event.text:
+                                if parsed_event.raw_type == "result":
+                                    result_text = parsed_event.text
+                                else:
+                                    text_chunk = str(parsed_event.text)
+                                    if len(text_chunk) >= 8 and text_chunk == last_emitted_assistant_chunk:
+                                        continue
+                                    last_emitted_assistant_chunk = text_chunk
+                                    if self._maybe_emit_text_permission_request(
+                                        request_token=request_token,
+                                        text=text_chunk,
+                                        seen_signatures=seen_permission_signatures,
+                                    ):
+                                        continue
+                                    assistant_parts.append(text_chunk)
+                                    streamed_assistant = True
+                                    queue_assistant_chunk(text_chunk)
 
-                else:
-                    if line:
+                            if parsed_event.tool:
+                                flush_pending_assistant_chunks(force=True)
+                                tool_payloads = self._expand_tool_payloads(
+                                    parsed_event=parsed_event,
+                                    provider_id=provider_id,
+                                    cwd=config.cwd,
+                                    codex_file_change_snapshots=codex_file_change_snapshots,
+                                )
+                                for tool_payload in tool_payloads:
+                                    tool_use_id = str(tool_payload.get("toolUseId") or "").strip()
+                                    if tool_use_id and tool_use_id in suppressed_tool_use_ids:
+                                        continue
+                                    if suppress_tools_without_id and not tool_use_id:
+                                        continue
+                                    self._emit_system_message(
+                                        request_token,
+                                        json.dumps(tool_payload, ensure_ascii=False),
+                                    )
+
+                            if parsed_event.usage:
+                                raw_cost = parsed_event.usage.get("total_cost_usd")
+                                if isinstance(raw_cost, (int, float)):
+                                    cost_usd = float(raw_cost)
+                                input_tokens = int(parsed_event.usage.get("input_tokens") or 0)
+                                output_tokens = int(parsed_event.usage.get("output_tokens") or 0)
+
+                            if parsed_event.error:
+                                flush_pending_assistant_chunks(force=True)
+                                if provider_id == "claude" and parsed_event.raw_type == "system":
+                                    self._emit_system_message(request_token, parsed_event.error)
+                                else:
+                                    error_messages.append(parsed_event.error)
+
+                    elif line:
                         if self._maybe_emit_text_permission_request(
                             request_token=request_token,
                             text=line,
@@ -516,87 +599,81 @@ class ClaudeProcess:
                         streamed_assistant = True
                         queue_assistant_chunk(line + "\n")
 
-        flush_pending_assistant_chunks(force=True)
-        return_code = process.wait()
-
-        unsupported_output = False
-        if mode in {"stream-json", "json"}:
-            combined = "\n".join(captured_output).lower()
-            unsupported_output = (
-                "output-format" in combined
-                and (
-                    "unknown option" in combined
-                    or "invalid value" in combined
-                    or "requires --verbose" in combined
-                    or "only works with --print" in combined
-                    or "must be one of" in combined
-                )
-            )
-            if mode == "stream-json" and not parsed_json and return_code != 0:
-                unsupported_output = unsupported_output or "error" in combined
-            if mode == "stream-json" and provider_id == "codex":
-                no_assistant_content = not assistant_parts and not result_text
-                if no_assistant_content and not error_messages and return_code == 0:
-                    unsupported_output = True
-            if provider_id == "codex" and any(
-                marker in combined
-                for marker in (
-                    "unknown config",
-                    "unrecognized argument",
-                    "unrecognized arguments",
-                    "unknown option",
-                    "invalid argument",
-                    "unknown flag",
-                    "model_reasoning_effort",
-                    "-c:",
-                    "unknown option:",
-                )
-            ):
-                unsupported_output = True
-
-        assistant_text = "".join(assistant_parts)
-        if not assistant_text.strip() and isinstance(result_text, str) and result_text.strip():
-            assistant_text = result_text
-            streamed_assistant = True
             flush_pending_assistant_chunks(force=True)
-            self._emit_assistant_chunk(request_token, result_text)
+            return_code = process.wait()
+            process_exited = True
 
-        error_message: str | None = None
-        if error_messages:
-            error_message = error_messages[-1]
-        elif return_code != 0:
-            output_hint = captured_output[-1] if captured_output else f"{provider_label} exited with an error."
-            error_message = output_hint
+            unsupported_output = self._is_capability_fallback_output(provider_id, mode, captured_output)
 
-        success = return_code == 0 and not error_messages
-        if provider_id == "codex" and success and not assistant_text.strip():
-            success = False
-            if not error_message:
-                error_message = captured_output[-1] if captured_output else "Codex returned no assistant response."
-        logger.info(
-            "request=%s provider=%s attempt_complete mode=%s rc=%s success=%s unsupported=%s streamed=%s",
-            request_token,
-            provider_id,
-            mode,
-            return_code,
-            success,
-            unsupported_output,
-            streamed_assistant,
-        )
+            assistant_text = "".join(assistant_parts)
+            if not assistant_text.strip() and isinstance(result_text, str) and result_text.strip():
+                assistant_text = result_text
+                streamed_assistant = True
+                flush_pending_assistant_chunks(force=True)
+                self._emit_assistant_chunk(request_token, result_text)
 
-        return (
-            ClaudeRunResult(
-                success=success,
-                assistant_text=assistant_text,
-                streamed_assistant=streamed_assistant,
-                conversation_id=detected_conversation_id,
-                error_message=error_message,
-                cost_usd=cost_usd,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-            ),
-            unsupported_output,
-        )
+            error_message: str | None = None
+            if error_messages:
+                error_message = error_messages[-1]
+            elif return_code != 0:
+                output_hint = captured_output[-1] if captured_output else f"{provider_label} exited with an error."
+                error_message = output_hint
+
+            success = return_code == 0 and not error_messages
+            if provider_id == "codex" and success and not assistant_text.strip():
+                success = False
+                if not error_message:
+                    error_message = captured_output[-1] if captured_output else "Codex returned no assistant response."
+            logger.info(
+                "request=%s provider=%s attempt_complete mode=%s rc=%s success=%s unsupported=%s streamed=%s",
+                request_token,
+                provider_id,
+                mode,
+                return_code,
+                success,
+                unsupported_output,
+                streamed_assistant,
+            )
+
+            return (
+                ClaudeRunResult(
+                    success=success,
+                    assistant_text=assistant_text,
+                    streamed_assistant=streamed_assistant,
+                    conversation_id=detected_conversation_id,
+                    error_message=error_message,
+                    cost_usd=cost_usd,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                ),
+                unsupported_output,
+            )
+        except Exception as error:
+            logger.exception(
+                "request=%s provider=%s attempt_runtime_failure mode=%s",
+                request_token,
+                provider_id,
+                mode,
+            )
+            return (
+                ClaudeRunResult(
+                    success=False,
+                    assistant_text="",
+                    streamed_assistant=False,
+                    conversation_id=config.conversation_id,
+                    error_message=f"{provider_label} CLI execution failed: {error}",
+                ),
+                False,
+            )
+        finally:
+            if process_exited:
+                self._close_process_pipes(process)
+            else:
+                self._cleanup_spawned_process(process)
+            with self._lock:
+                if self._process is process:
+                    self._process = None
+                self._pending_permission_request_ids.clear()
 
     @staticmethod
     def _parse_json_line(value: str) -> dict[str, Any] | None:
@@ -1057,111 +1134,6 @@ class ClaudeProcess:
 
         return tool_payload
 
-    def _extract_assistant_content(
-        self,
-        message: Any,
-        *,
-        request_token: str,
-    ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
-        texts: list[str] = []
-        tools: list[str] = []
-        permission_requests: list[dict[str, Any]] = []
-
-        if not isinstance(message, dict):
-            return texts, tools, permission_requests
-
-        content = message.get("content")
-        if isinstance(content, list):
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                block_type = str(block.get("type") or "")
-
-                if block_type == "text":
-                    chunk = block.get("text")
-                    if isinstance(chunk, str) and chunk:
-                        texts.append(chunk)
-                    continue
-
-                if block_type == "tool_use":
-                    tool_data = self._extract_tool_data(block)
-                    if tool_data is None:
-                        continue
-                    permission_request = self._extract_permission_request(
-                        block,
-                        request_token=request_token,
-                        fallback_tool_data=tool_data,
-                    )
-                    if permission_request is not None:
-                        permission_requests.append(permission_request)
-                    else:
-                        tools.append(json.dumps(tool_data, ensure_ascii=False))
-                    continue
-
-            return texts, tools, permission_requests
-
-        if isinstance(content, str) and content:
-            texts.append(content)
-
-        return texts, tools, permission_requests
-
-    def _extract_text_deltas(self, event: dict[str, Any]) -> list[str]:
-        event_type = str(event.get("type") or "").strip().lower()
-        if event_type in {"assistant", "result", "error", "system", "tool_use", "tool_result", "user"}:
-            return []
-
-        chunks: list[str] = []
-
-        def _collect(value: Any) -> None:
-            if isinstance(value, str):
-                if value:
-                    chunks.append(value)
-                return
-            if isinstance(value, list):
-                for item in value:
-                    _collect(item)
-                return
-            if not isinstance(value, dict):
-                return
-
-            value_type = str(value.get("type") or "").strip().lower()
-            if value_type in {"tool_use", "tool_result"}:
-                return
-
-            text_value = value.get("text")
-            if isinstance(text_value, str) and text_value:
-                chunks.append(text_value)
-
-            delta_value = value.get("delta")
-            if isinstance(delta_value, str) and delta_value:
-                chunks.append(delta_value)
-            elif isinstance(delta_value, (dict, list)):
-                _collect(delta_value)
-
-            value_value = value.get("value")
-            if isinstance(value_value, str) and value_value:
-                chunks.append(value_value)
-
-            content_value = value.get("content")
-            if isinstance(content_value, (dict, list)):
-                _collect(content_value)
-
-        _collect(event.get("delta"))
-        _collect(event.get("content_block"))
-        _collect(event.get("contentBlock"))
-        _collect(event.get("content"))
-        message = event.get("message")
-        if isinstance(message, dict):
-            _collect(message.get("delta"))
-            _collect(message.get("content"))
-
-        deduped: list[str] = []
-        for chunk in chunks:
-            if deduped and deduped[-1] == chunk:
-                continue
-            deduped.append(chunk)
-        return deduped
-
     def _extract_tool_data(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         text_limit = 12000
         command_limit = 400
@@ -1335,64 +1307,6 @@ class ClaudeProcess:
                 except (TypeError, ValueError):
                     return ""
         return ""
-
-    def _extract_tool_result_entries(self, message: Any) -> list[dict[str, Any]]:
-        if not isinstance(message, dict):
-            return []
-        content = message.get("content")
-        if not isinstance(content, list):
-            return []
-
-        entries: list[dict[str, Any]] = []
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            if str(block.get("type") or "").strip().lower() != "tool_result":
-                continue
-            output = self._coerce_text(
-                block.get("content")
-                or block.get("output")
-                or block.get("result")
-            ).strip()
-            if not output:
-                continue
-            entries.append(
-                {
-                    "toolUseId": block.get("tool_use_id") or block.get("toolUseId") or block.get("id"),
-                    "output": output,
-                }
-            )
-        return entries
-
-    def _merge_tool_result_with_tool_use(
-        self,
-        entry: dict[str, Any],
-        pending_shell_tools: dict[str, dict[str, Any]],
-    ) -> dict[str, Any] | None:
-        tool_use_id = str(entry.get("toolUseId") or "").strip()
-        output_text = self._coerce_text(entry.get("output")).strip()
-        if not output_text:
-            return None
-
-        base_tool = pending_shell_tools.get(tool_use_id) if tool_use_id else None
-        merged: dict[str, Any]
-        if base_tool:
-            merged = dict(base_tool)
-        else:
-            merged = {"__tool__": True, "name": "tool_result"}
-            if tool_use_id:
-                merged["toolUseId"] = tool_use_id
-
-        merged["output"] = self._clip_text(output_text, limit=12000)
-        self._attach_cipr_metadata(merged)
-
-        has_cipr = bool(merged.get("git_event") or merged.get("pr_event") or merged.get("ci_event"))
-        if not base_tool and not has_cipr:
-            return None
-
-        if tool_use_id and base_tool:
-            pending_shell_tools.pop(tool_use_id, None)
-        return merged
 
     @staticmethod
     def _is_shell_tool_name(tool_name: str) -> bool:
@@ -1940,6 +1854,10 @@ class ClaudeProcess:
         GLib.idle_add(self._on_system_message, request_token, message)
 
     def _emit_permission_request(self, request_token: str, payload: dict[str, Any]) -> None:
+        request_id = str(payload.get("requestId") or payload.get("request_id") or payload.get("id") or "").strip()
+        if request_id:
+            with self._lock:
+                self._pending_permission_request_ids.add(request_id)
         GLib.idle_add(self._on_permission_request, request_token, payload)
 
     def _emit_complete(self, request_token: str, result: ClaudeRunResult) -> None:

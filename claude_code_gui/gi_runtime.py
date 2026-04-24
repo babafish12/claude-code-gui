@@ -138,14 +138,9 @@ if not force_headless:
         pass
 
 if not runtime_loaded:
-    try:
-        Adw, Gdk, Gio, GLib, Gtk, Pango, WebKit = _build_headless_gi_stubs()
-        GTK4 = False
-        WEBKIT6 = False
-    except Exception:
-        Adw, Gdk, Gio, GLib, Gtk, Pango, WebKit = _build_headless_gi_stubs()
-        GTK4 = False
-        WEBKIT6 = False
+    Adw, Gdk, Gio, GLib, Gtk, Pango, WebKit = _build_headless_gi_stubs()
+    GTK4 = False
+    WEBKIT6 = False
 
 
 if GTK4:

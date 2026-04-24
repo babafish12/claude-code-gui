@@ -268,6 +268,8 @@ def test_detect_cli_flag_support_gemini_reads_approval_and_output_flags(
 def test_is_codex_authenticated_accepts_second_empty_success_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(binary_probe, "_codex_auth_cache_value", None)
+    monkeypatch.setattr(binary_probe, "_codex_auth_cache_checked_at", 0.0)
     monkeypatch.setattr(binary_probe, "find_provider_binary", lambda _names: "/usr/bin/codex")
     responses = iter(
         [

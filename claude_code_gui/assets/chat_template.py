@@ -463,6 +463,7 @@ button:disabled {
 }
 
 .plus-btn,
+.voice-btn,
 .agent-mode-toggle-btn,
 .selector-btn,
 .permission-btn,
@@ -479,6 +480,17 @@ button:disabled {
 }
 
 .plus-btn {
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.voice-btn {
     width: 30px;
     height: 30px;
     border-radius: 999px;
@@ -511,6 +523,7 @@ button:disabled {
 }
 
 .plus-btn-icon,
+.voice-btn-icon,
 .agent-mode-toggle-icon {
     display: inline-flex;
     align-items: center;
@@ -519,6 +532,7 @@ button:disabled {
 }
 
 .plus-btn-icon svg,
+.voice-btn-icon svg,
 .agent-mode-toggle-icon svg {
     width: 14px;
     height: 14px;
@@ -527,6 +541,15 @@ button:disabled {
     stroke-width: 1.75;
     stroke-linecap: round;
     stroke-linejoin: round;
+}
+
+.voice-btn.active {
+    background-color: rgba(220, 80, 60, 0.2);
+    border-color: rgba(220, 80, 60, 0.68);
+}
+
+.voice-btn.unsupported {
+    opacity: 0.85;
 }
 
 .toggle-track {
@@ -546,6 +569,7 @@ button:disabled {
 }
 
 .plus-btn:hover,
+.voice-btn:hover,
 .agent-mode-toggle-btn:hover,
 .selector-btn:hover,
 .permission-btn:hover,
@@ -659,6 +683,7 @@ button:disabled {
 
 .folder-path-btn,
 .plus-btn,
+.voice-btn,
 .agent-mode-toggle-btn,
 .selector-btn,
 .permission-btn,
@@ -685,6 +710,7 @@ button:disabled {
 
 .folder-path-btn:hover,
 .plus-btn:hover,
+.voice-btn:hover,
 .agent-mode-toggle-btn:hover,
 .selector-btn:hover,
 .permission-btn:hover,
@@ -709,6 +735,7 @@ button:disabled {
 
 .folder-path-btn::before,
 .plus-btn::before,
+.voice-btn::before,
 .agent-mode-toggle-btn::before,
 .selector-btn::before,
 .permission-btn::before,
@@ -733,6 +760,7 @@ button:disabled {
 
 .folder-path-btn:hover::before,
 .plus-btn:hover::before,
+.voice-btn:hover::before,
 .agent-mode-toggle-btn:hover::before,
 .selector-btn:hover::before,
 .permission-btn:hover::before,
@@ -750,6 +778,7 @@ button:disabled {
 
 .folder-path-btn:active,
 .plus-btn:active,
+.voice-btn:active,
 .agent-mode-toggle-btn:active,
 .selector-btn:active,
 .permission-btn:active,
@@ -770,6 +799,7 @@ button:disabled {
 
 .folder-path-btn,
 .plus-btn,
+.voice-btn,
 .agent-mode-toggle-btn,
 .selector-btn,
 .permission-btn,
@@ -1243,6 +1273,10 @@ button:disabled {
     animation: slideInRight var(--motion-normal) var(--ease-enter) both;
 }
 
+.message-row.agent-prompt {
+    animation: slideInRight var(--motion-normal) var(--ease-enter) both;
+}
+
 @keyframes slideInRight {
     from {
         opacity: 0;
@@ -1274,7 +1308,8 @@ button:disabled {
     max-width: 768px;
 }
 
-.message-row.user .message-inner {
+.message-row.user .message-inner,
+.message-row.agent-prompt .message-inner {
     display: flex;
     justify-content: flex-end;
 }
@@ -1305,6 +1340,33 @@ button:disabled {
 .user-bubble-text {
     display: inline;
     white-space: pre-wrap;
+}
+
+.agent-prompt-bubble {
+    max-width: min(92%, 680px);
+    display: inline-flex;
+    flex-direction: column;
+    gap: 10px;
+    border-radius: 18px;
+    border: 1px solid rgba(var(--accent-rgb), 0.38);
+    background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.08), rgba(58, 58, 52, 0.96));
+    padding: 12px 16px 14px;
+    color: var(--text);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.agent-prompt-label {
+    color: var(--text-accent-soft);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+
+.agent-prompt-body {
+    white-space: pre-wrap;
+    line-height: 1.48;
+    word-break: break-word;
 }
 
 .message-attachments {
@@ -1392,6 +1454,7 @@ button:disabled {
 }
 
 .user-bubble,
+.agent-prompt-bubble,
 .assistant-message,
 .system-pill,
 .composer-input {
@@ -1400,6 +1463,7 @@ button:disabled {
 }
 
 .user-bubble-text,
+.agent-prompt-body,
 .assistant-message,
 .system-pill {
     font-family: var(--font-stack), var(--emoji-font-stack);
@@ -1412,6 +1476,7 @@ button:disabled {
 .assistant-message td,
 .assistant-message th,
 .user-bubble,
+.agent-prompt-bubble,
 .system-pill {
     font-variant-numeric: lining-nums proportional-nums;
     letter-spacing: normal;
@@ -2987,6 +3052,7 @@ body.reduced-motion *::after {
 @media (prefers-reduced-transparency: reduce) {
     .folder-path-btn,
     .plus-btn,
+    .voice-btn,
     .agent-mode-toggle-btn,
     .selector-btn,
     .permission-btn,
@@ -3095,6 +3161,16 @@ body.reduced-motion *::after {
                                 <span class="plus-btn-icon" aria-hidden="true">
                                     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path d="M12 5v14M5 12h14" />
+                                    </svg>
+                                </span>
+                            </button>
+                            <button class="voice-btn" type="button" aria-label="Start voice recording" aria-pressed="false" title="Start voice recording">
+                                <span class="voice-btn-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <rect x="9" y="4" width="6" height="10" rx="3" />
+                                        <path d="M6.5 11.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5" />
+                                        <path d="M12 17v3" />
+                                        <path d="M8.5 20h7" />
                                     </svg>
                                 </span>
                             </button>
@@ -3231,6 +3307,16 @@ body.reduced-motion *::after {
                                 </svg>
                             </span>
                         </button>
+                        <button class="voice-btn" type="button" aria-label="Start voice recording" aria-pressed="false" title="Start voice recording">
+                            <span class="voice-btn-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <rect x="9" y="4" width="6" height="10" rx="3" />
+                                    <path d="M6.5 11.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5" />
+                                    <path d="M12 17v3" />
+                                    <path d="M8.5 20h7" />
+                                </svg>
+                            </span>
+                        </button>
                             <button class="agent-mode-toggle-btn" type="button" aria-label="Enable agent mode" aria-pressed="false" title="Agent mode is disabled">
                             <span class="agent-mode-toggle-icon" aria-hidden="true">
                                 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -3290,19 +3376,25 @@ body.reduced-motion *::after {
     let MODEL_OPTIONS = [
         {
             value: "sonnet",
-            short: "Sonnet 4.6",
+            short: "Sonnet",
             title: "Claude Sonnet (Latest)",
             description: "Balanced speed and reasoning for most conversations.",
         },
         {
             value: "opus",
-            short: "Opus 4.6",
+            short: "Opus",
             title: "Claude Opus (Latest)",
             description: "Deepest reasoning and strongest quality for complex work.",
         },
         {
+            value: "claude-opus-4-7",
+            short: "Opus 4.7",
+            title: "Claude Opus 4.7",
+            description: "Pinned Opus 4.7 model variant for reproducible runs.",
+        },
+        {
             value: "haiku",
-            short: "Haiku 4.5",
+            short: "Haiku",
             title: "Claude Haiku (Latest)",
             description: "Fastest responses for lightweight tasks.",
         },
@@ -3438,6 +3530,7 @@ body.reduced-motion *::after {
     const reasoningPopups = Array.from(document.querySelectorAll(".reasoning-popup"));
     const permissionPopups = Array.from(document.querySelectorAll(".permission-popup"));
     const plusButtons = Array.from(document.querySelectorAll(".plus-btn"));
+    const voiceButtons = Array.from(document.querySelectorAll(".voice-btn"));
     const agentModeToggleButtons = Array.from(document.querySelectorAll(".agent-mode-toggle-btn"));
     const quickChips = Array.from(document.querySelectorAll(".quick-chip"));
     const folderPathButtons = Array.from(document.querySelectorAll(".folder-path-btn"));
@@ -3529,6 +3622,7 @@ body.reduced-motion *::after {
     let selectedArtifactId = "";
     let selectedArtifactVersion = 0;
     let artifactSnippetCounter = 0;
+    let currentSessionId = "";
     const seenPermissionRequests = Object.create(null);
     const seenToolUseIds = Object.create(null);
     const prCardByKey = Object.create(null);
@@ -3540,6 +3634,26 @@ body.reduced-motion *::after {
     let slashSelectedIndex = 0;
     let slashFilteredItems = [];
     let activeSlashInput = null;
+    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+    const speechRecognitionSupported = typeof SpeechRecognitionCtor === "function";
+    const mediaRecorderSupported = !!(
+        navigator.mediaDevices
+        && typeof navigator.mediaDevices.getUserMedia === "function"
+        && typeof window.MediaRecorder === "function"
+    );
+    let speechRecognition = null;
+    let speechRecognitionActive = false;
+    let speechBaseText = "";
+    let speechFinalText = "";
+    let speechTargetInput = null;
+    let mediaRecorder = null;
+    let mediaRecorderActive = false;
+    let mediaRecorderStream = null;
+    let mediaRecorderChunks = [];
+    let mediaRecorderMimeType = "";
+    let voiceTranscribeInFlight = false;
+    let voiceSendQueued = false;
+    let voiceQueuedInput = null;
     const LANGUAGE_EXTENSION_MAP = Object.freeze({
         bash: ".sh",
         c: ".c",
@@ -5154,9 +5268,10 @@ body.reduced-motion *::after {
     }
 
     function encodeHrefAttribute(url) {
-        return String(url || "").replace(/[&<>"']/g, function (char) {
+        return String(url || "")
+            .replace(/&(?!(?:[a-zA-Z][a-zA-Z0-9]+|#\d+|#x[a-fA-F0-9]+);)/g, "&amp;")
+            .replace(/[<>"']/g, function (char) {
             switch (char) {
-                case "&": return "&amp;";
                 case "<": return "&lt;";
                 case ">": return "&gt;";
                 case "\"": return "&quot;";
@@ -5257,9 +5372,7 @@ body.reduced-motion *::after {
             if (!src) {
                 return "";
             }
-            const safeSrc = escapeHtml(src);
-            const safeAlt = escapeHtml(alt);
-            return '<img src="' + safeSrc + '" alt="' + safeAlt + '" class="chat-image" loading="lazy">';
+            return '<img src="' + src + '" alt="' + alt + '" class="chat-image" loading="lazy">';
         });
 
         source = source.replace(/^###\s+(.+)$/gm, function (_, text) {
@@ -5371,6 +5484,31 @@ body.reduced-motion *::after {
         }
         return false;
     }
+
+    function permissionSessionKey(sessionId) {
+        const key = String(sessionId || currentSessionId || "").trim();
+        return key || "__default__";
+    }
+
+    function ensureSeenPermissionRequests(sessionId) {
+        const key = permissionSessionKey(sessionId);
+        if (!seenPermissionRequests[key] || typeof seenPermissionRequests[key] !== "object") {
+            seenPermissionRequests[key] = Object.create(null);
+        }
+        return seenPermissionRequests[key];
+    }
+
+    function clearSeenPermissionRequests(sessionId) {
+        delete seenPermissionRequests[permissionSessionKey(sessionId)];
+    }
+
+    window.pybridge = window.pybridge || {};
+    window.pybridge.armUserMedia = function () {
+        return postToHost("armUserMedia", {});
+    };
+    window.pybridge.disarmUserMedia = function () {
+        return postToHost("disarmUserMedia", {});
+    };
 
     function parseHostPayload(rawValue) {
         if (typeof rawValue === "string") {
@@ -5521,10 +5659,22 @@ body.reduced-motion *::after {
         return reasoning || REASONING_OPTIONS[0];
     }
 
+    function ensureInteractiveSelectors() {
+        modelButtons.forEach(function (button) {
+            button.disabled = false;
+            button.removeAttribute("disabled");
+        });
+        permissionButtons.forEach(function (button) {
+            button.disabled = false;
+            button.removeAttribute("disabled");
+        });
+    }
+
     function renderSelectorLabels() {
         if (MODEL_OPTIONS.length === 0) {
             return;
         }
+        ensureInteractiveSelectors();
         const modelLabel = findModelMeta(selectedModel).short;
         modelButtons.forEach(function (button) {
             const labelEl = button.querySelector(".model-label");
@@ -6279,12 +6429,71 @@ body.reduced-motion *::after {
         return extractClipboardFiles(clipboardData, { imagesOnly: true });
     }
 
+    function decodeFileUriToLocalPath(raw) {
+        const trimmed = String(raw || "").trim();
+        if (!trimmed || trimmed.indexOf("file://") !== 0) {
+            return "";
+        }
+        let rest = trimmed.slice("file://".length);
+        if (rest.charAt(0) !== "/") {
+            const hostEnd = rest.indexOf("/");
+            if (hostEnd <= 0) {
+                return "";
+            }
+            const host = rest.slice(0, hostEnd).toLowerCase();
+            if (host !== "localhost") {
+                return "";
+            }
+            rest = rest.slice(hostEnd);
+        }
+        let decoded = rest;
+        try {
+            decoded = decodeURIComponent(rest);
+        } catch (_error) {
+            // Keep the raw value when the URI is not percent-encoded.
+        }
+        if (!decoded || decoded.charAt(0) !== "/") {
+            return "";
+        }
+        return decoded;
+    }
+
+    function lineLooksLikeLocalPath(line) {
+        const candidate = String(line || "").trim();
+        if (!candidate) {
+            return "";
+        }
+        if (candidate.indexOf("file://") === 0) {
+            return decodeFileUriToLocalPath(candidate);
+        }
+        if (candidate.charAt(0) !== "/") {
+            return "";
+        }
+        if (/[\r\n\t]/.test(candidate) || candidate.length > 4096) {
+            return "";
+        }
+        if (!/\.[A-Za-z0-9]{1,8}$/.test(candidate)) {
+            return "";
+        }
+        return candidate;
+    }
+
     function extractClipboardFilePaths(clipboardData) {
         if (!clipboardData) {
             return [];
         }
         const paths = [];
         const seen = new Set();
+
+        function remember(path) {
+            const clean = String(path || "").trim();
+            if (!clean || seen.has(clean)) {
+                return;
+            }
+            seen.add(clean);
+            paths.push(clean);
+        }
+
         const uriList = String(clipboardData.getData("text/uri-list") || "").trim();
         if (uriList) {
             uriList.split(/\r?\n/).forEach(function (line) {
@@ -6292,41 +6501,25 @@ body.reduced-motion *::after {
                 if (!trimmed || trimmed.charAt(0) === "#") {
                     return;
                 }
-                if (trimmed.indexOf("file://") !== 0) {
-                    return;
+                const decoded = decodeFileUriToLocalPath(trimmed);
+                if (decoded) {
+                    remember(decoded);
                 }
-                let rest = trimmed.slice("file://".length);
-                // Normalize file:///path, file://localhost/path and file://host/path.
-                if (rest.charAt(0) === "/") {
-                    // file:/// - already a local absolute path.
-                } else {
-                    const hostEnd = rest.indexOf("/");
-                    if (hostEnd <= 0) {
-                        return;
-                    }
-                    const host = rest.slice(0, hostEnd).toLowerCase();
-                    if (host !== "localhost") {
-                        // Remote host share - we cannot read this directly.
-                        return;
-                    }
-                    rest = rest.slice(hostEnd);
-                }
-                let decoded = rest;
-                try {
-                    decoded = decodeURIComponent(rest);
-                } catch (_error) {
-                    // Keep the raw value when the URI is not percent-encoded.
-                }
-                if (!decoded || decoded.charAt(0) !== "/") {
-                    return;
-                }
-                if (seen.has(decoded)) {
-                    return;
-                }
-                seen.add(decoded);
-                paths.push(decoded);
             });
         }
+
+        if (!paths.length) {
+            const plainText = String(clipboardData.getData("text/plain") || "").trim();
+            if (plainText) {
+                plainText.split(/\r?\n/).forEach(function (line) {
+                    const candidate = lineLooksLikeLocalPath(line);
+                    if (candidate) {
+                        remember(candidate);
+                    }
+                });
+            }
+        }
+
         return paths;
     }
 
@@ -6338,7 +6531,414 @@ body.reduced-motion *::after {
         inputEl.style.height = Math.min(inputEl.scrollHeight, 220) + "px";
     }
 
+    function normalizeSpeechText(value) {
+        return String(value || "").replace(/\s+/g, " ").trim();
+    }
+
+    function appendSpeechText(base, fragment) {
+        const left = String(base || "");
+        const right = normalizeSpeechText(fragment);
+        if (!right) {
+            return left;
+        }
+        if (!left) {
+            return right;
+        }
+        return /\s$/.test(left) ? left + right : left + " " + right;
+    }
+
+    function stopMediaRecorderStream() {
+        if (!mediaRecorderStream) {
+            return;
+        }
+        const tracks = Array.isArray(mediaRecorderStream.getTracks && mediaRecorderStream.getTracks())
+            ? mediaRecorderStream.getTracks()
+            : [];
+        tracks.forEach(function (track) {
+            if (track && typeof track.stop === "function") {
+                track.stop();
+            }
+        });
+        mediaRecorderStream = null;
+    }
+
+    function clearMediaRecorderState() {
+        mediaRecorderActive = false;
+        mediaRecorder = null;
+        mediaRecorderChunks = [];
+        mediaRecorderMimeType = "";
+        stopMediaRecorderStream();
+        if (window.pybridge && typeof window.pybridge.disarmUserMedia === "function") {
+            window.pybridge.disarmUserMedia();
+        }
+    }
+
+    function updateVoiceButtons() {
+        voiceButtons.forEach(function (button) {
+            if (!button) {
+                return;
+            }
+            const isSupported = speechRecognitionSupported || mediaRecorderSupported;
+            const isActive = speechRecognitionActive || mediaRecorderActive;
+            button.classList.toggle("active", isActive);
+            button.classList.toggle("unsupported", !isSupported);
+            button.setAttribute("aria-pressed", isActive ? "true" : "false");
+
+            if (voiceTranscribeInFlight) {
+                button.disabled = true;
+                button.setAttribute("title", "Transcribing voice input...");
+                button.setAttribute("aria-label", "Transcribing voice input");
+                return;
+            }
+
+            if (!isSupported) {
+                button.disabled = true;
+                button.setAttribute("title", "Speech input runtime unavailable in this environment.");
+                button.setAttribute("aria-label", "Speech input unavailable");
+                return;
+            }
+
+            button.disabled = false;
+            if (isActive) {
+                button.setAttribute("title", "Stop voice recording");
+                button.setAttribute("aria-label", "Stop voice recording");
+                return;
+            }
+            button.setAttribute("title", "Start voice recording");
+            button.setAttribute("aria-label", "Start voice recording");
+        });
+    }
+
+    function finishVoiceTranscription() {
+        voiceTranscribeInFlight = false;
+        speechBaseText = "";
+        speechFinalText = "";
+        speechTargetInput = null;
+        updateVoiceButtons();
+        flushQueuedSendAfterVoice();
+    }
+
+    function resetVoiceInputState() {
+        speechRecognitionActive = false;
+        clearMediaRecorderState();
+        finishVoiceTranscription();
+    }
+
+    function resolveVoiceInputTarget() {
+        return speechTargetInput || activeInput();
+    }
+
+    function queueSendAfterVoice(inputEl) {
+        voiceSendQueued = true;
+        voiceQueuedInput = inputEl || activeInput();
+    }
+
+    function flushQueuedSendAfterVoice() {
+        if (!voiceSendQueued) {
+            return;
+        }
+        const inputEl = voiceQueuedInput || activeInput();
+        voiceSendQueued = false;
+        voiceQueuedInput = null;
+        if (!inputEl) {
+            return;
+        }
+        sendPayload({
+            text: String(inputEl.value || "").trim(),
+            attachments: attachments,
+        });
+    }
+
+    function ensureSpeechRecognition() {
+        if (!speechRecognitionSupported) {
+            return null;
+        }
+        if (speechRecognition) {
+            return speechRecognition;
+        }
+        try {
+            speechRecognition = new SpeechRecognitionCtor();
+        } catch (_error) {
+            speechRecognition = null;
+            return null;
+        }
+        speechRecognition.interimResults = true;
+        speechRecognition.continuous = false;
+        speechRecognition.maxAlternatives = 1;
+        speechRecognition.onresult = function (event) {
+            if (!speechRecognitionActive) {
+                return;
+            }
+            const inputEl = resolveVoiceInputTarget();
+            if (!inputEl) {
+                return;
+            }
+            let nextFinal = speechFinalText;
+            let interim = "";
+            for (let index = event.resultIndex; index < event.results.length; index += 1) {
+                const result = event.results[index];
+                if (!result || !result[0]) {
+                    continue;
+                }
+                const transcript = normalizeSpeechText(result[0].transcript);
+                if (!transcript) {
+                    continue;
+                }
+                if (result.isFinal) {
+                    nextFinal = appendSpeechText(nextFinal, transcript);
+                } else {
+                    interim = appendSpeechText(interim, transcript);
+                }
+            }
+            speechFinalText = nextFinal;
+            inputEl.value = appendSpeechText(appendSpeechText(speechBaseText, speechFinalText), interim);
+            autoResizeInput(inputEl);
+        };
+        speechRecognition.onend = function () {
+            speechRecognitionActive = false;
+            finishVoiceTranscription();
+        };
+        speechRecognition.onerror = function () {
+            speechRecognitionActive = false;
+            finishVoiceTranscription();
+        };
+        return speechRecognition;
+    }
+
+    function chooseMediaRecorderMimeType() {
+        if (!mediaRecorderSupported || typeof MediaRecorder.isTypeSupported !== "function") {
+            return "";
+        }
+        const candidates = [
+            "audio/webm;codecs=opus",
+            "audio/webm",
+            "audio/ogg;codecs=opus",
+            "audio/ogg",
+            "audio/mp4",
+        ];
+        for (let index = 0; index < candidates.length; index += 1) {
+            const candidate = candidates[index];
+            try {
+                if (MediaRecorder.isTypeSupported(candidate)) {
+                    return candidate;
+                }
+            } catch (_error) {
+                continue;
+            }
+        }
+        return "";
+    }
+
+    function submitRecordedAudioForTranscription(blob, mimeType) {
+        if (!blob || !blob.size) {
+            finishVoiceTranscription();
+            return;
+        }
+        voiceTranscribeInFlight = true;
+        updateVoiceButtons();
+        const reader = new FileReader();
+        reader.onload = function () {
+            const dataUrl = String(reader.result || "");
+            if (!dataUrl.startsWith("data:")) {
+                finishVoiceTranscription();
+                return;
+            }
+            const posted = postToHost(
+                "transcribeAudio",
+                JSON.stringify({
+                    action: "transcribe_audio",
+                    source: "voice_button",
+                    type: String(mimeType || "audio/webm"),
+                    language: String(navigator.language || ""),
+                    data: dataUrl,
+                }),
+                ["transcribe_audio", "voiceTranscribe"],
+            );
+            if (!posted) {
+                finishVoiceTranscription();
+            }
+        };
+        reader.onerror = function () {
+            finishVoiceTranscription();
+        };
+        reader.readAsDataURL(blob);
+    }
+
+    function handleMediaRecorderStop() {
+        const recorderMimeType = mediaRecorderMimeType
+            || (mediaRecorder && typeof mediaRecorder.mimeType === "string" ? mediaRecorder.mimeType : "")
+            || "audio/webm";
+        const chunks = mediaRecorderChunks.slice();
+        clearMediaRecorderState();
+        if (!chunks.length) {
+            finishVoiceTranscription();
+            return;
+        }
+        const blob = new Blob(chunks, { type: recorderMimeType });
+        submitRecordedAudioForTranscription(blob, recorderMimeType);
+    }
+
+    function startSpeechRecognitionInput() {
+        if (!speechRecognitionSupported || speechRecognitionActive) {
+            updateVoiceButtons();
+            return;
+        }
+        const recognition = ensureSpeechRecognition();
+        if (!recognition) {
+            updateVoiceButtons();
+            return;
+        }
+        const inputEl = activeInput();
+        if (!inputEl) {
+            return;
+        }
+        speechTargetInput = inputEl;
+        speechBaseText = String(inputEl.value || "");
+        speechFinalText = "";
+        voiceTranscribeInFlight = false;
+        try {
+            recognition.lang = String(navigator.language || "en-US");
+        } catch (_error) {
+            recognition.lang = "en-US";
+        }
+        speechRecognitionActive = true;
+        updateVoiceButtons();
+        inputEl.focus();
+        try {
+            recognition.start();
+        } catch (_error) {
+            resetVoiceInputState();
+        }
+    }
+
+    function startMediaRecorderInput() {
+        if (!mediaRecorderSupported || mediaRecorderActive || voiceTranscribeInFlight) {
+            updateVoiceButtons();
+            return;
+        }
+        const inputEl = activeInput();
+        if (!inputEl) {
+            return;
+        }
+        speechTargetInput = inputEl;
+        speechBaseText = String(inputEl.value || "");
+        speechFinalText = "";
+        if (window.pybridge && typeof window.pybridge.armUserMedia === "function") {
+            window.pybridge.armUserMedia();
+        }
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+            mediaRecorderStream = stream;
+            mediaRecorderChunks = [];
+            mediaRecorderMimeType = chooseMediaRecorderMimeType();
+            try {
+                mediaRecorder = mediaRecorderMimeType
+                    ? new MediaRecorder(stream, { mimeType: mediaRecorderMimeType })
+                    : new MediaRecorder(stream);
+            } catch (_error) {
+                resetVoiceInputState();
+                return;
+            }
+            mediaRecorder.ondataavailable = function (event) {
+                if (event && event.data && event.data.size > 0) {
+                    mediaRecorderChunks.push(event.data);
+                }
+            };
+            mediaRecorder.onstop = function () {
+                handleMediaRecorderStop();
+            };
+            mediaRecorder.onerror = function () {
+                resetVoiceInputState();
+            };
+            mediaRecorderActive = true;
+            updateVoiceButtons();
+            inputEl.focus();
+            try {
+                mediaRecorder.start();
+            } catch (_error) {
+                resetVoiceInputState();
+            }
+        }).catch(function () {
+            resetVoiceInputState();
+        });
+    }
+
+    function stopVoiceInput(options) {
+        const config = options && typeof options === "object" ? options : {};
+        const cancelOnly = config.cancelOnly === true;
+
+        if (speechRecognitionActive) {
+            speechRecognitionActive = false;
+            updateVoiceButtons();
+            if (!speechRecognition) {
+                finishVoiceTranscription();
+                return;
+            }
+            try {
+                if (cancelOnly && typeof speechRecognition.abort === "function") {
+                    speechRecognition.abort();
+                } else {
+                    speechRecognition.stop();
+                }
+            } catch (_error) {
+                finishVoiceTranscription();
+            }
+            if (cancelOnly) {
+                finishVoiceTranscription();
+            }
+            return;
+        }
+
+        if (mediaRecorderActive) {
+            if (!mediaRecorder) {
+                finishVoiceTranscription();
+                return;
+            }
+            if (cancelOnly) {
+                mediaRecorder.ondataavailable = null;
+                mediaRecorder.onstop = null;
+                mediaRecorder.onerror = null;
+                try {
+                    mediaRecorder.stop();
+                } catch (_error) {
+                    // Ignore stop failures while cancelling.
+                }
+                clearMediaRecorderState();
+                finishVoiceTranscription();
+                return;
+            }
+            try {
+                mediaRecorder.stop();
+            } catch (_error) {
+                resetVoiceInputState();
+            }
+            return;
+        }
+
+        if (cancelOnly && voiceTranscribeInFlight) {
+            finishVoiceTranscription();
+        }
+    }
+
+    function startVoiceInput() {
+        if (voiceTranscribeInFlight) {
+            updateVoiceButtons();
+            return;
+        }
+        if (!speechRecognitionSupported && !mediaRecorderSupported) {
+            updateVoiceButtons();
+            return;
+        }
+        if (speechRecognitionSupported) {
+            startSpeechRecognitionInput();
+            return;
+        }
+        startMediaRecorderInput();
+    }
+
     function clearInputs() {
+        stopVoiceInput({ cancelOnly: true });
+        voiceSendQueued = false;
+        voiceQueuedInput = null;
         welcomeInputEl.value = "";
         chatInputEl.value = "";
         autoResizeInput(welcomeInputEl);
@@ -6391,7 +6991,16 @@ body.reduced-motion *::after {
         }
     }
 
+    function normalizeOutgoingKind(value) {
+        const normalized = String(value || "").trim().toLowerCase();
+        if (normalized === "agent_prompt") {
+            return "agent_prompt";
+        }
+        return "user";
+    }
+
     function sendPayload(payload) {
+        stopVoiceInput({ cancelOnly: true });
         const text = String(payload && payload.text ? payload.text : "").trim();
         const outgoingAttachments = cloneAttachmentList(payload ? payload.attachments : []);
         if (!text && !outgoingAttachments.length) {
@@ -6401,11 +7010,16 @@ body.reduced-motion *::after {
         const outgoing = {
             text: text,
             attachments: outgoingAttachments,
+            kind: normalizeOutgoingKind(payload ? payload.kind : ""),
         };
         lastUserPayload = outgoing;
         setChatState(true);
         setAssistantPhase(ASSISTANT_PHASE.SENDING);
-        addUserMessage(outgoing.text, outgoing.attachments);
+        if (outgoing.kind === "agent_prompt") {
+            addAgentPromptMessage(outgoing.text);
+        } else {
+            addUserMessage(outgoing.text, outgoing.attachments);
+        }
         postToHost("sendMessage", JSON.stringify(outgoing));
         clearInputs();
         clearAttachments();
@@ -6413,6 +7027,11 @@ body.reduced-motion *::after {
     }
 
     function sendInput(inputEl) {
+        if (speechRecognitionActive || mediaRecorderActive || voiceTranscribeInFlight) {
+            queueSendAfterVoice(inputEl);
+            stopVoiceInput();
+            return;
+        }
         sendPayload({
             text: String(inputEl.value || "").trim(),
             attachments: attachments,
@@ -6821,6 +7440,31 @@ body.reduced-motion *::after {
         bubbleWrap.appendChild(actions);
         bubbleWrap.appendChild(badge);
         rowObj.inner.appendChild(bubbleWrap);
+        scrollToBottom(true);
+    }
+
+    function addAgentPromptMessage(text) {
+        setChatState(true);
+        resetToolTurnState();
+
+        const rowObj = createMessageRow("agent-prompt");
+        const bubble = document.createElement("div");
+        bubble.className = "agent-prompt-bubble";
+
+        const label = document.createElement("div");
+        label.className = "agent-prompt-label";
+        label.textContent = "Agent prompt";
+        bubble.appendChild(label);
+
+        const safeText = String(text || "");
+        if (safeText) {
+            const body = document.createElement("div");
+            body.className = "agent-prompt-body";
+            body.textContent = textWithEmojiShortcodes(safeText);
+            bubble.appendChild(body);
+        }
+
+        rowObj.inner.appendChild(bubble);
         scrollToBottom(true);
     }
 
@@ -7687,10 +8331,12 @@ body.reduced-motion *::after {
 
         permissionRequestCounter += 1;
         const requestId = String(data.requestId || "").trim() || ("permission-" + permissionRequestCounter);
-        if (seenPermissionRequests[requestId]) {
+        const requestSessionId = String(data.sessionId || currentSessionId || "").trim();
+        const seenForSession = ensureSeenPermissionRequests(requestSessionId);
+        if (seenForSession[requestId]) {
             return;
         }
-        seenPermissionRequests[requestId] = true;
+        seenForSession[requestId] = true;
 
         const rowObj = createMessageRow("permission");
         const card = document.createElement("div");
@@ -7820,12 +8466,6 @@ body.reduced-motion *::after {
             allowForSessionBtn.textContent = "Allow " + toolName + " (re-send to retry)";
             actions.appendChild(allowForSessionBtn);
 
-            const alwaysAllowBtn = document.createElement("button");
-            alwaysAllowBtn.type = "button";
-            alwaysAllowBtn.className = "permission-action-btn always-allow";
-            alwaysAllowBtn.textContent = "Always Allow " + toolName;
-            actions.appendChild(alwaysAllowBtn);
-
             const denyButton = document.createElement("button");
             denyButton.type = "button";
             denyButton.className = "permission-action-btn deny";
@@ -7846,11 +8486,10 @@ body.reduced-motion *::after {
                 card.classList.remove("pending");
                 card.classList.add("resolved");
                 allowForSessionBtn.disabled = true;
-                alwaysAllowBtn.disabled = true;
                 denyButton.disabled = true;
 
-                if (action === "allow" || action === "always_allow") {
-                    status.textContent = toolName + " allowed for this session. Re-send your message to retry.";
+                if (action === "allow") {
+                    status.textContent = toolName + " allowed. Re-send your message to retry.";
                 } else {
                     status.textContent = "Permission remains denied.";
                 }
@@ -7864,16 +8503,6 @@ body.reduced-motion *::after {
                     isDenialCard: true,
                 }));
                 resolveDenialCard("allow");
-            });
-
-            alwaysAllowBtn.addEventListener("click", function () {
-                postToHost("permissionResponse", JSON.stringify({
-                    action: "always_allow",
-                    toolName: toolName,
-                    requestId: requestId,
-                    isDenialCard: true,
-                }));
-                resolveDenialCard("always_allow");
             });
 
             denyButton.addEventListener("click", function () {
@@ -7940,12 +8569,6 @@ body.reduced-motion *::after {
                 allowButton.textContent = "Allow";
                 actions.appendChild(allowButton);
 
-                const alwaysAllowBtn = document.createElement("button");
-                alwaysAllowBtn.type = "button";
-                alwaysAllowBtn.className = "permission-action-btn always-allow";
-                alwaysAllowBtn.textContent = "Always Allow " + toolName;
-                actions.appendChild(alwaysAllowBtn);
-
                 const denyButton = document.createElement("button");
                 denyButton.type = "button";
                 denyButton.className = "permission-action-btn deny";
@@ -7979,7 +8602,7 @@ body.reduced-motion *::after {
                     actionButtons[index].disabled = true;
                 }
 
-                if (action === "allow" || action === "always_allow") {
+                if (action === "allow") {
                     status.textContent = "Approved. Sent to " + activeProviderName + ".";
                     return;
                 }
@@ -8028,21 +8651,11 @@ body.reduced-motion *::after {
 
             if (!hasChoices) {
                 const allowButton = actions.querySelector(".permission-action-btn.allow");
-                const alwaysAllowBtn = actions.querySelector(".permission-action-btn.always-allow");
                 const denyButton = actions.querySelector(".permission-action-btn.deny");
-
-                if (alwaysAllowBtn) {
-                    alwaysAllowBtn.classList.remove("allow");
-                }
 
                 if (allowButton) {
                     allowButton.addEventListener("click", function () {
                         submitResponse("allow");
-                    });
-                }
-                if (alwaysAllowBtn) {
-                    alwaysAllowBtn.addEventListener("click", function () {
-                        submitResponse("always_allow");
                     });
                 }
                 if (denyButton) {
@@ -8496,7 +9109,13 @@ body.reduced-motion *::after {
         }
     }
 
-    function clearMessages() {
+    function clearMessages(payload) {
+        const parsedPayload = parseHostPayload(payload);
+        const targetSessionId = parsedPayload && typeof parsedPayload === "object" && !Array.isArray(parsedPayload)
+            ? String(parsedPayload.sessionId || currentSessionId || "").trim()
+            : String(currentSessionId || "").trim();
+        clearSeenPermissionRequests(targetSessionId);
+        currentSessionId = targetSessionId;
         renderQueued = false;
         if (renderTimerId) {
             window.clearTimeout(renderTimerId);
@@ -8549,8 +9168,16 @@ body.reduced-motion *::after {
         clearMessages();
     }
 
-    function resetMessageHistory(messages) {
-        clearMessages();
+    function resetMessageHistory(payload) {
+        const parsedPayload = parseHostPayload(payload);
+        const sessionId = parsedPayload && typeof parsedPayload === "object" && !Array.isArray(parsedPayload)
+            ? String(parsedPayload.sessionId || "").trim()
+            : "";
+        const messages = parsedPayload && typeof parsedPayload === "object" && !Array.isArray(parsedPayload)
+            ? parsedPayload.messages
+            : payload;
+        currentSessionId = sessionId;
+        clearMessages({ sessionId: sessionId });
         if (!Array.isArray(messages) || !messages.length) {
             return;
         }
@@ -8563,6 +9190,8 @@ body.reduced-motion *::after {
             }
             if (role === "user") {
                 addUserMessage(content);
+            } else if (role === "agent_prompt") {
+                addAgentPromptMessage(content);
             } else if (role === "assistant") {
                 addAssistantMessage(content);
             } else if (role === "system") {
@@ -8663,6 +9292,7 @@ body.reduced-motion *::after {
 var GLASS_BUTTON_SELECTOR = [
     ".folder-path-btn",
     ".plus-btn",
+    ".voice-btn",
     ".agent-mode-toggle-btn",
     ".selector-btn",
     ".permission-btn",
@@ -9243,6 +9873,16 @@ var GLASS_BUTTON_SELECTOR = [
         });
     });
 
+    voiceButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+            if (speechRecognitionActive || mediaRecorderActive) {
+                stopVoiceInput();
+                return;
+            }
+            startVoiceInput();
+        });
+    });
+
     if (stopBtnEl) {
         stopBtnEl.addEventListener("click", function () {
             postToHost("stopProcess", "stop");
@@ -9625,6 +10265,7 @@ var GLASS_BUTTON_SELECTOR = [
     attachInputBehavior(chatInputEl);
 
     window.addUserMessage = addUserMessage;
+    window.addAgentPromptMessage = addAgentPromptMessage;
     window.addAssistantMessage = addAssistantMessage;
     window.startAssistantMessage = startAssistantMessage;
     window.appendAssistantChunk = appendAssistantChunk;
@@ -9774,8 +10415,25 @@ var GLASS_BUTTON_SELECTOR = [
     window.updatePermission = function (permissionValue) {
         selectedPermission = normalizePermissionValue(permissionValue);
     };
+    window.applyVoiceTranscription = function (textValue) {
+        if (!voiceTranscribeInFlight) {
+            return;
+        }
+        const transcript = normalizeSpeechText(textValue);
+        const inputEl = resolveVoiceInputTarget();
+        if (inputEl && transcript) {
+            inputEl.value = appendSpeechText(String(inputEl.value || ""), transcript);
+            autoResizeInput(inputEl);
+            inputEl.focus();
+        }
+        finishVoiceTranscription();
+    };
+    window.finishVoiceTranscription = function () {
+        finishVoiceTranscription();
+    };
     window.setProcessing = function (isProcessing) {
         if (isProcessing) {
+            stopVoiceInput({ cancelOnly: true });
             processingActive = true;
             clearLongWaitStatusInternal({ immediate: true });
             resetLongWaitStatusTimers();
@@ -9810,10 +10468,19 @@ var GLASS_BUTTON_SELECTOR = [
             welcomeInputEl.focus();
         }
     };
-    window.hostSendMessage = function (textValue) {
+    window.hostSendMessage = function (payloadValue, kindValue) {
+        if (payloadValue && typeof payloadValue === "object" && !Array.isArray(payloadValue)) {
+            sendPayload({
+                text: String(payloadValue.text || "").trim(),
+                attachments: Array.isArray(payloadValue.attachments) ? payloadValue.attachments : [],
+                kind: payloadValue.kind || kindValue,
+            });
+            return;
+        }
         sendPayload({
-            text: String(textValue || "").trim(),
+            text: String(payloadValue || "").trim(),
             attachments: [],
+            kind: kindValue,
         });
     };
     window.updateFolder = function (pathValue) {
@@ -9827,6 +10494,7 @@ var GLASS_BUTTON_SELECTOR = [
     renderSelectorLabels();
     updateFolderDisplay("~");
     renderExamplePrompts();
+    updateVoiceButtons();
     renderAttachments();
     renderArtifactsList();
     renderArtifactDetail();

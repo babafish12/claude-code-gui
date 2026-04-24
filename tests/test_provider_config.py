@@ -9,6 +9,7 @@ from claude_code_gui.domain.provider import (
     PROVIDERS,
     ProviderConfig,
     get_provider_config,
+    get_providers,
     normalize_provider_id,
     refresh_provider_registry,
 )
@@ -61,8 +62,9 @@ def test_providers_registry_contains_expected_entries() -> None:
         assert len(config.accent_soft_rgb) == 3
 
 
-def test_refresh_provider_registry_updates_in_place() -> None:
-    registry_object_id = id(PROVIDERS)
+def test_refresh_provider_registry_swaps_snapshot_and_updates_alias() -> None:
+    registry_alias_id = id(PROVIDERS)
+    original_snapshot = get_providers()
     original_payload = load_settings()
     test_payload = copy.deepcopy(original_payload)
 
@@ -72,8 +74,9 @@ def test_refresh_provider_registry_updates_in_place() -> None:
 
     try:
         refreshed = refresh_provider_registry(test_payload)
-        assert id(PROVIDERS) == registry_object_id
-        assert id(refreshed) == registry_object_id
+        assert id(PROVIDERS) == registry_alias_id
+        assert refreshed is get_providers()
+        assert refreshed is not original_snapshot
         assert PROVIDERS["claude"].colors["accent"] == "#123456"
         assert PROVIDERS["claude"].accent_rgb == (18, 52, 86)
         assert PROVIDERS["claude"].accent_soft_rgb == (48, 96, 128)

@@ -2,21 +2,35 @@
 
 from __future__ import annotations
 
-def main() -> None:
-    import sys
-    import argparse
-    from claude_code_gui import gi_runtime
-    from claude_code_gui.ui.window import ClaudeCodeWindow
+import argparse
+import importlib
+import sys
+
+
+def main(argv: list[str] | None = None) -> None:
+    from claude_code_gui.core.paths import resolve_icon_path
+
+    gi_runtime = importlib.import_module("claude_code_gui.gi_runtime")
+    window_module = importlib.import_module("claude_code_gui.ui.window")
+    tray_module = importlib.import_module("claude_code_gui.ui.tray")
+
+    ClaudeCodeWindow = window_module.ClaudeCodeWindow
+    TrayIcon = tray_module.TrayIcon
 
     Gtk = gi_runtime.Gtk
     Adw = gi_runtime.Adw
     GTK4 = gi_runtime.GTK4
     Gio = gi_runtime.Gio
     option_types = getattr(gi_runtime, "GLib", Gio)
+    argv = list(sys.argv if argv is None else argv)
+    tray_icon_path = resolve_icon_path("claude.svg")
 
     parser = argparse.ArgumentParser(description="Claude Code GUI")
     parser.add_argument("--toggle-launcher", action="store_true", help="Toggle the launcher window via DBus")
-    args, unknown = parser.parse_known_args()
+    args, _unknown = parser.parse_known_args(argv[1:])
+    app_argv = [argv[0]]
+    if args.toggle_launcher:
+        app_argv.append("--toggle-launcher")
 
     if GTK4 and Adw:
         app = Adw.Application(
@@ -32,6 +46,13 @@ def main() -> None:
                     return
             win = ClaudeCodeWindow(application=app)
             win.present()
+            app._tray = TrayIcon(
+                app,
+                on_show=win.present,
+                on_new_pane=lambda: win._split_active_pane(Gtk.Orientation.HORIZONTAL),
+                on_quit=getattr(app, "quit", None),
+                icon_name=str(tray_icon_path) if tray_icon_path is not None else "",
+            )
 
         app.add_main_option(
             "toggle-launcher",
@@ -58,7 +79,7 @@ def main() -> None:
 
         app.connect("handle-local-options", on_handle_local_options)
         app.connect("activate", on_activate)
-        app.run(sys.argv)
+        app.run(app_argv)
     else:
         if args.toggle_launcher:
             print("Toggle launcher requires GTK4 and Libadwaita.")

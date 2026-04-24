@@ -97,3 +97,69 @@ def test_save_sessions_persists_provider_field(sessions_path) -> None:
     assert isinstance(raw, list)
     assert raw[0]["provider"] == "codex"
     assert raw[0]["permission_mode"] == "plan"
+
+
+def test_save_sessions_merges_with_newer_on_disk_payload(sessions_path) -> None:
+    sessions_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "shared",
+                    "title": "Disk",
+                    "project_path": "/tmp",
+                    "model": "sonnet",
+                    "permission_mode": "auto",
+                    "status": "active",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "last_used_at": "2026-01-02T00:00:00+00:00",
+                    "provider": "claude",
+                },
+                {
+                    "id": "disk-only",
+                    "title": "Disk only",
+                    "project_path": "/tmp",
+                    "model": "sonnet",
+                    "permission_mode": "auto",
+                    "status": "ended",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "last_used_at": "2026-01-01T01:00:00+00:00",
+                    "provider": "claude",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    sessions_store.save_sessions(
+        [
+            SessionRecord(
+                id="shared",
+                title="Memory",
+                project_path="/tmp",
+                model="gpt-5",
+                permission_mode="plan",
+                status="active",
+                created_at="2026-01-01T00:00:00+00:00",
+                last_used_at="2026-01-01T12:00:00+00:00",
+                provider="codex",
+            ),
+            SessionRecord(
+                id="memory-only",
+                title="Memory only",
+                project_path="/tmp",
+                model="gpt-5",
+                permission_mode="plan",
+                status="active",
+                created_at="2026-01-01T00:00:00+00:00",
+                last_used_at="2026-01-01T13:00:00+00:00",
+                provider="codex",
+            ),
+        ]
+    )
+
+    raw = json.loads(sessions_path.read_text(encoding="utf-8"))
+
+    assert [item["id"] for item in raw] == ["shared", "memory-only", "disk-only"]
+    assert raw[0]["title"] == "Disk"
+    assert raw[1]["title"] == "Memory only"
+    assert raw[2]["title"] == "Disk only"

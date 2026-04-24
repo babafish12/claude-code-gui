@@ -147,6 +147,14 @@ ruff check
 
 ## Change History
 
+### 2026-04-22
+- Security: Restricted attachment paths to the project root or explicitly approved chooser paths, made WebView microphone access single-use and explicitly armed, removed misleading `allowed_tools` pre-approval semantics, and tightened attachment MIME, Base64, and content sniffing checks.
+- Runtime: Closed stop races, ran CLI children in dedicated process groups, tied permission responses to real pending request IDs, capped pending tool state, atomically swapped provider registry snapshots, and tightened model/auth probing fallback behavior.
+- Storage: Added `flock`-guarded reads and writes plus merge-on-save handling for sessions and recent folders to reduce lost updates under concurrent saves.
+- UI: Rehydrated multiple pending permission cards per session, scoped attachment approvals and async publish results to the active session, normalized provider startup/settings lookup, and moved attachment I/O and slash discovery off the UI thread.
+- Assets: Fixed the planned chat-template escaping bugs in link and markdown image handling, and updated the WebView bridge flow for session-scoped permission state and voice recording permission arming.
+- Tray: Switched tray icon lookup to absolute project paths, delayed tray availability until the helper reports ready, and hardened the helper for missing GI imports and EOF shutdown.
+
 ### 2026-04-15
 - Replaced README with full project documentation.
 - Hardened WebView bridge handling and persistence across panes (atomic writes, payload validation, pane lifecycle guards).

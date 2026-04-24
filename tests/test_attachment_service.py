@@ -25,6 +25,7 @@ def test_decode_data_url_supports_base64_and_urlencoded_payloads() -> None:
 
     assert attachment_service.decode_data_url("not-a-data-url") is None
     assert attachment_service.decode_data_url("data:text/plain") is None
+    assert attachment_service.decode_data_url("data:text/plain;base64,***") is None
 
 
 def test_parse_send_payload_validates_schema_and_normalizes_attachments() -> None:
@@ -135,9 +136,52 @@ def test_materialize_compose_and_cleanup_roundtrip() -> None:
         attachment_service.cleanup_temp_paths(["", paths[0], "/tmp/definitely-not-existing-attachment"])
 
 
+def test_materialize_attachments_rejects_mime_content_mismatch() -> None:
+    paths = attachment_service.materialize_attachments(
+        [{"name": "image.png", "data": _data_url(b"hello", "image/png"), "type": "image/png"}]
+    )
+
+    assert paths == []
+
+
+def test_materialize_attachments_rejects_text_plain_markup_polyglots() -> None:
+    paths = attachment_service.materialize_attachments(
+        [{"name": "notes.txt", "data": _data_url(b"<svg><script>alert(1)</script></svg>"), "type": "text/plain"}]
+    )
+
+    assert paths == []
+
+
+def test_materialize_attachments_require_markup_signature_for_html_and_xml() -> None:
+    html_paths = attachment_service.materialize_attachments(
+        [{"name": "page.html", "data": _data_url(b"plain text", "text/html"), "type": "text/html"}]
+    )
+    xml_paths = attachment_service.materialize_attachments(
+        [{"name": "config.xml", "data": _data_url(b"plain text", "application/xml"), "type": "application/xml"}]
+    )
+
+    assert html_paths == []
+    assert xml_paths == []
+
+
+def test_materialize_attachments_accepts_svg_only_with_svg_or_xml_prefix() -> None:
+    accepted_paths = attachment_service.materialize_attachments(
+        [{"name": "image.svg", "data": _data_url(b"  <svg xmlns='http://www.w3.org/2000/svg'></svg>", "image/svg+xml"), "type": "image/svg+xml"}]
+    )
+    rejected_paths = attachment_service.materialize_attachments(
+        [{"name": "image.svg", "data": _data_url(b"<!--svg--><svg></svg>", "image/svg+xml"), "type": "image/svg+xml"}]
+    )
+
+    try:
+        assert len(accepted_paths) == 1
+        assert rejected_paths == []
+    finally:
+        attachment_service.cleanup_temp_paths(accepted_paths)
+
+
 def test_encode_host_attachment_payloads_builds_data_urls(tmp_path: Path) -> None:
     first = tmp_path / "image.png"
-    first.write_bytes(b"\x89PNG")
+    first.write_bytes(b"\x89PNG\r\n\x1a\nrest")
     second = tmp_path / "note.txt"
     second.write_text("hello", encoding="utf-8")
 

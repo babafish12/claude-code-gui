@@ -64,6 +64,10 @@
           "value": "opus"
         },
         {
+          "label": "Claude Opus 4.7",
+          "value": "claude-opus-4-7"
+        },
+        {
           "label": "Claude Haiku (Latest)",
           "value": "haiku"
         }
@@ -323,5 +327,6 @@
   "agentctl_auto_enabled": true,
   "system_tray_enabled": true,
   "active_provider_id": "claude",
+  "startup_provider_mode": "last-used",
   "stream_render_throttle_ms": 80
 }

@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -94,6 +95,8 @@ from claude_code_gui.ui.window_js_handlers import (
     extract_message_from_js_result,
     on_js_attach_file,
     on_js_attach_paths,
+    on_js_arm_user_media,
+    on_js_disarm_user_media,
     on_js_permission_response,
     on_js_transcribe_audio,
     on_js_send_message,
@@ -237,7 +240,8 @@ class PaneController:
         self._active_assistant_message = ""
         self._request_temp_files: dict[str, list[str]] = {}
         self._permission_request_pending = False
-        self._allowed_tools: set[str] = set()
+        self._approved_attachment_paths_by_session: dict[str, set[str]] = {}
+        self._user_media_permission_deadline_monotonic = 0.0
         self._has_messages = False
         self._last_request_failed = False
         self._is_agent = False
@@ -295,6 +299,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._active_tab_id: str | None = None
         self._tab_id_counter = 0
         self._session_runtime_tracker: set[str] = set()
+        self._pending_permission_requests_by_session: dict[str, dict[str, dict[str, Any]]] = {}
         self._pane_context_id: str | None = None
         self._pane_id_counter = 0
         self._agent_counter = 0
@@ -323,6 +328,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._last_slash_commands_cache = ""
         self._slash_discovery_result_cache: list[dict[str, Any]] | None = None
         self._slash_discovery_signature: tuple | None = None
+        self._slash_discovery_inflight_signature: tuple | None = None
 
         self._project_path_entry: Gtk.Entry | None = None
         self._project_path_popover: Gtk.Popover | None = None
@@ -1056,8 +1062,131 @@ class ClaudeCodeWindow(Gtk.Window):
                 continue
             session.status = SESSION_STATUS_ARCHIVED
             session.last_used_at = current_timestamp()
+            pending_by_session = getattr(self, "_pending_permission_requests_by_session", None)
+            if isinstance(pending_by_session, dict):
+                pending_by_session.pop(session_id, None)
             archived = True
         return archived
+
+    def _pending_permission_payloads_for_session(self, session_id: str | None) -> list[dict[str, Any]]:
+        if not session_id:
+            return []
+        pending_by_session = getattr(self, "_pending_permission_requests_by_session", None)
+        if not isinstance(pending_by_session, dict):
+            return []
+        payloads = pending_by_session.get(session_id)
+        if not isinstance(payloads, dict):
+            return []
+        normalized_payloads: list[dict[str, Any]] = []
+        for request_id, payload in payloads.items():
+            if not isinstance(payload, dict) or not payload:
+                continue
+            item = dict(payload)
+            item["requestId"] = str(item.get("requestId") or request_id)
+            item["sessionId"] = session_id
+            normalized_payloads.append(item)
+        return normalized_payloads
+
+    def _pending_permission_payload_for_session(
+        self,
+        session_id: str | None,
+        *,
+        request_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not session_id:
+            return None
+        pending_by_session = getattr(self, "_pending_permission_requests_by_session", None)
+        if not isinstance(pending_by_session, dict):
+            return None
+        payloads = pending_by_session.get(session_id)
+        if not isinstance(payloads, dict):
+            return None
+        if request_id:
+            payload = payloads.get(request_id)
+            if not isinstance(payload, dict) or not payload:
+                return None
+            item = dict(payload)
+            item["requestId"] = str(item.get("requestId") or request_id)
+            item["sessionId"] = session_id
+            return item
+        pending_payloads = self._pending_permission_payloads_for_session(session_id)
+        return pending_payloads[0] if pending_payloads else None
+
+    def _set_pending_permission_payload(self, session_id: str | None, payload: dict[str, Any]) -> None:
+        if not session_id or not isinstance(payload, dict) or not payload:
+            return
+        request_id = str(
+            payload.get("requestId")
+            or payload.get("request_id")
+            or payload.get("id")
+            or ""
+        ).strip()
+        if not request_id:
+            return
+        pending_by_session = getattr(self, "_pending_permission_requests_by_session", None)
+        if not isinstance(pending_by_session, dict):
+            pending_by_session = {}
+            self._pending_permission_requests_by_session = pending_by_session
+        pending_payloads = pending_by_session.setdefault(session_id, {})
+        normalized_payload = dict(payload)
+        normalized_payload["requestId"] = request_id
+        normalized_payload["sessionId"] = session_id
+        pending_payloads[request_id] = normalized_payload
+
+    def _clear_pending_permission_payload(
+        self,
+        session_id: str | None,
+        *,
+        request_id: str | None = None,
+    ) -> None:
+        if not session_id:
+            return
+        pending_by_session = getattr(self, "_pending_permission_requests_by_session", None)
+        if not isinstance(pending_by_session, dict):
+            return
+        if not request_id:
+            pending_by_session.pop(session_id, None)
+            return
+        pending_payloads = pending_by_session.get(session_id)
+        if not isinstance(pending_payloads, dict):
+            return
+        pending_payloads.pop(request_id, None)
+        if not pending_payloads:
+            pending_by_session.pop(session_id, None)
+
+    def _clear_pending_permission_state_for_session(
+        self,
+        session_id: str | None,
+        *,
+        request_id: str | None = None,
+    ) -> None:
+        self._clear_pending_permission_payload(session_id, request_id=request_id)
+        self._permission_request_pending = bool(
+            self._pending_permission_payloads_for_session(self._active_session_id),
+        )
+
+    def _arm_user_media_permission(self, pane_id: str, *, timeout_ms: int = 5000) -> None:
+        pane = self._pane_by_id(pane_id)
+        if pane is None:
+            return
+        now_us = GLib.get_monotonic_time()
+        pane._user_media_permission_deadline_monotonic = now_us + max(0, int(timeout_ms)) * 1000
+
+    def _disarm_user_media_permission(self, pane_id: str) -> None:
+        pane = self._pane_by_id(pane_id)
+        if pane is None:
+            return
+        pane._user_media_permission_deadline_monotonic = 0
+
+    def _consume_user_media_permission(self, pane_id: str) -> bool:
+        pane = self._pane_by_id(pane_id)
+        if pane is None:
+            return False
+        deadline_us = int(getattr(pane, "_user_media_permission_deadline_monotonic", 0) or 0)
+        pane._user_media_permission_deadline_monotonic = 0
+        if deadline_us <= 0:
+            return False
+        return GLib.get_monotonic_time() <= deadline_us
 
     def _pane_by_id(self, pane_id: str | None) -> PaneController | None:
         if pane_id is None:
@@ -1231,17 +1360,6 @@ class ClaudeCodeWindow(Gtk.Window):
         pane = self._state_pane()
         if pane is not None:
             pane._permission_request_pending = bool(value)
-
-    @property
-    def _allowed_tools(self) -> set[str]:
-        pane = self._state_pane()
-        return pane._allowed_tools if pane is not None else set()
-
-    @_allowed_tools.setter
-    def _allowed_tools(self, value: set[str]) -> None:
-        pane = self._state_pane()
-        if pane is not None:
-            pane._allowed_tools = value
 
     @property
     def _has_messages(self) -> bool:
@@ -1698,6 +1816,8 @@ class ClaudeCodeWindow(Gtk.Window):
             "toggleAgentMode",
             "permissionResponse",
             "stopProcess",
+            "armUserMedia",
+            "disarmUserMedia",
             "transcribeAudio",
             "transcribe_audio",
             "voiceTranscribe",
@@ -1773,6 +1893,14 @@ class ClaudeCodeWindow(Gtk.Window):
             lambda manager, result, pid=pane_id: self._on_js_stop_process(pid, manager, result),
         )
         manager.connect(
+            "script-message-received::armUserMedia",
+            lambda manager, result, pid=pane_id: self._on_js_arm_user_media(pid, manager, result),
+        )
+        manager.connect(
+            "script-message-received::disarmUserMedia",
+            lambda manager, result, pid=pane_id: self._on_js_disarm_user_media(pid, manager, result),
+        )
+        manager.connect(
             "script-message-received::transcribeAudio",
             lambda manager, result, pid=pane_id: self._on_js_transcribe_audio(pid, manager, result),
         )
@@ -1831,7 +1959,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._connect_optional_signal(
             webview,
             "permission-request",
-            self._on_webview_permission_request,
+            lambda _webview, request, pid=pane_id: self._on_webview_permission_request(pid, _webview, request),
         )
 
         webview.load_html(get_chat_webview_html(), "file:///")
@@ -3190,7 +3318,7 @@ class ClaudeCodeWindow(Gtk.Window):
 
         command = ["notify-send", title_text, body_text, "--urgency", normalized_urgency]
         try:
-            subprocess.run(command, check=False)
+            subprocess.Popen(command)
         except (OSError, ValueError):
             return
 
@@ -3709,7 +3837,6 @@ class ClaudeCodeWindow(Gtk.Window):
         if not preserve_conversation_id:
             self._conversation_id = None
             self._call_js("setProcessing", False)
-        self._allowed_tools = set()
         self._clear_messages()
         self._show_welcome()
         self._set_typing(False)
@@ -4129,10 +4256,6 @@ class ClaudeCodeWindow(Gtk.Window):
         return title
 
     def _discover_custom_slash_commands(self) -> list[dict[str, Any]]:
-        signature = self._compute_slash_roots_signature()
-        if signature is not None and signature == self._slash_discovery_signature and self._slash_discovery_result_cache is not None:
-            return list(self._slash_discovery_result_cache)
-
         commands: list[dict[str, Any]] = []
         commands_by_key: dict[str, dict[str, Any]] = {}
 
@@ -4226,9 +4349,6 @@ class ClaudeCodeWindow(Gtk.Window):
                 summary = self._read_markdown_summary(skill_doc) or "Custom skill"
                 add_command(skill_dir.name, "S", f"Custom skill: {summary}", providers)
 
-        if signature is not None:
-            self._slash_discovery_signature = signature
-            self._slash_discovery_result_cache = list(commands)
         return commands
 
     def _compute_slash_roots_signature(self) -> tuple | None:
@@ -4264,13 +4384,42 @@ class ClaudeCodeWindow(Gtk.Window):
         except Exception:
             return None
 
-    def _refresh_slash_commands(self) -> None:
-        commands = self._discover_custom_slash_commands()
+    def _apply_refreshed_slash_commands(
+        self,
+        signature: tuple | None,
+        commands: list[dict[str, Any]],
+    ) -> bool:
+        if signature != self._compute_slash_roots_signature():
+            return False
+        self._slash_discovery_inflight_signature = None
+        self._slash_discovery_signature = signature
+        self._slash_discovery_result_cache = list(commands)
         payload = json.dumps(commands, ensure_ascii=False, sort_keys=True)
         if payload == self._last_slash_commands_cache:
-            return
+            return False
         self._last_slash_commands_cache = payload
         self._call_js("updateSlashCommands", commands)
+        return False
+
+    def _refresh_slash_commands(self) -> None:
+        signature = self._compute_slash_roots_signature()
+        if (
+            signature is not None
+            and signature == self._slash_discovery_signature
+            and self._slash_discovery_result_cache is not None
+        ):
+            self._apply_refreshed_slash_commands(signature, list(self._slash_discovery_result_cache))
+            return
+        if signature is not None and signature == self._slash_discovery_inflight_signature:
+            return
+
+        self._slash_discovery_inflight_signature = signature
+
+        def _work(expected_signature: tuple | None) -> None:
+            commands = self._discover_custom_slash_commands()
+            GLib.idle_add(self._apply_refreshed_slash_commands, expected_signature, commands)
+
+        threading.Thread(target=_work, args=(signature,), daemon=True).start()
 
     def _make_session_row(self, session: SessionRecord, allow_open: bool) -> Gtk.Box:
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
@@ -4511,6 +4660,9 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _render_active_session_view(self) -> None:
         session = self._get_active_session()
+        pending_permission_payloads = self._pending_permission_payloads_for_session(
+            session.id if session is not None else None,
+        )
         history_payload: list[dict[str, str]] = []
         if session is not None and session.history:
             for msg in session.history:
@@ -4524,7 +4676,14 @@ class ClaudeCodeWindow(Gtk.Window):
         self._has_messages = bool(history_payload)
         self._context_char_count = sum(len(entry.get("content", "")) for entry in history_payload)
         self._update_context_indicator()
-        self._call_js("resetMessageHistory", history_payload)
+        self._call_js(
+            "resetMessageHistory",
+            {
+                "sessionId": session.id if session is not None else "",
+                "messages": history_payload,
+            },
+        )
+        self._permission_request_pending = bool(pending_permission_payloads)
 
         running_for_active_session = session is not None and self._is_request_bound_to_session(session.id)
         self._call_js("setProcessing", running_for_active_session)
@@ -4536,6 +4695,10 @@ class ClaudeCodeWindow(Gtk.Window):
                 self._set_typing(True)
         else:
             self._set_typing(False)
+        if pending_permission_payloads:
+            self._set_typing(False)
+            for pending_permission_payload in pending_permission_payloads:
+                self._call_js("addPermissionRequest", pending_permission_payload)
 
     def _switch_to_session(self, session_id: str) -> None:
         session = self._find_session(session_id)
@@ -4586,8 +4749,7 @@ class ClaudeCodeWindow(Gtk.Window):
         self._save_sessions_safe("Could not save sessions")
 
         self._conversation_id = session.conversation_id
-        self._allowed_tools = set()
-        self._permission_request_pending = False
+        self._permission_request_pending = bool(self._pending_permission_payloads_for_session(session.id))
         self._last_request_failed = False
         self._render_active_session_view()
         self._sync_active_tab_state()
@@ -4622,11 +4784,17 @@ class ClaudeCodeWindow(Gtk.Window):
             terminal_message = "Session archived"
             session.status = SESSION_STATUS_ARCHIVED
             session.last_used_at = current_timestamp()
+            pending_by_session = getattr(self, "_pending_permission_requests_by_session", None)
+            if isinstance(pending_by_session, dict):
+                pending_by_session.pop(session_id, None)
         elif action == "delete":
             active_reason = "Active session deleted"
             terminal_reason = "Session deleted"
             replacement_message = "Deleted session. Switched to replacement."
             terminal_message = "Session deleted"
+            pending_by_session = getattr(self, "_pending_permission_requests_by_session", None)
+            if isinstance(pending_by_session, dict):
+                pending_by_session.pop(session_id, None)
             self._sessions = [item for item in self._sessions if item.id != session_id]
         else:
             return
@@ -5369,7 +5537,6 @@ class ClaudeCodeWindow(Gtk.Window):
         if restart_session and self._active_session_id is not None:
             self._interrupt_running_process("Folder changed")
             self._conversation_id = None
-            self._allowed_tools = set()
             self._add_system_message("Conversation reset because the project folder changed.")
             self._last_request_failed = False
             self._refresh_connection_state()
@@ -5490,8 +5657,9 @@ class ClaudeCodeWindow(Gtk.Window):
         return bool(request_token) and request_token == self._active_request_token
 
     def _interrupt_running_process(self, reason: str) -> None:
+        request_session_id = self._active_request_session_id
         self._invalidate_active_request()
-        self._permission_request_pending = False
+        self._clear_pending_permission_state_for_session(request_session_id)
         if not self._claude_process.is_running():
             return
 
@@ -6301,7 +6469,6 @@ class ClaudeCodeWindow(Gtk.Window):
 
         self._active_session_id = None
         self._conversation_id = None
-        self._allowed_tools = set()
         self._permission_request_pending = False
         self._last_request_failed = False
         self._active_assistant_message = ""
@@ -6353,8 +6520,9 @@ class ClaudeCodeWindow(Gtk.Window):
         all_stopped = True
         for pane_id, pane in self._pane_registry.items():
             with self._pane_context(pane_id):
+                request_session_id = self._active_request_session_id
                 self._invalidate_active_request()
-                self._permission_request_pending = False
+                self._clear_pending_permission_state_for_session(request_session_id)
                 process = pane._claude_process
                 if process is None or not process.is_running():
                     continue
@@ -6419,7 +6587,6 @@ class ClaudeCodeWindow(Gtk.Window):
         old_selected_reasoning_index = self._selected_reasoning_index
         old_active_session_id = self._active_session_id
         old_conversation_id = self._conversation_id
-        old_allowed_tools = set(self._allowed_tools)
         old_has_messages = self._has_messages
         old_last_request_failed = self._last_request_failed
         old_active_assistant_message = self._active_assistant_message
@@ -6462,7 +6629,6 @@ class ClaudeCodeWindow(Gtk.Window):
             for pane_id in list(self._pane_registry.keys()):
                 with self._pane_context(pane_id):
                     self._conversation_id = None
-                    self._allowed_tools = set()
                     self._clear_messages()
                     self._show_welcome()
                     self._set_typing(False)
@@ -6498,7 +6664,6 @@ class ClaudeCodeWindow(Gtk.Window):
             self._selected_reasoning_index = old_selected_reasoning_index
             self._active_session_id = old_active_session_id
             self._conversation_id = old_conversation_id
-            self._allowed_tools = old_allowed_tools
             self._has_messages = old_has_messages
             self._last_request_failed = old_last_request_failed
             self._active_assistant_message = old_active_assistant_message
@@ -6832,15 +6997,19 @@ class ClaudeCodeWindow(Gtk.Window):
 
     def _on_webview_permission_request(
         self,
+        pane_id: str,
         _webview: WebKit.WebView,
         request: Any,
     ) -> bool:
         user_media_cls = getattr(WebKit, "UserMediaPermissionRequest", None)
         if user_media_cls is not None and isinstance(request, user_media_cls):
             try:
-                request.allow()
+                if self._consume_user_media_permission(pane_id):
+                    request.allow()
+                else:
+                    request.deny()
             except Exception:
-                logger.exception("Could not allow WebView user-media permission request.")
+                logger.exception("Could not resolve WebView user-media permission request.")
             return True
         return False
 
@@ -6988,6 +7157,22 @@ class ClaudeCodeWindow(Gtk.Window):
             js_result,
             max_option_payload_chars=_MAX_JS_SEND_PAYLOAD_CHARS,
         )
+
+    def _on_js_arm_user_media(
+        self,
+        pane_id: str,
+        _manager: WebKit.UserContentManager,
+        js_result: WebKit.JavascriptResult,
+    ) -> None:
+        on_js_arm_user_media(self, pane_id, js_result)
+
+    def _on_js_disarm_user_media(
+        self,
+        pane_id: str,
+        _manager: WebKit.UserContentManager,
+        js_result: WebKit.JavascriptResult,
+    ) -> None:
+        on_js_disarm_user_media(self, pane_id, js_result)
 
     def _on_js_transcribe_audio(
         self,
@@ -7162,6 +7347,13 @@ class ClaudeCodeWindow(Gtk.Window):
             if not payload:
                 return
             request_session_id = self._active_request_session_id
+            had_pending_payload = bool(self._pending_permission_payloads_for_session(request_session_id))
+            self._set_pending_permission_payload(request_session_id, payload)
+            request_id = str(payload.get("requestId") or payload.get("request_id") or payload.get("id") or "").strip()
+            render_payload = self._pending_permission_payload_for_session(
+                request_session_id,
+                request_id=request_id,
+            ) or dict(payload)
             request_provider_id = self._session_effective_provider_id(
                 request_session_id,
                 fallback_pane_id=pane_id,
@@ -7179,11 +7371,11 @@ class ClaudeCodeWindow(Gtk.Window):
             request_visible = bool(request_session_id) and request_session_id == self._active_session_id
             if request_visible:
                 self._set_typing(False)
-                self._call_js("addPermissionRequest", payload)
+                self._permission_request_pending = True
+                self._call_js("addPermissionRequest", render_payload)
             if request_visible and self._is_active_pane(pane_id):
                 self._set_status_message("Waiting for tool confirmation", STATUS_WARNING)
-            if not self._permission_request_pending:
-                self._permission_request_pending = True
+            if not had_pending_payload:
                 self.send_notification(
                     f"{request_provider_name} needs permission",
                     "A tool permission request is waiting for your input.",
@@ -7216,7 +7408,7 @@ class ClaudeCodeWindow(Gtk.Window):
                 target_session_id=request_session_id,
                 sync_ui=request_visible,
             )
-            self._permission_request_pending = False
+            self._clear_pending_permission_state_for_session(request_session_id)
 
             if result.success and result.conversation_id:
                 if request_visible:
@@ -7385,13 +7577,22 @@ class ClaudeCodeWindow(Gtk.Window):
         self._has_messages = False
         self._context_char_count = 0
         self._update_context_indicator()
-        self._call_js("clearMessages")
+        self._call_js("clearMessages", {"sessionId": self._active_session_id or ""})
 
     def _show_welcome(self) -> None:
         self._call_js("showWelcome")
 
     def _on_destroy(self, _widget: Gtk.Window) -> None:
         self._force_quit = True
+
+        if self._gtk_settings_notify_id is not None:
+            settings = Gtk.Settings.get_default()
+            if settings is not None:
+                try:
+                    settings.disconnect(self._gtk_settings_notify_id)
+                except Exception:
+                    logger.exception("Could not disconnect Gtk.Settings notify handler.")
+            self._gtk_settings_notify_id = None
 
         for pane_id, pane in self._pane_registry.items():
             with self._pane_context(pane_id):

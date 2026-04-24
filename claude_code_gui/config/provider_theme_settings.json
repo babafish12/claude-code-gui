@@ -57,6 +57,10 @@
           "value": "opus"
         },
         {
+          "label": "Claude Opus 4.7",
+          "value": "claude-opus-4-7"
+        },
+        {
           "label": "Claude Haiku (Latest)",
           "value": "haiku"
         }

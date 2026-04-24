@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any, Iterable
 
 import pytest
+import pytest_mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:

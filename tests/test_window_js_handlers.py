@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,6 +15,7 @@ from claude_code_gui.app.constants import (
 from claude_code_gui.gi_runtime import Gdk
 
 from claude_code_gui.ui import window as window_module
+from claude_code_gui.ui import window_js_handlers
 from claude_code_gui.ui.window import ClaudeCodeWindow
 
 pytestmark = pytest.mark.unit
@@ -83,15 +85,22 @@ class _FakeLabel:
 class _FakePane:
     def __init__(self, process: _FakeClaudeProcess) -> None:
         self._claude_process = process
+        self._active_session_id = "sess-1"
+        self._permission_request_pending = False
+        self._approved_attachment_paths_by_session: dict[str, set[str]] = {}
 
 
 class _FakeClaudeProcess:
     def __init__(self) -> None:
         self.responses: list[tuple[str, str, str]] = []
+        self.running = True
 
     def send_permission_response(self, *, action: str, comment: str = "", request_id: str = "") -> bool:
         self.responses.append((action, comment, request_id))
         return True
+
+    def is_running(self) -> bool:
+        return self.running
 
 
 class _SwitchFakeProcess:
@@ -149,14 +158,18 @@ def _build_permission_window() -> tuple[ClaudeCodeWindow, _FakeClaudeProcess]:
     window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
     process = _FakeClaudeProcess()
     pane = _FakePane(process)
+    status_messages: list[str] = []
     window._pane_context_id = "p1"
     window._pane_registry = {"p1": pane}
     window._active_pane_id = "p1"
     window._active_provider_id = "claude"
+    window._active_session_id = "sess-1"
+    window._pending_permission_requests_by_session = {}
     window._activate_existing_pane = lambda _pane_id: True
-    window._set_status_message = lambda *args, **kwargs: None
+    window._set_status_message = lambda message, *_args, **_kwargs: status_messages.append(message)
     window._add_system_message = lambda *_args, **_kwargs: None
-    window._allowed_tools = set()
+    window._call_js = lambda *_args, **_kwargs: None
+    window._status_messages = status_messages
     return window, process
 
 
@@ -301,22 +314,159 @@ def test_project_path_key_press_does_not_delete_full_selection_on_backspace_or_d
 
 def test_on_js_permission_response_accepts_aliases_and_yes_no_shortcuts() -> None:
     window, process = _build_permission_window()
+    window._pending_permission_requests_by_session["sess-1"] = {"r1": {"requestId": "r1", "toolName": "Write"}}
 
     payload_yes = _FakeJsResult('{"action":"y","tool_name":"Write","request_id":"r1","is_denial_card":false}')
     window._on_js_permission_response("p1", None, payload_yes)
     assert process.responses == [("allow", "", "r1")]
+    assert window._pending_permission_requests_by_session == {}
 
     window, process = _build_permission_window()
+    window._pending_permission_requests_by_session["sess-1"] = {"r2": {"requestId": "r2", "toolName": "Read"}}
     payload_no = _FakeJsResult('{"action":"No","tool":"Read","request_id":"r2","is_denial_card":false}')
     window._on_js_permission_response("p1", None, payload_no)
     assert process.responses == [("deny", "", "r2")]
+    assert window._pending_permission_requests_by_session == {}
 
     window, process = _build_permission_window()
+    window._pending_permission_requests_by_session["sess-1"] = {"r3": {"requestId": "r3", "toolName": "Write"}}
     payload_comment_choice = _FakeJsResult(
         '{"tool":"Write","action":"comment","choice":"Please continue with tests","requestId":"r3","isDenialCard":false}'
     )
     window._on_js_permission_response("p1", None, payload_comment_choice)
     assert process.responses == [("comment", "Please continue with tests", "r3")]
+    assert window._pending_permission_requests_by_session == {}
+
+
+def test_on_js_permission_response_rejects_mismatched_pending_request() -> None:
+    window, process = _build_permission_window()
+    window._pending_permission_requests_by_session["sess-1"] = {
+        "pending-1": {"requestId": "pending-1", "toolName": "Write"}
+    }
+
+    payload = _FakeJsResult('{"action":"y","tool_name":"Write","request_id":"r1","is_denial_card":false}')
+    window._on_js_permission_response("p1", None, payload)
+
+    assert process.responses == []
+    assert window._status_messages == ["Permission response ignored because the pending request changed."]
+
+
+def test_on_js_permission_response_clears_only_matching_pending_request() -> None:
+    window, process = _build_permission_window()
+    window._pending_permission_requests_by_session["sess-1"] = {
+        "r1": {"requestId": "r1", "toolName": "Write"},
+        "r2": {"requestId": "r2", "toolName": "Read"},
+    }
+
+    payload = _FakeJsResult('{"action":"always_allow","tool_name":"Write","request_id":"r1","is_denial_card":false}')
+    window._on_js_permission_response("p1", None, payload)
+
+    assert process.responses == [("allow", "", "r1")]
+    assert window._pending_permission_requests_by_session == {
+        "sess-1": {"r2": {"requestId": "r2", "toolName": "Read"}}
+    }
+
+
+def test_on_js_attach_paths_allows_project_and_chooser_approved_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_file = tmp_path / "inside.txt"
+    project_file.write_text("inside", encoding="utf-8")
+    approved_file = tmp_path.parent / f"{tmp_path.name}-approved.txt"
+    approved_file.write_text("approved", encoding="utf-8")
+    rejected_file = tmp_path.parent / f"{tmp_path.name}-rejected.txt"
+    rejected_file.write_text("rejected", encoding="utf-8")
+
+    window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+    pane = SimpleNamespace(
+        _active_session_id="sess-1",
+        _approved_attachment_paths_by_session={"sess-1": {str(approved_file)}},
+    )
+    status_messages: list[str] = []
+    published: dict[str, Any] = {}
+
+    window._pane_context_id = "p1"
+    window._pane_registry = {"p1": pane}
+    window._active_pane_id = "p1"
+    window._project_folder = str(tmp_path)
+    window._activate_existing_pane = lambda _pane_id: True
+    window._set_status_message = lambda message, *_args, **_kwargs: status_messages.append(message)
+
+    monkeypatch.setattr(
+        window_js_handlers,
+        "_publish_host_attachment_payloads_async",
+        lambda _window, pane_id, selected_paths, *, skipped_count=0, session_id=None: published.update(
+            {
+                "pane_id": pane_id,
+                "selected_paths": selected_paths,
+                "skipped_count": skipped_count,
+                "session_id": session_id,
+            }
+        ),
+    )
+
+    window_js_handlers.on_js_attach_paths(
+        window,
+        "p1",
+        _FakeJsResult(
+            json.dumps(
+                {
+                    "paths": [
+                        str(project_file),
+                        str(approved_file),
+                        str(rejected_file),
+                    ]
+                }
+            )
+        ),
+        max_option_payload_chars=4096,
+    )
+
+    assert status_messages == []
+    assert published == {
+        "pane_id": "p1",
+        "selected_paths": [str(project_file.resolve()), str(approved_file.resolve())],
+        "skipped_count": 1,
+        "session_id": "sess-1",
+    }
+
+
+def test_publish_host_attachment_payloads_async_discards_when_session_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_path = tmp_path / "note.txt"
+    file_path.write_text("hello", encoding="utf-8")
+
+    window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+    pane = SimpleNamespace(_active_session_id="sess-2")
+    js_calls: list[tuple[str, str, dict[str, str]]] = []
+    status_messages: list[str] = []
+
+    window._pane_context_id = "p1"
+    window._pane_registry = {"p1": pane}
+    window._active_pane_id = "p1"
+    window._call_js_in_pane = lambda pane_id, function_name, payload: js_calls.append((pane_id, function_name, payload))
+    window._set_status_message = lambda message, *_args, **_kwargs: status_messages.append(message)
+    window._add_system_message = lambda *_args, **_kwargs: None
+    monkeypatch.setattr(window_js_handlers, "encode_host_attachment_payloads", lambda _paths: ([{"name": "note.txt"}], 0, False, False))
+    monkeypatch.setattr(window_js_handlers.GLib, "idle_add", lambda func, *args: func(*args))
+    monkeypatch.setattr(
+        window_js_handlers.threading,
+        "Thread",
+        lambda *, target, daemon: SimpleNamespace(start=lambda: target()),
+    )
+
+    window_js_handlers._publish_host_attachment_payloads_async(
+        window,
+        "p1",
+        [str(file_path)],
+        session_id="sess-1",
+    )
+
+    assert js_calls == []
+    assert status_messages == ["Attachments were discarded because the active session changed."]
 
 
 def test_on_js_change_folder_uses_default_action_for_undefined_payload() -> None:
@@ -576,7 +726,6 @@ def test_switch_to_session_keeps_running_request_in_background() -> None:
         _active_request_token="req-1",
         _active_request_session_id="s1",
         _active_assistant_message="partial",
-        _allowed_tools=set(),
         _permission_request_pending=False,
         _has_messages=True,
         _last_request_failed=False,
@@ -625,6 +774,7 @@ def test_switch_to_session_keeps_running_request_in_background() -> None:
         title="chat 2",
     )
     window._sessions = [session1, session2]
+    window._pending_permission_requests_by_session = {}
     window._find_session = lambda sid: session1 if sid == "s1" else (session2 if sid == "s2" else None)
     window._get_active_session = lambda: window._find_session(window._active_session_id)
 
@@ -738,6 +888,7 @@ def test_switch_to_session_rebinds_provider_context_for_target_session() -> None
         lambda provider_id, *, session=None, persist_preference=False: provider_calls.append((provider_id, session))
     )
     window._sessions = [session1, session2]
+    window._pending_permission_requests_by_session = {}
     window._find_session = lambda sid: session1 if sid == "s1" else (session2 if sid == "s2" else None)
     window._get_active_session = lambda: window._find_session(window._active_session_id)
 
@@ -792,17 +943,58 @@ def test_render_active_session_view_preserves_agent_prompt_role_in_history_paylo
     window._active_assistant_message = ""
     window._has_messages = False
     window._context_char_count = 0
+    window._pending_permission_requests_by_session = {}
 
     window._render_active_session_view()
 
     assert js_calls[0] == (
         "resetMessageHistory",
-        [
-            {"role": "agent_prompt", "content": "delegated"},
-            {"role": "assistant", "content": "done"},
-        ],
+        {
+            "sessionId": "s1",
+            "messages": [
+                {"role": "agent_prompt", "content": "delegated"},
+                {"role": "assistant", "content": "done"},
+            ],
+        },
     )
     assert window._has_messages is True
+
+
+def test_render_active_session_view_rehydrates_all_pending_permissions() -> None:
+    window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+    js_calls: list[tuple[str, object]] = []
+    session = SimpleNamespace(id="s1", history=[])
+    pane = SimpleNamespace(
+        _permission_request_pending=False,
+        _has_messages=False,
+        _active_assistant_message="",
+    )
+
+    window._get_active_session = lambda: session
+    window._is_request_bound_to_session = lambda _session_id: False
+    window._call_js = lambda function_name, payload: js_calls.append((function_name, payload))
+    window._set_typing = lambda _value: None
+    window._update_context_indicator = lambda: None
+    window._pane_context_id = "pane-1"
+    window._active_pane_id = "pane-1"
+    window._pane_registry = {"pane-1": pane}
+    window._context_char_count = 0
+    window._pending_permission_requests_by_session = {
+        "s1": {
+            "r1": {"requestId": "r1", "toolName": "Write"},
+            "r2": {"requestId": "r2", "toolName": "Read"},
+        }
+    }
+
+    window._render_active_session_view()
+
+    assert js_calls == [
+        ("resetMessageHistory", {"sessionId": "s1", "messages": []}),
+        ("setProcessing", False),
+        ("addPermissionRequest", {"requestId": "r1", "toolName": "Write", "sessionId": "s1"}),
+        ("addPermissionRequest", {"requestId": "r2", "toolName": "Read", "sessionId": "s1"}),
+    ]
+    assert window._permission_request_pending is True
 
 
 class TestSessionTabs:

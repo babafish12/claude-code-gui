@@ -4,6 +4,7 @@ import copy
 
 import pytest
 
+from claude_code_gui.domain.app_settings import load_settings
 from claude_code_gui.domain import provider
 
 pytestmark = pytest.mark.unit
@@ -114,7 +115,6 @@ def test_provider_color_and_icon_normalization() -> None:
 
 
 def test_refresh_provider_registry_applies_discovered_models() -> None:
-    original_providers = copy.deepcopy(provider.PROVIDERS)
     original_discovered = copy.deepcopy(provider._DISCOVERED_MODEL_OPTIONS)
     try:
         refreshed = provider.refresh_provider_registry(
@@ -126,5 +126,4 @@ def test_refresh_provider_registry_applies_discovered_models() -> None:
     finally:
         provider._DISCOVERED_MODEL_OPTIONS.clear()
         provider._DISCOVERED_MODEL_OPTIONS.update(original_discovered)
-        provider.PROVIDERS.clear()
-        provider.PROVIDERS.update(original_providers)
+        provider.refresh_provider_registry(load_settings())

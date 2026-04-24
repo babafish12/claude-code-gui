@@ -4,10 +4,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import pytest_mock
 
 from claude_code_gui.services import binary_probe
 
 pytestmark = pytest.mark.unit
+
+
+def _reset_codex_auth_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(binary_probe, "_codex_auth_cache_value", None)
+    monkeypatch.setattr(binary_probe, "_codex_auth_cache_checked_at", 0.0)
 
 
 def test_find_provider_binary_prefers_first_which_hit(mocker: pytest_mock.MockerFixture) -> None:
@@ -76,10 +82,15 @@ def test_detect_cli_flag_support_handles_subprocess_error(mocker: pytest_mock.Mo
     assert caps == binary_probe.CliCapabilities()
 
 
-def test_is_codex_authenticated_variants(mocker: pytest_mock.MockerFixture) -> None:
+def test_is_codex_authenticated_variants(
+    mocker: pytest_mock.MockerFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _reset_codex_auth_cache(monkeypatch)
     mocker.patch("claude_code_gui.services.binary_probe.find_provider_binary", return_value=None)
     assert binary_probe.is_codex_authenticated() is False
 
+    _reset_codex_auth_cache(monkeypatch)
     mocker.patch("claude_code_gui.services.binary_probe.find_provider_binary", return_value="/usr/bin/codex")
     mocker.patch(
         "claude_code_gui.services.binary_probe.subprocess.run",
@@ -87,12 +98,14 @@ def test_is_codex_authenticated_variants(mocker: pytest_mock.MockerFixture) -> N
     )
     assert binary_probe.is_codex_authenticated() is True
 
+    _reset_codex_auth_cache(monkeypatch)
     mocker.patch(
         "claude_code_gui.services.binary_probe.subprocess.run",
         return_value=SimpleNamespace(stdout="not logged in", stderr=""),
     )
     assert binary_probe.is_codex_authenticated() is False
 
+    _reset_codex_auth_cache(monkeypatch)
     mocker.patch(
         "claude_code_gui.services.binary_probe.subprocess.run",
         side_effect=OSError("boom"),

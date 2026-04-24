@@ -6,8 +6,9 @@ import ast
 import base64
 import json
 import logging
-import mimetypes
 import os
+import tempfile
+import threading
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -24,22 +25,149 @@ from claude_code_gui.app.constants import (
 )
 from claude_code_gui.core.time_utils import current_timestamp
 from claude_code_gui.domain.claude_types import ClaudeRunConfig
-from claude_code_gui.gi_runtime import GTK4, Gio, Gtk
+from claude_code_gui.gi_runtime import GTK4, GLib, Gio, Gtk
 from claude_code_gui.services.attachment_service import (
-    MAX_ATTACHMENTS_PER_MESSAGE,
-    MAX_ATTACHMENT_TOTAL_BYTES,
     cleanup_temp_paths,
     compose_message_with_attachments,
+    encode_host_attachment_payloads,
     materialize_attachments,
     parse_send_payload,
+    parse_send_payload_kind,
 )
 from claude_code_gui.services.binary_probe import is_codex_authenticated
+from claude_code_gui.services.speech_transcribe import transcribe_audio_file
 
 if TYPE_CHECKING:
     from claude_code_gui.ui.window import ClaudeCodeWindow
 
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_attachment_path(path_value: str) -> str | None:
+    try:
+        return str(Path(path_value).expanduser().resolve(strict=True))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _path_is_within_root(path_value: str, root_value: str) -> bool:
+    if not path_value or not root_value:
+        return False
+    try:
+        return os.path.commonpath([path_value, root_value]) == root_value
+    except ValueError:
+        return False
+
+
+def _attachment_scope_id(
+    window: "ClaudeCodeWindow",
+    pane_id: str,
+    *,
+    session_id: str | None = None,
+) -> str:
+    pane = window._pane_by_id(pane_id)
+    if pane is None:
+        return ""
+    active_session_id = str(
+        session_id
+        or getattr(pane, "_active_session_id", None)
+        or getattr(window, "_active_session_id", None)
+        or ""
+    ).strip()
+    return active_session_id or f"__pane__:{pane_id}"
+
+
+def _pane_approved_attachment_paths(
+    window: "ClaudeCodeWindow",
+    pane_id: str,
+    *,
+    session_id: str | None = None,
+) -> set[str]:
+    pane = window._pane_by_id(pane_id)
+    if pane is None:
+        return set()
+    approved_by_session = getattr(pane, "_approved_attachment_paths_by_session", None)
+    if not isinstance(approved_by_session, dict):
+        approved_by_session = {}
+        pane._approved_attachment_paths_by_session = approved_by_session
+    scope_id = _attachment_scope_id(window, pane_id, session_id=session_id)
+    if not scope_id:
+        return set()
+    approved = approved_by_session.get(scope_id)
+    if not isinstance(approved, set):
+        approved = set()
+        approved_by_session[scope_id] = approved
+    return approved
+
+
+def _publish_host_attachment_payloads_async(
+    window: "ClaudeCodeWindow",
+    pane_id: str,
+    selected_paths: list[str],
+    *,
+    skipped_count: int = 0,
+    session_id: str | None = None,
+) -> None:
+    if not selected_paths:
+        return
+    target_session_id = str(session_id or "").strip()
+
+    def _finish(
+        payloads: list[dict[str, str]],
+        worker_skipped_count: int,
+        hit_file_size_limit: bool,
+        hit_total_size_limit: bool,
+    ) -> bool:
+        if pane_id not in window._pane_registry:
+            return False
+        with window._pane_context(pane_id):
+            pane = window._pane_by_id(pane_id)
+            current_session_id = str(getattr(pane, "_active_session_id", None) or "").strip() if pane is not None else ""
+            if target_session_id and current_session_id != target_session_id:
+                logger.warning(
+                    "pane=%s attachment_publish_discarded reason=session_switched target_session=%s current_session=%s",
+                    pane_id,
+                    target_session_id,
+                    current_session_id,
+                )
+                window._set_status_message(
+                    "Attachments were discarded because the active session changed.",
+                    STATUS_WARNING,
+                )
+                return False
+            added_count = len(payloads)
+            for payload in payloads:
+                window._call_js_in_pane(pane_id, "addHostAttachment", payload)
+            total_skipped = skipped_count + worker_skipped_count
+            if hit_file_size_limit:
+                window._add_system_message("One or more attachments exceeded size limit.")
+            if hit_total_size_limit:
+                window._add_system_message("Attachment total size limit reached.")
+            if added_count == 0 and total_skipped == 0:
+                return False
+            if total_skipped:
+                window._set_status_message(
+                    f"{added_count} attached, {total_skipped} skipped.",
+                    STATUS_WARNING,
+                )
+            else:
+                window._set_status_message(f"{added_count} file(s) attached.", STATUS_INFO)
+        return False
+
+    def _work() -> None:
+        payloads, worker_skipped_count, hit_file_size_limit, hit_total_size_limit = encode_host_attachment_payloads(
+            selected_paths,
+        )
+        GLib.idle_add(
+            _finish,
+            payloads,
+            worker_skipped_count,
+            hit_file_size_limit,
+            hit_total_size_limit,
+        )
+
+    threading.Thread(target=_work, daemon=True).start()
 
 
 def extract_message_from_js_result(
@@ -172,80 +300,6 @@ def on_js_attach_file(
     if action is None:
         return
     window._set_status_message("Opening file chooser...", STATUS_INFO)
-    added_count = 0
-    skipped_count = 0
-    added_bytes = 0
-
-    def _add_selected_file(selected: str) -> bool:
-        nonlocal added_count, skipped_count, added_bytes
-
-        if added_count >= MAX_ATTACHMENTS_PER_MESSAGE:
-            skipped_count += 1
-            return False
-
-        if not os.path.isfile(selected):
-            skipped_count += 1
-            return False
-
-        try:
-            file_size = os.path.getsize(selected)
-        except OSError as error:
-            skipped_count += 1
-            window._set_status_message(f"Could not read file: {error}", STATUS_WARNING)
-            return False
-
-        if file_size > ATTACHMENT_MAX_BYTES:
-            skipped_count += 1
-            window._set_status_message(
-                f"Attachment exceeds {ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit: {os.path.basename(selected)}",
-                STATUS_WARNING,
-            )
-            window._add_system_message("One or more attachments exceeded size limit.")
-            return False
-        if added_bytes + file_size > MAX_ATTACHMENT_TOTAL_BYTES:
-            skipped_count += 1
-            window._set_status_message(
-                "Attachment selection exceeds total size limit for one message.",
-                STATUS_WARNING,
-            )
-            window._add_system_message("Attachment total size limit reached.")
-            return False
-
-        try:
-            with open(selected, "rb") as handle:
-                raw_bytes = handle.read()
-        except OSError as error:
-            skipped_count += 1
-            window._set_status_message(f"Could not read file: {error}", STATUS_WARNING)
-            return False
-
-        mime_type, _ = mimetypes.guess_type(selected)
-        if not mime_type:
-            mime_type = "application/octet-stream"
-        if mime_type == "application/octet-stream":
-            lower_suffix = Path(selected).suffix.lower()
-            mime_type = {
-                ".png": "image/png",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".webp": "image/webp",
-                ".gif": "image/gif",
-                ".svg": "image/svg+xml",
-                ".bmp": "image/bmp",
-                ".avif": "image/avif",
-                ".heic": "image/heic",
-            }.get(lower_suffix, mime_type)
-
-        payload = {
-            "name": os.path.basename(selected),
-            "path": selected,
-            "type": mime_type,
-            "data": f"data:{mime_type};base64,{base64.b64encode(raw_bytes).decode('ascii')}",
-        }
-        window._call_js("addHostAttachment", payload)
-        added_count += 1
-        added_bytes += file_size
-        return True
 
     attach_folder = str(Path.home())
     if os.path.isdir(window._project_folder):
@@ -331,18 +385,20 @@ def on_js_attach_file(
     if not selected_paths:
         return
 
+    normalized_paths: list[str] = []
+    target_session_id = str(getattr(window._pane_by_id(pane_id), "_active_session_id", None) or "").strip() or None
+    approved_paths = _pane_approved_attachment_paths(window, pane_id, session_id=target_session_id)
     for selected in selected_paths:
-        _add_selected_file(selected)
-
-    if added_count == 0 and skipped_count == 0:
-        return
-    if skipped_count:
-        window._set_status_message(
-            f"{added_count} attached, {skipped_count} skipped.",
-            STATUS_WARNING if skipped_count > 0 else STATUS_INFO,
-        )
-    else:
-        window._set_status_message(f"{added_count} file(s) attached.", STATUS_INFO)
+        normalized = _normalize_attachment_path(selected)
+        if normalized:
+            normalized_paths.append(normalized)
+            approved_paths.add(normalized)
+    _publish_host_attachment_payloads_async(
+        window,
+        pane_id,
+        normalized_paths,
+        session_id=target_session_id,
+    )
 
 
 def on_js_attach_paths(
@@ -372,7 +428,11 @@ def on_js_attach_paths(
     if not isinstance(raw_paths, list):
         return
 
+    project_root = _normalize_attachment_path(window._project_folder) if window._project_folder else None
+    target_session_id = str(getattr(window._pane_by_id(pane_id), "_active_session_id", None) or "").strip() or None
+    approved_paths = _pane_approved_attachment_paths(window, pane_id, session_id=target_session_id)
     candidate_paths: list[str] = []
+    skipped_count = 0
     for entry in raw_paths:
         if not isinstance(entry, str):
             continue
@@ -381,89 +441,209 @@ def on_js_attach_paths(
             continue
         if len(clean) > 4096:
             continue
-        candidate_paths.append(clean)
+        normalized = _normalize_attachment_path(clean)
+        if not normalized:
+            skipped_count += 1
+            continue
+        if normalized in approved_paths or (project_root and _path_is_within_root(normalized, project_root)):
+            candidate_paths.append(normalized)
+            continue
+        skipped_count += 1
 
     if not candidate_paths:
-        return
-
-    added_count = 0
-    skipped_count = 0
-    added_bytes = 0
-
-    for selected in candidate_paths:
-        if added_count >= MAX_ATTACHMENTS_PER_MESSAGE:
-            skipped_count += 1
-            continue
-        if not os.path.isfile(selected):
-            skipped_count += 1
-            continue
-
-        try:
-            file_size = os.path.getsize(selected)
-        except OSError as error:
-            skipped_count += 1
-            logger.warning("Paste-attach failed to stat %s: %s", selected, error)
-            continue
-
-        if file_size > ATTACHMENT_MAX_BYTES:
-            skipped_count += 1
+        if skipped_count:
             window._set_status_message(
-                f"Attachment exceeds {ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit: {os.path.basename(selected)}",
+                "Only project files or file-chooser approved paths can be attached from pasted paths.",
                 STATUS_WARNING,
             )
-            continue
-        if added_bytes + file_size > MAX_ATTACHMENT_TOTAL_BYTES:
-            skipped_count += 1
-            window._set_status_message(
-                "Attachment selection exceeds total size limit for one message.",
-                STATUS_WARNING,
-            )
-            continue
-
-        try:
-            with open(selected, "rb") as handle:
-                raw_bytes = handle.read()
-        except OSError as error:
-            skipped_count += 1
-            logger.warning("Paste-attach failed to read %s: %s", selected, error)
-            continue
-
-        mime_type, _ = mimetypes.guess_type(selected)
-        if not mime_type:
-            mime_type = "application/octet-stream"
-        if mime_type == "application/octet-stream":
-            lower_suffix = Path(selected).suffix.lower()
-            mime_type = {
-                ".png": "image/png",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".webp": "image/webp",
-                ".gif": "image/gif",
-                ".svg": "image/svg+xml",
-                ".bmp": "image/bmp",
-                ".avif": "image/avif",
-                ".heic": "image/heic",
-            }.get(lower_suffix, mime_type)
-
-        attachment_payload = {
-            "name": os.path.basename(selected),
-            "path": selected,
-            "type": mime_type,
-            "data": f"data:{mime_type};base64,{base64.b64encode(raw_bytes).decode('ascii')}",
-        }
-        window._call_js("addHostAttachment", attachment_payload)
-        added_count += 1
-        added_bytes += file_size
-
-    if added_count == 0 and skipped_count == 0:
         return
-    if skipped_count:
+
+    _publish_host_attachment_payloads_async(
+        window,
+        pane_id,
+        candidate_paths,
+        skipped_count=skipped_count,
+        session_id=target_session_id,
+    )
+
+
+def on_js_arm_user_media(
+    window: "ClaudeCodeWindow",
+    pane_id: str,
+    _js_result: Any,
+) -> None:
+    if not window._activate_existing_pane(pane_id):
+        return
+    window._arm_user_media_permission(pane_id)
+
+
+def on_js_disarm_user_media(
+    window: "ClaudeCodeWindow",
+    pane_id: str,
+    _js_result: Any,
+) -> None:
+    if not window._activate_existing_pane(pane_id):
+        return
+    if hasattr(window, "_disarm_user_media_permission"):
+        window._disarm_user_media_permission(pane_id)
+
+
+def on_js_transcribe_audio(
+    window: "ClaudeCodeWindow",
+    pane_id: str,
+    js_result: Any,
+    *,
+    max_audio_payload_chars: int,
+) -> None:
+    if not window._activate_existing_pane(pane_id):
+        return
+    raw_payload = window._extract_message_from_js_result(
+        js_result,
+        max_chars=max_audio_payload_chars + 1,
+    )
+    if not raw_payload:
+        return
+    if len(raw_payload) > max_audio_payload_chars:
+        window._set_status_message("Voice payload too large", STATUS_WARNING)
+        window._call_js("finishVoiceTranscription")
+        return
+
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        window._set_status_message("Invalid voice payload", STATUS_WARNING)
+        window._call_js("finishVoiceTranscription")
+        return
+    if not isinstance(payload, dict):
+        window._set_status_message("Invalid voice payload", STATUS_WARNING)
+        window._call_js("finishVoiceTranscription")
+        return
+
+    data_url = str(payload.get("data") or "").strip()
+    if not data_url.startswith("data:") or "," not in data_url:
+        window._set_status_message("Invalid voice data URL", STATUS_WARNING)
+        window._call_js("finishVoiceTranscription")
+        return
+
+    header, encoded = data_url.split(",", 1)
+    header_lower = header.lower()
+    if ";base64" not in header_lower:
+        window._set_status_message("Voice payload must be base64 data URL", STATUS_WARNING)
+        window._call_js("finishVoiceTranscription")
+        return
+
+    try:
+        audio_bytes = base64.b64decode(encoded, validate=False)
+    except Exception:
+        window._set_status_message("Could not decode voice payload", STATUS_WARNING)
+        window._call_js("finishVoiceTranscription")
+        return
+
+    if not audio_bytes:
+        window._set_status_message("Voice payload is empty", STATUS_WARNING)
+        window._call_js("finishVoiceTranscription")
+        return
+
+    if len(audio_bytes) > ATTACHMENT_MAX_BYTES:
         window._set_status_message(
-            f"{added_count} attached, {skipped_count} skipped.",
+            f"Voice recording exceeds {ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit.",
             STATUS_WARNING,
         )
-    else:
-        window._set_status_message(f"{added_count} file(s) attached.", STATUS_INFO)
+        window._call_js("finishVoiceTranscription")
+        return
+
+    raw_type = str(payload.get("type") or "").strip().lower()
+    suffix = {
+        "audio/webm": ".webm",
+        "audio/webm;codecs=opus": ".webm",
+        "audio/ogg": ".ogg",
+        "audio/ogg;codecs=opus": ".ogg",
+        "audio/mp4": ".mp4",
+        "audio/mpeg": ".mp3",
+        "audio/wav": ".wav",
+        "audio/x-wav": ".wav",
+    }.get(raw_type, ".webm")
+    language = str(payload.get("language") or "").strip()
+
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="ccg-voice-",
+            suffix=suffix,
+            delete=False,
+        ) as handle:
+            handle.write(audio_bytes)
+            temp_path = handle.name
+    except OSError as error:
+        window._set_status_message(f"Could not store voice payload: {error}", STATUS_WARNING)
+        window._call_js("finishVoiceTranscription")
+        return
+
+    if not temp_path:
+        window._set_status_message("Could not store voice payload", STATUS_WARNING)
+        window._call_js("finishVoiceTranscription")
+        return
+
+    window._set_status_message("Transcribing voice input with whisper.cpp...", STATUS_INFO)
+    logger.info(
+        "voice: received audio bytes=%d type=%r lang=%r tmp=%s",
+        len(audio_bytes),
+        raw_type,
+        language,
+        temp_path,
+    )
+
+    def _finish_on_ui(*, transcript: str, error_text: str) -> bool:
+        try:
+            if pane_id not in window._pane_registry:
+                return False
+            with window._pane_context(pane_id):
+                if transcript:
+                    window._call_js("applyVoiceTranscription", transcript)
+                    window._set_status_message("Voice transcription inserted.", STATUS_INFO)
+                    return False
+                window._call_js("finishVoiceTranscription")
+                window._set_status_message(error_text, STATUS_WARNING)
+                window._add_system_message(error_text)
+        except Exception:
+            logger.exception("Could not publish voice transcription result.")
+        return False
+
+    def _work() -> None:
+        transcript = ""
+        error_text = ""
+        try:
+            logger.info("voice: starting transcription for %s", temp_path)
+            try:
+                transcript, error_text = transcribe_audio_file(
+                    temp_path,
+                    language=language,
+                )
+            finally:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            logger.info(
+                "voice: transcription done transcript_len=%d error=%r",
+                len(transcript or ""),
+                error_text,
+            )
+        except Exception as exc:
+            logger.exception("voice: _work crashed")
+            error_text = f"Voice worker crashed: {exc}"
+
+        cleaned = (transcript or "").strip()
+        if cleaned:
+            GLib.idle_add(_finish_on_ui, transcript=cleaned, error_text="")
+            return
+
+        fallback_error = error_text.strip() if isinstance(error_text, str) else ""
+        if not fallback_error:
+            fallback_error = "Voice transcription failed."
+        GLib.idle_add(_finish_on_ui, transcript="", error_text=fallback_error)
+
+    threading.Thread(target=_work, daemon=True).start()
 
 
 def on_js_permission_response(
@@ -579,6 +759,9 @@ def on_js_permission_response(
         )
         return
 
+    if action == "always_allow":
+        action = "allow"
+
     tool_name = str(_pick(parsed_payload, "toolName", "tool_name", "tool", "name") or "").strip()[:120]
     request_id = str(_pick(parsed_payload, "requestId", "request_id", "id") or "").strip()[:160]
     is_denial_card = _to_bool(_pick(parsed_payload, "isDenialCard", "is_denial_card", "isDenial"))
@@ -586,24 +769,48 @@ def on_js_permission_response(
         _pick(parsed_payload, "value", "response", "choice", "text", "comment", "message")
         or ""
     ).strip()[:4000]
-
-    if action == "always_allow" and tool_name:
-        window._allowed_tools.add(tool_name)
-        window._set_status_message(f"Always allowing {tool_name} for this session", STATUS_INFO)
-        window._add_system_message(
-            f"Tool '{tool_name}' has been added to the allowed list. "
-            "It will be pre-approved on future requests in this session."
-        )
-        if not is_denial_card:
-            window._claude_process.send_permission_response(
-                action="allow",
+    pane = window._pane_by_id(pane_id)
+    target_session_id = getattr(pane, "_active_session_id", None) or getattr(window, "_active_session_id", None)
+    pending_payload = None
+    if hasattr(window, "_pending_permission_payload_for_session"):
+        try:
+            pending_payload = window._pending_permission_payload_for_session(
+                target_session_id,
                 request_id=request_id,
             )
+        except TypeError:
+            pending_payload = window._pending_permission_payload_for_session(target_session_id)
+
+    pending_request_id = ""
+    pending_tool_name = ""
+    if isinstance(pending_payload, dict):
+        pending_request_id = str(
+            _pick(pending_payload, "requestId", "request_id", "id") or ""
+        ).strip()[:160]
+        pending_tool_name = str(
+            _pick(pending_payload, "toolName", "tool_name", "tool", "name") or ""
+        ).strip()[:120]
+
+    if (
+        not pending_request_id
+        or not request_id
+        or request_id != pending_request_id
+        or not pending_tool_name
+        or not tool_name
+        or tool_name.casefold() != pending_tool_name.casefold()
+    ):
+        logger.warning(
+            "pane=%s provider=%s permission_payload_rejected reason=pending_mismatch request_id=%s tool=%s",
+            pane_id,
+            window._active_provider_id,
+            request_id,
+            tool_name,
+        )
+        window._set_status_message("Permission response ignored because the pending request changed.", STATUS_WARNING)
         return
 
     if is_denial_card:
         if action == "allow" and tool_name:
-            window._allowed_tools.add(tool_name)
             window._set_status_message(
                 f"Tool '{tool_name}' allowed. Re-send your message to retry.", STATUS_INFO,
             )
@@ -613,6 +820,8 @@ def on_js_permission_response(
             )
         elif action == "deny":
             window._set_status_message("Permission denied", STATUS_WARNING)
+        if hasattr(window, "_clear_pending_permission_state_for_session"):
+            window._clear_pending_permission_state_for_session(target_session_id, request_id=request_id)
         return
 
     sent = window._claude_process.send_permission_response(
@@ -621,6 +830,8 @@ def on_js_permission_response(
         request_id=request_id,
     )
     if not sent:
+        if hasattr(window, "_clear_pending_permission_state_for_session"):
+            window._clear_pending_permission_state_for_session(target_session_id, request_id=request_id)
         fallback_reply = comment or selected_value
         if not fallback_reply:
             if action == "allow":
@@ -645,6 +856,8 @@ def on_js_permission_response(
         )
         return
 
+    if hasattr(window, "_clear_pending_permission_state_for_session"):
+        window._clear_pending_permission_state_for_session(target_session_id, request_id=request_id)
     if action == "allow":
         window._set_status_message("Permission approved", STATUS_INFO)
     elif action == "deny":
@@ -671,6 +884,7 @@ def on_js_send_message(
         window._set_status_message("Message payload too large", STATUS_WARNING)
         return
     message, attachments = parse_send_payload(raw_text)
+    history_role = parse_send_payload_kind(raw_text)
     if not message and not attachments:
         if raw_text.strip():
             window._set_status_message("Invalid message payload", STATUS_WARNING)
@@ -685,12 +899,15 @@ def on_js_send_message(
             window._set_status_message("Attachments are ignored for local /agent commands.", STATUS_MUTED)
         return
 
-    if window._binary_path is None:
+    effective_provider_id = window._pane_effective_provider_id(pane_id)
+    effective_provider = window._pane_effective_provider(pane_id)
+    effective_binary_path = window._pane_effective_binary_path(pane_id)
+    if effective_binary_path is None:
         window._refresh_connection_state()
-        window._set_status_message(f"{window._active_provider.name} CLI not found", STATUS_ERROR)
-        window._add_system_message(f"{window._provider_cli_label()} is not available.")
+        window._set_status_message(f"{effective_provider.name} CLI not found", STATUS_ERROR)
+        window._add_system_message(f"{window._provider_cli_label(effective_provider_id)} is not available.")
         return
-    if window._active_provider_id == "codex" and not is_codex_authenticated():
+    if effective_provider_id == "codex" and not is_codex_authenticated():
         window._refresh_connection_state()
         window._set_status_message(
             "Codex login status could not be confirmed; sending anyway.",
@@ -699,14 +916,18 @@ def on_js_send_message(
 
     if window._active_session_id is None:
         if os.path.isdir(window._project_folder):
-            window._start_new_session(window._project_folder, reset_conversation=False)
+            window._start_new_session(
+                window._project_folder,
+                reset_conversation=False,
+                provider_id=effective_provider_id,
+            )
         else:
             window._set_status_message("No active session", STATUS_ERROR)
             window._add_system_message("Create a session first.")
             return
 
     if window._claude_process.is_running():
-        window._add_system_message(f"{window._active_provider.name} is still responding. Please wait.")
+        window._add_system_message(f"{effective_provider.name} is still responding. Please wait.")
         return
 
     active_session = window._get_active_session()
@@ -721,10 +942,24 @@ def on_js_send_message(
         window._set_active_session_status(SESSION_STATUS_ERROR)
         return
 
-    _, model_value = window._model_options[window._selected_model_index]
-    _, permission_value, _ = window._permission_options[window._selected_permission_index]
+    if effective_provider_id == window._active_provider_id:
+        _, model_value = window._model_options[window._selected_model_index]
+        _, permission_value, _ = window._permission_options[window._selected_permission_index]
+    else:
+        provider_models = list(effective_provider.model_options)
+        if not provider_models:
+            provider_models = [("Default", "")]
+        model_value = (
+            active_session.model
+            or (provider_models[1][1] if len(provider_models) > 1 else provider_models[0][1])
+        )
+        provider_permissions = list(effective_provider.permission_options)
+        permission_value = (
+            active_session.permission_mode
+            or (provider_permissions[0][1] if provider_permissions else "auto")
+        )
     reasoning_value = window._reasoning_value_from_index(window._selected_reasoning_index)
-    if not window._active_provider.supports_reasoning:
+    if not effective_provider.supports_reasoning:
         reasoning_value = "medium"
 
     attachment_paths = materialize_attachments(attachments)
@@ -744,15 +979,15 @@ def on_js_send_message(
     # The row will be created when the first assistant chunk arrives.
     window._pulse_chat_shell()
     window._set_connection_state(CONNECTION_STARTING)
-    window._set_status_message(f"Sending message to {window._active_provider.name}...", STATUS_INFO)
-    active_caps = window._cli_caps_for(window._active_provider_id)
+    window._set_status_message(f"Sending message to {effective_provider.name}...", STATUS_INFO)
+    active_caps = window._cli_caps_for(effective_provider_id)
 
     active_session.status = SESSION_STATUS_ACTIVE
     active_session.last_used_at = current_timestamp()
     window._save_sessions_safe("Could not save sessions")
     window._refresh_session_list()
 
-    window._add_to_history("user", composed_message)
+    window._add_to_history(history_role, message or composed_message)
     window._permission_request_pending = False
 
     request_token = str(uuid.uuid4())
@@ -768,7 +1003,7 @@ def on_js_send_message(
         active_session.id,
     )
     config = ClaudeRunConfig(
-        binary_path=window._binary_path,
+        binary_path=effective_binary_path,
         message=composed_message,
         cwd=window._project_folder,
         model=model_value,
@@ -784,11 +1019,10 @@ def on_js_send_message(
         reasoning_level=reasoning_value,
         supports_reasoning_flag=(
             active_caps.supports_reasoning_flag
-            or window._active_provider_id in {"codex", "gemini"}
+            or effective_provider_id in {"codex", "gemini"}
         )
-        and window._active_provider.supports_reasoning,
-        allowed_tools=list(window._allowed_tools) if window._allowed_tools else None,
-        provider_id=window._active_provider_id,
+        and effective_provider.supports_reasoning,
+        provider_id=effective_provider_id,
     )
     started = window._claude_process.send_message(request_token=request_token, config=config)
 
@@ -810,4 +1044,9 @@ def on_js_send_message(
         )
         return
 
+    tracker = getattr(window, "_session_runtime_tracker", None)
+    if not isinstance(tracker, set):
+        tracker = set()
+        window._session_runtime_tracker = tracker
+    tracker.add(active_session.id)
     window._request_temp_files[request_token] = attachment_paths

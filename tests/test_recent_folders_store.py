@@ -70,6 +70,20 @@ def test_save_recent_folders_persists_limited_payload(
     assert saved == ["/a", "/b"]
 
 
+def test_save_recent_folders_merges_existing_entries_without_losing_them(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_path = tmp_path / "recent_folders.json"
+    store_path.write_text(json.dumps(["/disk-a", "/disk-b"]), encoding="utf-8")
+    _patch_store_paths(monkeypatch, path=store_path, limit=4)
+
+    recent_folders_store.save_recent_folders(["/memory-a", "/disk-a"])
+
+    saved = json.loads(store_path.read_text(encoding="utf-8"))
+    assert saved == ["/memory-a", "/disk-a", "/disk-b"]
+
+
 def test_atomic_write_handles_empty_payload(tmp_path) -> None:
     target = tmp_path / "recent_folders.json"
 
@@ -81,4 +95,3 @@ def test_atomic_write_handles_empty_payload(tmp_path) -> None:
 def test_fsync_parent_dir_handles_missing_parent(tmp_path) -> None:
     missing_parent_target = tmp_path / "missing-parent" / "recent_folders.json"
     recent_folders_store._fsync_parent_dir(missing_parent_target)
-

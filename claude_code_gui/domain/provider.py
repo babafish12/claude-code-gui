@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+import threading
+from types import MappingProxyType
 
 from claude_code_gui.domain.app_settings import DEFAULT_APP_SETTINGS, load_settings
 
@@ -12,6 +15,7 @@ ColorTokens = dict[str, str]
 AccentRgb = tuple[int, int, int]
 
 _DISCOVERED_MODEL_OPTIONS: dict[str, tuple[ModelOption, ...]] = {}
+_PROVIDERS_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -365,36 +369,56 @@ def _build_providers(
     return providers
 
 
-PROVIDERS: dict[str, ProviderConfig] = _build_providers()
 DEFAULT_PROVIDER_ID = "claude"
+_providers_view: Mapping[str, ProviderConfig] = MappingProxyType(_build_providers())
+
+
+class _ProviderRegistryAlias(Mapping[str, ProviderConfig]):
+    """Read-only alias that always resolves against the latest registry snapshot."""
+
+    def __getitem__(self, key: str) -> ProviderConfig:
+        return _providers_view[key]
+
+    def __iter__(self):
+        return iter(_providers_view)
+
+    def __len__(self) -> int:
+        return len(_providers_view)
+
+
+PROVIDERS: Mapping[str, ProviderConfig] = _ProviderRegistryAlias()
+
+
+def get_providers() -> Mapping[str, ProviderConfig]:
+    return _providers_view
 
 
 def refresh_provider_registry(
     payload: dict[str, object] | None = None,
     *,
     detected_model_options: dict[str, object] | None = None,
-) -> dict[str, ProviderConfig]:
+) -> Mapping[str, ProviderConfig]:
     """Reload providers from app settings and update the global registry."""
+    global _providers_view
     normalized_discovery = _normalize_discovered_model_overrides(detected_model_options)
-    if normalized_discovery:
-        _DISCOVERED_MODEL_OPTIONS.update(normalized_discovery)
-
-    # Keep the same dict object so modules that imported `PROVIDERS` by reference
-    # immediately see updated provider data without needing an app restart.
-    updated_registry = _build_providers(payload, _DISCOVERED_MODEL_OPTIONS)
-    PROVIDERS.clear()
-    PROVIDERS.update(updated_registry)
-    return PROVIDERS
+    with _PROVIDERS_LOCK:
+        if normalized_discovery:
+            _DISCOVERED_MODEL_OPTIONS.update(normalized_discovery)
+        updated_registry = _build_providers(payload, _DISCOVERED_MODEL_OPTIONS)
+        _providers_view = MappingProxyType(updated_registry)
+    return _providers_view
 
 
 def normalize_provider_id(raw_value: str | None) -> str:
+    providers = get_providers()
     candidate = str(raw_value or DEFAULT_PROVIDER_ID).strip().lower()
-    if candidate in PROVIDERS:
+    if candidate in providers:
         return candidate
-    if DEFAULT_PROVIDER_ID in PROVIDERS:
+    if DEFAULT_PROVIDER_ID in providers:
         return DEFAULT_PROVIDER_ID
-    return next(iter(PROVIDERS.keys()))
+    return next(iter(providers.keys()), DEFAULT_PROVIDER_ID)
 
 
 def get_provider_config(provider_id: str) -> ProviderConfig:
-    return PROVIDERS[normalize_provider_id(provider_id)]
+    providers = get_providers()
+    return providers[normalize_provider_id(provider_id)]

@@ -6,7 +6,9 @@ import base64
 import json
 import mimetypes
 import os
+import re
 import tempfile
+from pathlib import Path
 from urllib.parse import unquote_to_bytes
 
 from claude_code_gui.app.constants import ATTACHMENT_MAX_BYTES
@@ -16,25 +18,194 @@ MAX_ATTACHMENT_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_SEND_MESSAGE_CHARS = 120_000
 MAX_DATA_URL_CHARS = ATTACHMENT_MAX_BYTES * 2 + 1024
 
+_SUFFIX_MIME_OVERRIDES: dict[str, str] = {
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".csv": "text/csv",
+    ".log": "text/plain",
+    ".json": "application/json",
+    ".yaml": "application/x-yaml",
+    ".yml": "application/x-yaml",
+    ".toml": "application/toml",
+    ".ini": "text/plain",
+    ".cfg": "text/plain",
+    ".xml": "application/xml",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".css": "text/css",
+    ".js": "application/javascript",
+    ".mjs": "application/javascript",
+    ".cjs": "application/javascript",
+    ".ts": "text/x-typescript",
+    ".tsx": "text/x-typescript",
+    ".jsx": "text/javascript",
+    ".py": "text/x-python",
+    ".sh": "text/x-shellscript",
+    ".bash": "text/x-shellscript",
+    ".zsh": "text/x-shellscript",
+    ".rs": "text/plain",
+    ".go": "text/plain",
+    ".java": "text/plain",
+    ".c": "text/plain",
+    ".cc": "text/plain",
+    ".cpp": "text/plain",
+    ".h": "text/plain",
+    ".hpp": "text/plain",
+    ".sql": "text/plain",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".svg": "image/svg+xml",
+    ".bmp": "image/bmp",
+    ".avif": "image/avif",
+    ".heic": "image/heic",
+}
+
+_TEXT_ATTACHMENT_MIME_TYPES = {
+    "application/javascript",
+    "application/json",
+    "application/toml",
+    "application/xml",
+    "application/x-yaml",
+    "text/csv",
+    "text/css",
+    "text/html",
+    "text/javascript",
+    "text/markdown",
+    "text/plain",
+    "text/xml",
+    "text/x-python",
+    "text/x-shellscript",
+    "text/x-typescript",
+}
+
+_BINARY_SIGNATURE_MIME_TYPES = {
+    "application/pdf",
+    "image/avif",
+    "image/bmp",
+    "image/gif",
+    "image/heic",
+    "image/jpeg",
+    "image/png",
+    "image/svg+xml",
+    "image/webp",
+}
+
+_ALLOWED_ATTACHMENT_MIME_TYPES = _TEXT_ATTACHMENT_MIME_TYPES | _BINARY_SIGNATURE_MIME_TYPES
+_STRICT_MARKUP_MIME_TYPES = {
+    "application/xml",
+    "image/svg+xml",
+    "text/html",
+    "text/xml",
+}
+_MARKUP_PREFIX_RE = re.compile(
+    r"^\s*(?:<\?xml\b|<!doctype\s+html\b|<html\b|<svg\b|<script\b)",
+    flags=re.IGNORECASE,
+)
+_SVG_PREFIX_RE = re.compile(r"^\s*(?:<\?xml\b|<svg\b)", flags=re.IGNORECASE)
+
+
+def _normalize_mime_type(mime_type: str) -> str:
+    normalized = str(mime_type or "").strip().lower()
+    if normalized == "image/jpg":
+        return "image/jpeg"
+    if normalized == "text/x-markdown":
+        return "text/markdown"
+    if normalized == "application/yaml":
+        return "application/x-yaml"
+    return normalized
+
 
 def _guess_attachment_mime_type(path: str) -> str:
+    lower_suffix = Path(path).suffix.lower()
+    override = _SUFFIX_MIME_OVERRIDES.get(lower_suffix)
+    if override:
+        return override
     mime_type, _ = mimetypes.guess_type(path)
-    if not mime_type:
-        mime_type = "application/octet-stream"
-    if mime_type == "application/octet-stream":
-        lower_suffix = os.path.splitext(path)[1].lower()
-        mime_type = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".webp": "image/webp",
-            ".gif": "image/gif",
-            ".svg": "image/svg+xml",
-            ".bmp": "image/bmp",
-            ".avif": "image/avif",
-            ".heic": "image/heic",
-        }.get(lower_suffix, mime_type)
-    return mime_type
+    return _normalize_mime_type(mime_type or "application/octet-stream")
+
+
+def _looks_like_text_attachment(raw_bytes: bytes) -> bool:
+    if b"\x00" in raw_bytes:
+        return False
+    try:
+        raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _decode_text_attachment_header(raw_bytes: bytes, *, limit: int = 2048) -> str:
+    if not _looks_like_text_attachment(raw_bytes):
+        return ""
+    return raw_bytes[:limit].decode("utf-8", errors="ignore").lstrip("\ufeff")
+
+
+def _looks_like_markup_attachment(raw_bytes: bytes) -> bool:
+    return bool(_MARKUP_PREFIX_RE.match(_decode_text_attachment_header(raw_bytes)))
+
+
+def _has_iso_bmff_brand(raw_bytes: bytes, *brands: str) -> bool:
+    if len(raw_bytes) < 12 or raw_bytes[4:8] != b"ftyp":
+        return False
+    brand = raw_bytes[8:12].decode("ascii", errors="ignore").lower()
+    return brand in {value.lower() for value in brands}
+
+
+def _looks_like_svg(raw_bytes: bytes) -> bool:
+    return bool(_SVG_PREFIX_RE.match(_decode_text_attachment_header(raw_bytes)))
+
+
+def _matches_binary_signature(mime_type: str, raw_bytes: bytes) -> bool:
+    normalized = _normalize_mime_type(mime_type)
+    if normalized == "application/pdf":
+        return raw_bytes.startswith(b"%PDF-")
+    if normalized == "image/png":
+        return raw_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+    if normalized == "image/jpeg":
+        return raw_bytes.startswith(b"\xff\xd8\xff")
+    if normalized == "image/gif":
+        return raw_bytes.startswith((b"GIF87a", b"GIF89a"))
+    if normalized == "image/webp":
+        return len(raw_bytes) >= 12 and raw_bytes.startswith(b"RIFF") and raw_bytes[8:12] == b"WEBP"
+    if normalized == "image/bmp":
+        return raw_bytes.startswith(b"BM")
+    if normalized == "image/svg+xml":
+        return _looks_like_svg(raw_bytes)
+    if normalized == "image/avif":
+        return _has_iso_bmff_brand(raw_bytes, "avif", "avis")
+    if normalized == "image/heic":
+        return _has_iso_bmff_brand(raw_bytes, "heic", "heix", "hevc", "hevx", "mif1", "msf1")
+    return False
+
+
+def _validated_attachment_mime_type(
+    *,
+    name: str,
+    declared_mime_type: str,
+    raw_bytes: bytes,
+) -> str | None:
+    normalized_declared = _normalize_mime_type(declared_mime_type)
+    guessed = _guess_attachment_mime_type(name)
+    candidate = normalized_declared or guessed
+    if candidate == "application/octet-stream":
+        candidate = guessed
+    candidate = _normalize_mime_type(candidate)
+    if candidate not in _ALLOWED_ATTACHMENT_MIME_TYPES:
+        return None
+    if candidate in _TEXT_ATTACHMENT_MIME_TYPES:
+        if not _looks_like_text_attachment(raw_bytes):
+            return None
+        if candidate == "text/plain" and _looks_like_markup_attachment(raw_bytes):
+            return None
+        if candidate in _STRICT_MARKUP_MIME_TYPES and candidate != "image/svg+xml":
+            return candidate if _looks_like_markup_attachment(raw_bytes) else None
+        return candidate
+    return candidate if _matches_binary_signature(candidate, raw_bytes) else None
 
 
 def encode_host_attachment_payloads(
@@ -73,7 +244,24 @@ def encode_host_attachment_payloads(
             skipped_count += 1
             continue
 
-        mime_type = _guess_attachment_mime_type(selected)
+        raw_size = len(raw_bytes)
+        if raw_size > ATTACHMENT_MAX_BYTES:
+            skipped_count += 1
+            hit_file_size_limit = True
+            continue
+        if total_bytes + raw_size > MAX_ATTACHMENT_TOTAL_BYTES:
+            skipped_count += 1
+            hit_total_size_limit = True
+            continue
+
+        mime_type = _validated_attachment_mime_type(
+            name=selected,
+            declared_mime_type=_guess_attachment_mime_type(selected),
+            raw_bytes=raw_bytes,
+        )
+        if not mime_type:
+            skipped_count += 1
+            continue
         payloads.append(
             {
                 "name": os.path.basename(selected),
@@ -82,7 +270,7 @@ def encode_host_attachment_payloads(
                 "data": f"data:{mime_type};base64,{base64.b64encode(raw_bytes).decode('ascii')}",
             }
         )
-        total_bytes += file_size
+        total_bytes += raw_size
 
     return payloads, skipped_count, hit_file_size_limit, hit_total_size_limit
 
@@ -94,10 +282,11 @@ def decode_data_url(data_url: str) -> tuple[str, bytes] | None:
     if not separator:
         return None
     meta = header[5:]
-    is_base64 = ";base64" in meta
-    mime_type = meta.split(";")[0].strip() or "application/octet-stream"
+    meta_parts = [part.strip() for part in meta.split(";") if part.strip()]
+    is_base64 = any(part.lower() == "base64" for part in meta_parts[1:])
+    mime_type = _normalize_mime_type(meta_parts[0] if meta_parts else "application/octet-stream") or "application/octet-stream"
     try:
-        data = base64.b64decode(payload) if is_base64 else unquote_to_bytes(payload)
+        data = base64.b64decode(payload, validate=True) if is_base64 else unquote_to_bytes(payload)
     except (ValueError, TypeError):
         return None
     return mime_type, data
@@ -115,7 +304,7 @@ def parse_send_payload(raw_text: str) -> tuple[str, list[dict[str, str]]]:
     if not isinstance(payload, dict):
         return parsed_text[:MAX_SEND_MESSAGE_CHARS], []
 
-    allowed_root_keys = {"text", "attachments"}
+    allowed_root_keys = {"text", "attachments", "kind"}
     if any(not isinstance(key, str) or key not in allowed_root_keys for key in payload.keys()):
         return "", []
 
@@ -154,6 +343,24 @@ def parse_send_payload(raw_text: str) -> tuple[str, list[dict[str, str]]]:
     return message, attachments
 
 
+def parse_send_payload_kind(raw_text: str) -> str:
+    parsed_text = raw_text.strip()
+    if not parsed_text:
+        return "user"
+    try:
+        payload = json.loads(parsed_text)
+    except json.JSONDecodeError:
+        return "user"
+
+    if not isinstance(payload, dict):
+        return "user"
+
+    normalized = str(payload.get("kind") or "").strip().lower()
+    if normalized == "agent_prompt":
+        return "agent_prompt"
+    return "user"
+
+
 def materialize_attachments(attachments: list[dict[str, str]]) -> list[str]:
     temp_paths: list[str] = []
     total_bytes = 0
@@ -161,8 +368,15 @@ def materialize_attachments(attachments: list[dict[str, str]]) -> list[str]:
         decoded = decode_data_url(attachment.get("data", ""))
         if decoded is None:
             continue
-        mime_type, raw_bytes = decoded
+        decoded_mime_type, raw_bytes = decoded
         if len(raw_bytes) > ATTACHMENT_MAX_BYTES:
+            continue
+        mime_type = _validated_attachment_mime_type(
+            name=attachment.get("name", "attachment"),
+            declared_mime_type=attachment.get("type") or decoded_mime_type,
+            raw_bytes=raw_bytes,
+        )
+        if not mime_type:
             continue
 
         if total_bytes + len(raw_bytes) > MAX_ATTACHMENT_TOTAL_BYTES:

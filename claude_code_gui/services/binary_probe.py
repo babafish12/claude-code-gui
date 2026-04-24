@@ -347,7 +347,9 @@ def detect_provider_model_options(binary_path: str, provider_id: str) -> tuple[t
         except (OSError, subprocess.SubprocessError):
             continue
 
-        output = f"{result.stdout}\n{result.stderr}"
+        stdout_output = str(result.stdout or "")
+        stderr_output = str(result.stderr or "")
+        output = f"{stdout_output}\n{stderr_output}"
         if not output.strip():
             continue
 
@@ -359,7 +361,7 @@ def detect_provider_model_options(binary_path: str, provider_id: str) -> tuple[t
         payload = None
         parsed_models: tuple[tuple[str, str], ...] = ()
         try:
-            payload = json.loads(output.strip())
+            payload = json.loads(stdout_output.strip())
         except json.JSONDecodeError:
             payload = None
 
@@ -580,4 +582,7 @@ def refresh_codex_authentication_cache() -> bool:
 
 
 def is_codex_authenticated() -> bool:
+    cached_value, is_fresh = get_cached_codex_authentication()
+    if is_fresh and cached_value is not None:
+        return cached_value
     return refresh_codex_authentication_cache()

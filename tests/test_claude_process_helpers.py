@@ -1,12 +1,10 @@
 from __future__ import annotations
-
-import json
 from pathlib import Path
 
 import pytest
 
 from claude_code_gui.domain.claude_types import ClaudeRunConfig
-from claude_code_gui.domain.cli_dialect import ParsedEvent
+from claude_code_gui.domain.cli_dialect import ClaudeDialect, ParsedEvent
 from claude_code_gui.runtime.claude_process import ClaudeProcess
 
 pytestmark = pytest.mark.unit
@@ -42,7 +40,6 @@ def _build_config(*, provider_id: str = "claude", supports_reasoning_flag: bool 
         stream_json_requires_verbose=False,
         provider_id=provider_id,
         supports_reasoning_flag=supports_reasoning_flag,
-        allowed_tools=["Bash"],
     )
 
 
@@ -65,8 +62,14 @@ def test_mode_attempts_and_cli_run_config_for_codex_claude_and_gemini() -> None:
     assert codex_cli.supports_permission_flag is True
     assert codex_cli.supports_output_format_flag is True
     assert codex_cli.supports_reasoning_flag is False
-    assert codex_cli.allowed_tools == ["Bash"]
     assert ClaudeProcess._provider_label("gemini") == "Gemini"
+
+    claude_cli = ClaudeProcess._build_cli_run_config(
+        _build_config(provider_id="claude", supports_reasoning_flag=True),
+        mode="stream-json",
+        include_reasoning=True,
+    )
+    assert claude_cli.supports_model_flag is True
 
 
 def test_parse_json_and_text_choice_helpers() -> None:
@@ -170,6 +173,7 @@ def test_materialize_codex_file_change_payloads_generates_diff(tmp_path: Path, m
 
 def test_tool_payload_normalization_and_text_delta_extraction() -> None:
     process, _permission_requests = _build_process()
+    dialect = ClaudeDialect()
 
     codex_payload = process._normalize_tool_payload(
         parsed_event=ParsedEvent(tool={"command": "ls"}),
@@ -190,7 +194,7 @@ def test_tool_payload_normalization_and_text_delta_extraction() -> None:
         "delta": {"text": "a"},
         "content": [{"delta": {"text": "b"}}, {"type": "tool_use", "text": "skip"}],
     }
-    assert process._extract_text_deltas(event) == ["a", "b"]
+    assert dialect._extract_text_deltas(event) == ["a", "b"]
 
 
 def test_command_metadata_extractors_for_git_pr_and_ci_events() -> None:
@@ -241,6 +245,7 @@ def test_command_metadata_extractors_for_git_pr_and_ci_events() -> None:
 
 def test_permission_helpers_and_tool_result_merge() -> None:
     process, _permission_requests = _build_process()
+    dialect = ClaudeDialect()
 
     assert process._extract_flag_value("gh pr create --title \"My PR\" --base=main", "--title") == "My PR"
     assert process._extract_flag_value("gh pr create --title \"My PR\" --base=main", "--base") == "main"
@@ -267,7 +272,7 @@ def test_permission_helpers_and_tool_result_merge() -> None:
     assert permission_payload["choices"] == ["Yes", "No"]
     assert permission_payload["command"] == "pytest -q"
 
-    entries = process._extract_tool_result_entries(
+    entries = dialect._extract_tool_result_entries(
         {
             "content": [
                 {"type": "tool_result", "tool_use_id": "tool-1", "content": "done"},
@@ -277,10 +282,8 @@ def test_permission_helpers_and_tool_result_merge() -> None:
     )
     assert entries == [{"toolUseId": "tool-1", "output": "done"}]
 
-    merged = process._merge_tool_result_with_tool_use(
-        {"toolUseId": "tool-1", "output": "ok"},
-        pending_shell_tools={"tool-1": {"__tool__": True, "name": "bash", "command": "echo 1"}},
-    )
+    dialect._pending_shell_tools["tool-1"] = {"__tool__": True, "name": "bash", "command": "echo 1"}
+    merged = dialect._merge_tool_result_with_tool_use({"toolUseId": "tool-1", "output": "ok"})
     assert merged is not None
     assert merged["output"] == "ok"
     assert merged["name"] == "bash"
@@ -288,20 +291,20 @@ def test_permission_helpers_and_tool_result_merge() -> None:
 
 def test_extract_assistant_content_and_coerce_text() -> None:
     process, _permission_requests = _build_process()
+    dialect = ClaudeDialect()
 
-    texts, tools, permission_requests = process._extract_assistant_content(
+    texts, tools = dialect._extract_assistant_content(
         {
             "content": [
                 {"type": "text", "text": "Hello"},
                 {"type": "tool_use", "name": "Bash", "input": {"command": "pwd"}},
             ]
         },
-        request_token="req-10",
     )
     assert texts == ["Hello"]
     assert len(tools) == 1
-    assert json.loads(tools[0])["name"] == "Bash"
-    assert permission_requests == []
+    assert tools[0]["name"] == "Bash"
+    assert tools[0]["command"] == "pwd"
 
     assert process._coerce_text({"text": "hello"}) == "hello"
     assert process._coerce_text(["a", {"value": "b"}]) == "a\nb"

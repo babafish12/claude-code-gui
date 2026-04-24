@@ -8,8 +8,14 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from claude_code_gui.app.constants import STATUS_INFO
-from claude_code_gui.domain.app_settings import get_default_settings, load_settings, save_settings
-from claude_code_gui.gi_runtime import Gdk, Gtk, Pango, Adw, GTK4
+from claude_code_gui.domain.app_settings import (
+    DEFAULT_STARTUP_PROVIDER_MODE,
+    STARTUP_PROVIDER_MODES,
+    get_default_settings,
+    load_settings,
+    save_settings,
+)
+from claude_code_gui.gi_runtime import Gdk, Gtk, Pango
 
 if TYPE_CHECKING:
     from claude_code_gui.ui.window import ClaudeCodeWindow
@@ -97,6 +103,57 @@ def open_settings_editor(window: "ClaudeCodeWindow") -> None:
     )
     _add_css_classes(tray_toggle, "settings-toggle")
     content_area.pack_start(tray_toggle, False, False, 0)
+
+    startup_provider_options: list[tuple[str, str]] = [
+        ("Claude", "claude"),
+        ("Codex", "codex"),
+        ("Gemini", "gemini"),
+        ("Last used", DEFAULT_STARTUP_PROVIDER_MODE),
+    ]
+    startup_provider_values = set(STARTUP_PROVIDER_MODES)
+    startup_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    startup_label_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+    startup_label_box.set_hexpand(True)
+    startup_label = Gtk.Label(label="Startup CLI")
+    startup_label.set_xalign(0.0)
+    _add_css_classes(startup_label, "settings-muted")
+    startup_hint = Gtk.Label(label="Takes effect on next app start.")
+    startup_hint.set_xalign(0.0)
+    startup_hint.set_line_wrap(True)
+    _add_css_classes(startup_hint, "settings-helper")
+    startup_label_box.pack_start(startup_label, False, False, 0)
+    startup_label_box.pack_start(startup_hint, False, False, 0)
+    startup_row.pack_start(startup_label_box, True, True, 0)
+
+    startup_provider_combo = Gtk.ComboBoxText()
+    for label, value in startup_provider_options:
+        startup_provider_combo.append(value, label)
+
+    current_startup_provider_mode = str(
+        working_payload.get("startup_provider_mode") or DEFAULT_STARTUP_PROVIDER_MODE
+    ).strip().lower()
+    if current_startup_provider_mode not in startup_provider_values:
+        current_startup_provider_mode = DEFAULT_STARTUP_PROVIDER_MODE
+    startup_provider_combo.set_active_id(current_startup_provider_mode)
+    working_payload["startup_provider_mode"] = current_startup_provider_mode
+
+    def _on_startup_provider_mode_changed(combo: Gtk.ComboBoxText) -> None:
+        selected_mode = str(combo.get_active_id() or DEFAULT_STARTUP_PROVIDER_MODE).strip().lower()
+        if selected_mode not in startup_provider_values:
+            selected_mode = DEFAULT_STARTUP_PROVIDER_MODE
+        working_payload["startup_provider_mode"] = selected_mode
+        try:
+            persisted_payload = load_settings()
+            persisted_payload["startup_provider_mode"] = selected_mode
+            save_settings(persisted_payload)
+        except (OSError, TypeError, ValueError) as error:
+            logger.exception("Could not persist startup CLI preference")
+            validation_label.set_text(f"Could not save startup CLI preference: {error}")
+            validation_label.set_visible(True)
+
+    startup_provider_combo.connect("changed", _on_startup_provider_mode_changed)
+    startup_row.pack_start(startup_provider_combo, False, False, 0)
+    content_area.pack_start(startup_row, False, False, 0)
 
     stream_speed_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
     stream_speed_label = Gtk.Label(label="Chat text reveal speed")
@@ -904,74 +961,3 @@ def open_settings_editor(window: "ClaudeCodeWindow") -> None:
         break
 
     dialog.destroy()
-
-def _open_settings_editor_adw(window: "ClaudeCodeWindow") -> None:
-    original_payload = load_settings()
-    working_payload = copy.deepcopy(original_payload)
-
-    pref_window = Adw.PreferencesWindow(transient_for=window, modal=True, title="Settings")
-    
-    # General Page
-    general_page = Adw.PreferencesPage(title="General", icon_name="preferences-system-symbolic")
-    pref_window.add(general_page)
-    
-    general_group = Adw.PreferencesGroup(title="Application Behavior")
-    general_page.add(general_group)
-    
-    # Tray toggle
-    tray_row = Adw.SwitchRow(title="System Tray", subtitle="Enable system tray integration when available")
-    tray_row.set_active(bool(working_payload.get("system_tray_enabled", True)))
-    tray_row.connect("notify::active", lambda row, pspec: working_payload.__setitem__("system_tray_enabled", row.get_active()))
-    general_group.add(tray_row)
-    
-    # Stream speed
-    stream_speed_options: list[tuple[str, int]] = [
-        ("Instant", 0),
-        ("Fast", 30),
-        ("Normal", 80),
-        ("Slow", 160),
-        ("Very slow", 280),
-    ]
-    
-    current_stream_ms = int(working_payload.get("stream_render_throttle_ms", 80))
-    default_index = min(
-        range(len(stream_speed_options)),
-        key=lambda idx: abs(stream_speed_options[idx][1] - current_stream_ms),
-    )
-    
-    stream_row = Adw.ComboRow(title="Chat Speed", subtitle="Chat text reveal speed")
-    model = Gtk.StringList.new([opt[0] for opt in stream_speed_options])
-    stream_row.set_model(model)
-    stream_row.set_selected(default_index)
-    
-    def on_stream_speed_changed(row, pspec):
-        idx = row.get_selected()
-        working_payload["stream_render_throttle_ms"] = stream_speed_options[idx][1]
-        
-    stream_row.connect("notify::selected", on_stream_speed_changed)
-    general_group.add(stream_row)
-
-    # Provider Pages
-    providers = working_payload.get("providers", {})
-    for provider_id, provider_payload in providers.items():
-        name = str(provider_payload.get("name", provider_id))
-        provider_page = Adw.PreferencesPage(title=name)
-        pref_window.add(provider_page)
-        
-        # Add basic provider settings here if needed
-        group = Adw.PreferencesGroup(title=f"{name} Settings")
-        provider_page.add(group)
-        
-        if provider_id.strip().lower() != "gemini":
-            reasoning_row = Adw.SwitchRow(title="Reasoning", subtitle="Enable reasoning controls for this provider")
-            reasoning_row.set_active(bool(provider_payload.get("supports_reasoning", True)))
-            reasoning_row.connect("notify::active", lambda row, pspec, pid=provider_id: working_payload["providers"][pid].__setitem__("supports_reasoning", row.get_active()))
-            group.add(reasoning_row)
-
-    def on_close(widget):
-        save_settings(working_payload)
-        window._apply_settings_payload(working_payload, reload_webviews=True)
-        return False
-
-    pref_window.connect("close-request", on_close)
-    pref_window.present()

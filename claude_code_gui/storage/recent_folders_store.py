@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 from claude_code_gui.core.paths import normalize_folder
@@ -15,21 +17,65 @@ from claude_code_gui.storage.config_paths import (
 )
 
 
+def _lock_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+@contextmanager
+def _store_lock(path: Path, *, exclusive: bool):
+    lock_path = _lock_path(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _read_recent_folders(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+
+    folders: list[str] = []
+    for item in data:
+        if not isinstance(item, str):
+            continue
+        try:
+            folders.append(normalize_folder(item))
+        except (OSError, ValueError):
+            continue
+    return folders
+
+
+def _merge_recent_folders(memory_folders: list[str], file_folders: list[str]) -> list[str]:
+    merged: list[str] = []
+    for folder in list(memory_folders) + list(file_folders):
+        if not isinstance(folder, str):
+            continue
+        try:
+            normalized = normalize_folder(folder)
+        except (OSError, ValueError):
+            continue
+        if normalized not in merged:
+            merged.append(normalized)
+    return merged[:RECENT_FOLDERS_LIMIT]
+
+
 def load_recent_folders(default_folder: str) -> list[str]:
     ensure_config_dir()
     folders: list[str] = []
 
-    if RECENT_FOLDERS_PATH.is_file():
-        try:
-            data = json.loads(RECENT_FOLDERS_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                for item in data:
-                    if isinstance(item, str):
-                        normalized = normalize_folder(item)
-                        if os.path.isdir(normalized):
-                            folders.append(normalized)
-        except (OSError, json.JSONDecodeError, ValueError):
-            folders = []
+    with _store_lock(RECENT_FOLDERS_PATH, exclusive=False):
+        for item in _read_recent_folders(RECENT_FOLDERS_PATH):
+            if os.path.isdir(item):
+                folders.append(item)
 
     merged = [normalize_folder(default_folder)] + folders
     deduped: list[str] = []
@@ -77,7 +123,12 @@ def _fsync_parent_dir(path: Path) -> None:
 
 def save_recent_folders(folders: list[str]) -> None:
     ensure_config_dir()
-    _atomic_write(
-        RECENT_FOLDERS_PATH,
-        json.dumps(folders[:RECENT_FOLDERS_LIMIT], indent=2),
-    )
+    with _store_lock(RECENT_FOLDERS_PATH, exclusive=True):
+        merged = _merge_recent_folders(
+            folders,
+            _read_recent_folders(RECENT_FOLDERS_PATH),
+        )
+        _atomic_write(
+            RECENT_FOLDERS_PATH,
+            json.dumps(merged, indent=2),
+        )

@@ -18,6 +18,9 @@ APP_THEME_SETTINGS_PATH = (
     Path(__file__).resolve().parent.parent / "config" / "provider_theme_settings.json"
 )
 
+DEFAULT_STARTUP_PROVIDER_MODE = "last-used"
+STARTUP_PROVIDER_MODES: tuple[str, ...] = ("claude", "codex", "gemini", DEFAULT_STARTUP_PROVIDER_MODE)
+
 
 def _to_lower_str(value: Any) -> str:
     if not isinstance(value, str):
@@ -137,6 +140,7 @@ _BUILTIN_DEFAULT_APP_SETTINGS: dict[str, Any] = {
             "model_options": [
                 {"label": "Claude Sonnet (Latest)", "value": "sonnet"},
                 {"label": "Claude Opus (Latest)", "value": "opus"},
+                {"label": "Claude Opus 4.7", "value": "claude-opus-4-7"},
                 {"label": "Claude Haiku (Latest)", "value": "haiku"},
             ],
             "permission_options": [
@@ -287,6 +291,7 @@ _BUILTIN_DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "agentctl_auto_enabled": True,
     "system_tray_enabled": True,
     "active_provider_id": "claude",
+    "startup_provider_mode": DEFAULT_STARTUP_PROVIDER_MODE,
     "stream_render_throttle_ms": 80,
 }
 
@@ -336,6 +341,20 @@ def _atomic_write(path: Path, payload: str) -> None:
 
 def _to_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _normalize_startup_provider_mode(
+    value: Any,
+    fallback: str = DEFAULT_STARTUP_PROVIDER_MODE,
+) -> str:
+    normalized_fallback = _to_text(fallback).lower()
+    if normalized_fallback not in STARTUP_PROVIDER_MODES:
+        normalized_fallback = DEFAULT_STARTUP_PROVIDER_MODE
+
+    candidate = _to_text(value).lower()
+    if candidate in STARTUP_PROVIDER_MODES:
+        return candidate
+    return normalized_fallback
 
 
 def _to_bool(value: Any, fallback: bool) -> bool:
@@ -464,6 +483,43 @@ def _to_model_options(value: Any, fallback: list[dict[str, Any]]) -> list[dict[s
         )
         output.append({"label": label, "value": val})
     return output if output else copy.deepcopy(fallback)
+
+
+def _append_missing_model_options(
+    model_options: list[dict[str, str]],
+    fallback: list[dict[str, Any]],
+    *,
+    required_values: set[str],
+) -> list[dict[str, str]]:
+    if not required_values:
+        return list(model_options)
+
+    existing_values: set[str] = set()
+    for entry in model_options:
+        if not isinstance(entry, dict):
+            continue
+        value = _to_text(entry.get("value"))
+        if value:
+            existing_values.add(value)
+
+    fallback_by_value: dict[str, dict[str, str]] = {}
+    for entry in _to_model_options(fallback, []):
+        value = _to_text(entry.get("value"))
+        if not value:
+            continue
+        if value not in fallback_by_value:
+            fallback_by_value[value] = dict(entry)
+
+    output: list[dict[str, str]] = [dict(entry) for entry in model_options if isinstance(entry, dict)]
+    for value in sorted(required_values):
+        if value in existing_values:
+            continue
+        fallback_entry = fallback_by_value.get(value)
+        if fallback_entry is not None:
+            output.append(dict(fallback_entry))
+            existing_values.add(value)
+
+    return output
 
 
 def _to_permission_options(value: Any, fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -641,6 +697,12 @@ def _normalize_provider(payload: Any, fallback: dict[str, Any]) -> dict[str, Any
 
     if provider_id_lower == "gemini":
         normalized["supports_reasoning"] = False
+    elif provider_id_lower == "claude":
+        normalized["model_options"] = _append_missing_model_options(
+            normalized["model_options"],
+            fallback_model,
+            required_values={"claude-opus-4-7"},
+        )
 
     return normalized
 
@@ -656,7 +718,7 @@ def _normalize_settings(payload: Any) -> dict[str, Any]:
         for key, value in raw_providers.items():
             if not key:
                 continue
-            provider_id = _to_text(key)
+            provider_id = _to_text(key).lower()
             fallback_provider = fallback["providers"].get(provider_id)
             if not isinstance(fallback_provider, dict):
                 continue
@@ -675,6 +737,11 @@ def _normalize_settings(payload: Any) -> dict[str, Any]:
         if preferred_provider_id not in normalized_providers:
             preferred_provider_id = next(iter(normalized_providers.keys()))
 
+    default_startup_provider_mode = _normalize_startup_provider_mode(
+        fallback.get("startup_provider_mode"),
+        DEFAULT_STARTUP_PROVIDER_MODE,
+    )
+
     return {
         "providers": normalized_providers,
         "reasoning_options": _to_reasoning_options(
@@ -690,6 +757,10 @@ def _normalize_settings(payload: Any) -> dict[str, Any]:
             bool(fallback.get("system_tray_enabled", True)),
         ),
         "active_provider_id": preferred_provider_id,
+        "startup_provider_mode": _normalize_startup_provider_mode(
+            payload.get("startup_provider_mode"),
+            default_startup_provider_mode,
+        ),
         "stream_render_throttle_ms": _to_int_range(
             payload.get("stream_render_throttle_ms"),
             _to_int_range(fallback.get("stream_render_throttle_ms"), 80, minimum=0, maximum=1500),

@@ -52,7 +52,6 @@ def _legacy_head_build_resume_argv(session_id: str, prompt: str, config: CliRunC
 def run_parity_matrix() -> tuple[int, int]:
     dialect = ClaudeDialect()
     modes = ("stream-json", "json", "text")
-    allowed_tools_cases = (None, [], ["Bash", "Edit"])
 
     checked = 0
     mismatches = 0
@@ -70,44 +69,42 @@ def run_parity_matrix() -> tuple[int, int]:
         for mode in modes:
             if not supports_output_format_flag and mode != "text":
                 continue
-            for allowed_tools in allowed_tools_cases:
-                config = CliRunConfig(
-                    binary_path="/usr/bin/claude",
-                    cwd="/tmp",
-                    model="sonnet",
-                    permission_mode="plan",
-                    reasoning_level="medium",
-                    allowed_tools=allowed_tools,
-                    output_format=mode,
-                    supports_model_flag=supports_model_flag,
-                    supports_permission_flag=supports_permission_flag,
-                    supports_output_format_flag=supports_output_format_flag,
-                    supports_include_partial_messages=supports_include_partial_messages,
-                    stream_json_requires_verbose=stream_json_requires_verbose,
-                    supports_reasoning_flag=supports_reasoning_flag,
-                )
+            config = CliRunConfig(
+                binary_path="/usr/bin/claude",
+                cwd="/tmp",
+                model="sonnet",
+                permission_mode="plan",
+                reasoning_level="medium",
+                output_format=mode,
+                supports_model_flag=supports_model_flag,
+                supports_permission_flag=supports_permission_flag,
+                supports_output_format_flag=supports_output_format_flag,
+                supports_include_partial_messages=supports_include_partial_messages,
+                stream_json_requires_verbose=stream_json_requires_verbose,
+                supports_reasoning_flag=supports_reasoning_flag,
+            )
 
-                prompt = "hello"
-                session_id = "sess-1"
+            prompt = "hello"
+            session_id = "sess-1"
 
-                if resume:
-                    actual = dialect.build_resume_argv(session_id, prompt, config)
-                    expected = _legacy_head_build_resume_argv(session_id, prompt, config)
-                else:
-                    actual = dialect.build_argv(prompt, config)
-                    expected = _legacy_head_build_argv(prompt, config)
+            if resume:
+                actual = dialect.build_resume_argv(session_id, prompt, config)
+                expected = _legacy_head_build_resume_argv(session_id, prompt, config)
+            else:
+                actual = dialect.build_argv(prompt, config)
+                expected = _legacy_head_build_argv(prompt, config)
 
-                checked += 1
-                if actual != expected:
-                    mismatches += 1
+            checked += 1
+            if actual != expected:
+                mismatches += 1
 
     return checked, mismatches
 
 
 class TestClaudeArgvParity(unittest.TestCase):
-    def test_parity_including_allowed_tools_cases(self) -> None:
+    def test_parity_matrix(self) -> None:
         checked, mismatches = run_parity_matrix()
-        self.assertEqual(checked, 768)
+        self.assertEqual(checked, 256)
         self.assertEqual(mismatches, 0)
 
 

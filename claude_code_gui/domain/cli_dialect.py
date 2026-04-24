@@ -10,6 +10,7 @@ from typing import Any, Protocol
 _SAFE_CLI_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:/+\-@]{1,160}$")
 _SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,160}$")
 _SAFE_REASONING_LEVELS = {"low", "medium", "high", "xhigh", "minimal"}
+_MAX_PENDING_TOOL_ITEMS = 100
 
 
 def _sanitize_cli_token(value: Any) -> str:
@@ -50,6 +51,27 @@ def _sanitize_path_arg(value: Any) -> str:
     return text
 
 
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _remember_pending_tool(
+    pending_tools: dict[str, dict[str, Any]],
+    tool_use_id: str,
+    payload: dict[str, Any],
+) -> None:
+    if not tool_use_id:
+        return
+    pending_tools.pop(tool_use_id, None)
+    pending_tools[tool_use_id] = dict(payload)
+    while len(pending_tools) > _MAX_PENDING_TOOL_ITEMS:
+        oldest_key = next(iter(pending_tools))
+        pending_tools.pop(oldest_key, None)
+
+
 @dataclass(slots=True)
 class ParsedEvent:
     """Normalized parser event that can represent both Claude and Codex streams."""
@@ -71,7 +93,6 @@ class CliRunConfig:
     model: str
     permission_mode: str
     reasoning_level: str = "medium"
-    allowed_tools: list[str] | None = None
     output_format: str | None = "stream-json"
     supports_model_flag: bool = True
     supports_permission_flag: bool = True
@@ -165,12 +186,11 @@ class ClaudeDialect:
             block_payload = stream_event.get("content_block")
             if not isinstance(block_payload, dict):
                 block_payload = stream_event.get("contentBlock")
-            if isinstance(block_payload, dict) and str(block_payload.get("type") or "").strip().lower() == "tool_use":
-                tool_data = self._extract_tool_data(block_payload)
-                if tool_data is not None:
-                    tool_use_id = str(tool_data.get("toolUseId") or "").strip()
-                    if tool_use_id:
-                        self._pending_shell_tools[tool_use_id] = dict(tool_data)
+                if isinstance(block_payload, dict) and str(block_payload.get("type") or "").strip().lower() == "tool_use":
+                    tool_data = self._extract_tool_data(block_payload)
+                    if tool_data is not None:
+                        tool_use_id = str(tool_data.get("toolUseId") or "").strip()
+                        _remember_pending_tool(self._pending_shell_tools, tool_use_id, tool_data)
                     parsed_events.append(ParsedEvent(tool=tool_data, raw_type=event_type))
             return parsed_events
 
@@ -178,8 +198,7 @@ class ClaudeDialect:
             tool_data = self._extract_tool_data(stream_event)
             if tool_data is not None:
                 tool_use_id = str(tool_data.get("toolUseId") or "").strip()
-                if tool_use_id:
-                    self._pending_shell_tools[tool_use_id] = dict(tool_data)
+                _remember_pending_tool(self._pending_shell_tools, tool_use_id, tool_data)
                 parsed_events.append(ParsedEvent(tool=tool_data, raw_type=event_type))
             return parsed_events
 
@@ -221,8 +240,8 @@ class ClaudeDialect:
             usage_payload: dict[str, Any] | None = None
             if isinstance(usage, dict):
                 usage_payload = {
-                    "input_tokens": int(usage.get("input_tokens") or 0),
-                    "output_tokens": int(usage.get("output_tokens") or 0),
+                    "input_tokens": _coerce_int(usage.get("input_tokens") or 0),
+                    "output_tokens": _coerce_int(usage.get("output_tokens") or 0),
                 }
 
             raw_cost = stream_event.get("total_cost_usd")
@@ -243,12 +262,14 @@ class ClaudeDialect:
             elif bool(stream_event.get("is_error")):
                 parsed_events.append(ParsedEvent(error="Claude returned an error result.", raw_type="result"))
 
+            self._pending_shell_tools.clear()
             return parsed_events
 
         if event_type == "error":
             message_text = stream_event.get("error") or stream_event.get("message") or stream_event.get("result")
             if isinstance(message_text, str) and message_text.strip():
                 parsed_events.append(ParsedEvent(error=message_text.strip(), raw_type=event_type))
+            self._pending_shell_tools.clear()
             return parsed_events
 
         if event_type == "system":
@@ -633,6 +654,7 @@ class GeminiDialect:
         )
 
         if event_type == "init":
+            self._pending_tools.clear()
             if session_id:
                 parsed_events.append(ParsedEvent(session_id=session_id, raw_type=event_type))
             return parsed_events
@@ -676,6 +698,7 @@ class GeminiDialect:
             return parsed_events
 
         if event_type in {"error", "fatal"}:
+            self._pending_tools.clear()
             error_text = self._extract_text_payload(
                 event.get("error")
                 or event.get("message")
@@ -686,6 +709,7 @@ class GeminiDialect:
             return parsed_events
 
         if event_type in {"done", "result", "complete", "completed"}:
+            self._pending_tools.clear()
             if session_id:
                 parsed_events.append(ParsedEvent(session_id=session_id, raw_type=event_type))
             usage = self._extract_usage_payload(event.get("usage"))
@@ -1006,7 +1030,7 @@ class GeminiDialect:
             payload["content"] = self._clip_text(content_text, limit=12000)
 
         if tool_use_id:
-            self._pending_tools[tool_use_id] = dict(payload)
+            _remember_pending_tool(self._pending_tools, tool_use_id, payload)
         return payload if payload else None
 
     def _parse_tool_output_payload(self, event: dict[str, Any]) -> dict[str, Any] | None:
@@ -1257,9 +1281,9 @@ class CodexDialect:
             usage = event.get("usage")
             if isinstance(usage, dict):
                 usage_payload = {
-                    "input_tokens": int(usage.get("input_tokens") or 0),
-                    "cached_input_tokens": int(usage.get("cached_input_tokens") or 0),
-                    "output_tokens": int(usage.get("output_tokens") or 0),
+                    "input_tokens": _coerce_int(usage.get("input_tokens") or 0),
+                    "cached_input_tokens": _coerce_int(usage.get("cached_input_tokens") or 0),
+                    "output_tokens": _coerce_int(usage.get("output_tokens") or 0),
                 }
                 parsed_events.append(ParsedEvent(usage=usage_payload, raw_type=event_type))
 

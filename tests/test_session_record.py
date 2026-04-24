@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import pytest_mock
 
 from claude_code_gui.core.model_permissions import normalize_permission_value
 from claude_code_gui.domain.provider import get_provider_config

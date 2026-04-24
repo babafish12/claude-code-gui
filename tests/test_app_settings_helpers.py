@@ -140,6 +140,21 @@ def test_normalize_provider_and_settings_icon_and_provider_selection() -> None:
     assert normalized_gemini_provider["binary_names"] == ["gemini"]
     assert normalized_gemini_provider["supports_reasoning"] is False
 
+    claude_fallback = copy.deepcopy(app_settings.DEFAULT_APP_SETTINGS["providers"]["claude"])
+    normalized_claude_provider = app_settings._normalize_provider(
+        {
+            "id": "claude",
+            "name": "Claude",
+            "model_options": [
+                {"label": "Claude Sonnet (Latest)", "value": "sonnet"},
+                {"label": "Claude Opus (Latest)", "value": "opus"},
+            ],
+        },
+        claude_fallback,
+    )
+    claude_model_values = [entry["value"] for entry in normalized_claude_provider["model_options"]]
+    assert "claude-opus-4-7" in claude_model_values
+
     normalized_settings = app_settings._normalize_settings(
         {
             "providers": {"codex": {"id": "codex", "name": "Codex", "icon": "⌘"}},
@@ -153,6 +168,31 @@ def test_normalize_provider_and_settings_icon_and_provider_selection() -> None:
     assert "gemini" in normalized_settings["providers"]
     assert normalized_settings["stream_render_throttle_ms"] == 1500
     assert normalized_settings["reasoning_options"][0]["value"] == "low"
+
+
+@pytest.mark.parametrize("startup_provider_mode", app_settings.STARTUP_PROVIDER_MODES)
+def test_normalize_settings_preserves_valid_startup_provider_mode(startup_provider_mode: str) -> None:
+    normalized_settings = app_settings._normalize_settings(
+        {
+            "providers": {},
+            "reasoning_options": [],
+            "startup_provider_mode": startup_provider_mode,
+        }
+    )
+
+    assert normalized_settings["startup_provider_mode"] == startup_provider_mode
+
+
+def test_normalize_settings_invalid_startup_provider_mode_falls_back_to_default() -> None:
+    normalized_settings = app_settings._normalize_settings(
+        {
+            "providers": {},
+            "reasoning_options": [],
+            "startup_provider_mode": "invalid-mode",
+        }
+    )
+
+    assert normalized_settings["startup_provider_mode"] == app_settings.DEFAULT_STARTUP_PROVIDER_MODE
 
 
 def test_parse_and_format_settings_payloads() -> None:
