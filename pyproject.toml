@@ -20,6 +20,12 @@ test = [
 [tool.setuptools.packages.find]
 include = ["claude_code_gui*"]
 
+[tool.setuptools.data-files]
+"share/claude-code-gui/icons" = [
+  "icons/*.svg",
+  "icons/*.webp",
+]
+
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers --strict-config"
 testpaths = ["tests"]

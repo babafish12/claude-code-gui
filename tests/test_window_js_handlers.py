@@ -213,7 +213,7 @@ def _build_cross_provider_agent_window(
     window._sync_pane_mode_to_webviews = lambda pane_id=None: None
     window._focus_chat_input_in_pane = lambda _pane_id: None
     window._refresh_session_list = lambda: None
-    window._save_sessions_safe = lambda _context: True
+    window._save_sessions_safe = lambda _context, **_kwargs: True
     window._refresh_connection_state = lambda: None
     window._reset_conversation_state = lambda *_args, **_kwargs: None
     window._set_connection_state = lambda *_args, **_kwargs: None
@@ -718,6 +718,54 @@ def test_session_status_dot_class_tracks_inactive_active_and_working() -> None:
     assert window._session_status_dot_class(session) == "session-status-archived"
 
 
+def test_set_active_session_status_uses_non_destructive_save() -> None:
+    window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+    session = SimpleNamespace(id="session-1", status=SESSION_STATUS_ACTIVE, last_used_at="")
+    save_calls: list[tuple[str, dict]] = []
+
+    window._get_active_session = lambda: session
+    window._find_session = lambda _session_id: session
+    window._refresh_session_list = lambda: None
+    window._save_sessions_safe = lambda context, **kwargs: save_calls.append((context, kwargs)) or True
+
+    window._set_active_session_status(SESSION_STATUS_ENDED)
+
+    assert session.status == SESSION_STATUS_ENDED
+    assert save_calls == [("Could not save sessions", {})]
+
+
+def test_single_and_bulk_delete_use_destructive_session_save() -> None:
+    window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
+    session_1 = SimpleNamespace(id="session-1", provider="claude", status=SESSION_STATUS_ACTIVE, last_used_at="")
+    session_2 = SimpleNamespace(id="session-2", provider="claude", status=SESSION_STATUS_ACTIVE, last_used_at="")
+    save_calls: list[tuple[str, dict]] = []
+    statuses: list[str] = []
+
+    window._sessions = [session_1, session_2]
+    window._active_session_id = "active-other"
+    window._active_provider_id = "claude"
+    window._session_selected_ids = {"session-2"}
+    window._pending_permission_requests_by_session = {}
+    window._find_session = lambda session_id: next((session for session in window._sessions if session.id == session_id), None)
+    window._refresh_session_list = lambda: None
+    window._promote_replacement_session = lambda: None
+    window._save_sessions_safe = lambda context, **kwargs: save_calls.append((context, kwargs)) or True
+    window._set_status_message = lambda message, _severity=None: statuses.append(message)
+    window._update_session_bulk_actions = lambda: None
+    window._reset_conversation_state = lambda *_args, **_kwargs: None
+    window._refresh_connection_state = lambda: None
+
+    window._mutate_session_and_reconcile_active("session-1", "delete")
+    window._delete_selected_sessions()
+
+    assert [session.id for session in window._sessions] == []
+    assert save_calls == [
+        ("Could not save sessions", {"preserve_disk_only": False}),
+        ("Could not save sessions", {"preserve_disk_only": False}),
+    ]
+    assert statuses[-1] == "1 sessions deleted."
+
+
 def test_switch_to_session_keeps_running_request_in_background() -> None:
     window = ClaudeCodeWindow.__new__(ClaudeCodeWindow)
     pane = SimpleNamespace(
@@ -740,7 +788,7 @@ def test_switch_to_session_keeps_running_request_in_background() -> None:
     window._binary_path = "/usr/bin/claude"
     window._session_search_query = ""
     window._session_filter = "all"
-    window._save_sessions_safe = lambda _context: True
+    window._save_sessions_safe = lambda _context, **_kwargs: True
     window._refresh_session_list = lambda: None
     window._refresh_connection_state = lambda: None
     window._apply_session_to_controls = lambda _session, add_to_recent: None
@@ -874,7 +922,7 @@ def test_switch_to_session_rebinds_provider_context_for_target_session() -> None
     window._active_provider_id = "claude"
     window._provider_unavailability_reason = lambda *_args, **_kwargs: None
     window._pane_effective_provider_id = lambda _pane_id: "claude"
-    window._save_sessions_safe = lambda _context: True
+    window._save_sessions_safe = lambda _context, **_kwargs: True
     window._refresh_session_list = lambda: None
     window._refresh_connection_state = lambda: None
     window._apply_session_to_controls = lambda _session, add_to_recent: None
@@ -1250,7 +1298,7 @@ class TestSessionTabs:
             refresh_calls += 1
 
         window._refresh_session_list = _record_refresh
-        window._save_sessions_safe = lambda context: saved_contexts.append(context) or True
+        window._save_sessions_safe = lambda context, **_kwargs: saved_contexts.append(context) or True
         window._update_pane_close_buttons = lambda: None
         window._update_all_pane_headers = lambda: None
 

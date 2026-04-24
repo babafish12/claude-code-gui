@@ -268,14 +268,15 @@ button:disabled {
 
 .composer-input:focus {
     outline: none !important;
-    border-color: transparent !important;
-    box-shadow: none !important;
+    border-color: color-mix(in srgb, var(--accent) 72%, transparent) !important;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent) !important;
 }
 
 .composer-input:focus-visible {
-    outline: none !important;
-    border-color: transparent !important;
-    box-shadow: none !important;
+    outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent) !important;
+    outline-offset: 2px !important;
+    border-color: color-mix(in srgb, var(--accent) 72%, transparent) !important;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent) !important;
 }
 
 .control-row {
@@ -3199,7 +3200,7 @@ body.reduced-motion *::after {
                             <div class="popup-menu reasoning-popup" role="menu"></div>
                         </div>
                         <div class="selector-group">
-                            <button class="permission-btn permission-selector" type="button" aria-haspopup="true" aria-expanded="false" title="Permissions">
+                            <button class="permission-btn permission-selector" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Permissions" title="Permissions">
                                 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                     <path d="M5 7.5H19" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
                                     <path d="M5 12H14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
@@ -3342,7 +3343,7 @@ body.reduced-motion *::after {
                             <div class="popup-menu reasoning-popup" role="menu"></div>
                         </div>
                         <div class="selector-group">
-                            <button class="permission-btn permission-selector" type="button" aria-haspopup="true" aria-expanded="false" title="Permissions">
+                            <button class="permission-btn permission-selector" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Permissions" title="Permissions">
                                 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                     <path d="M5 7.5H19" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
                                     <path d="M5 12H14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>

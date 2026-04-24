@@ -80,9 +80,12 @@ def _session_payload_timestamp(payload: dict[str, Any]) -> float:
 def _merge_session_payloads(
     file_payloads: list[dict[str, Any]],
     memory_payloads: list[dict[str, Any]],
+    *,
+    preserve_disk_only: bool = True,
 ) -> list[dict[str, Any]]:
     merged_by_id: dict[str, dict[str, Any]] = {}
     ordered_ids: list[str] = []
+    memory_ids: set[str] = set()
 
     def remember_order(session_id: str) -> None:
         if session_id and session_id not in ordered_ids:
@@ -92,12 +95,17 @@ def _merge_session_payloads(
         (memory_payloads, True),
         (file_payloads, True),
     ):
+        is_memory_payloads = payloads is memory_payloads
         for raw_payload in payloads:
             if not isinstance(raw_payload, dict):
                 continue
             payload = _normalize_payload_for_legacy_schema(dict(raw_payload))
             session_id = str(payload.get("id") or "").strip()
             if not session_id:
+                continue
+            if is_memory_payloads:
+                memory_ids.add(session_id)
+            elif not preserve_disk_only and session_id not in memory_ids:
                 continue
             remember_order(session_id)
             current = merged_by_id.get(session_id)
@@ -175,12 +183,13 @@ def _fsync_parent_dir(path: Path) -> None:
         os.close(dir_fd)
 
 
-def save_sessions(sessions: list[SessionRecord]) -> None:
+def save_sessions(sessions: list[SessionRecord], *, preserve_disk_only: bool = True) -> None:
     ensure_config_dir()
     payload = [session.to_dict() for session in sessions]
     with _store_lock(SESSIONS_PATH, exclusive=True):
         merged_payload = _merge_session_payloads(
             _read_session_payloads(SESSIONS_PATH),
             payload,
+            preserve_disk_only=preserve_disk_only,
         )
         _atomic_write(SESSIONS_PATH, json.dumps(merged_payload, indent=2))

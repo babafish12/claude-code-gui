@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -30,8 +31,25 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def resolve_icons_dir() -> Path | None:
+    candidates = (
+        project_root() / "icons",
+        Path(__file__).resolve().parents[1] / "icons",
+        Path(sys.prefix) / "share" / "claude-code-gui" / "icons",
+        Path(sys.base_prefix) / "share" / "claude-code-gui" / "icons",
+        Path.cwd() / "icons",
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def resolve_icon_path(icon_name: str = "claude.svg") -> Path | None:
-    candidate = project_root() / "icons" / icon_name
+    icons_dir = resolve_icons_dir()
+    if icons_dir is None:
+        return None
+    candidate = icons_dir / icon_name
     if candidate.is_file():
         return candidate
     return None

@@ -55,12 +55,16 @@ _install_gi_stub()
 class FakeStdin:
     def __init__(self) -> None:
         self.writes: list[str] = []
+        self.closed = False
 
     def write(self, payload: str) -> None:
         self.writes.append(payload)
 
     def flush(self) -> None:
         return None
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeStdout:

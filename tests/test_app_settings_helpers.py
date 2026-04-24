@@ -118,12 +118,17 @@ def test_normalize_provider_and_settings_icon_and_provider_selection() -> None:
             "name": "Codex",
             "icon": "codex-text.svg",
             "binary_names": [" codex ", ""],
+            "permission_options": [
+                {"label": "Auto", "value": "auto", "is_advanced": False},
+                {"label": "Ask", "value": "ask", "is_advanced": False},
+            ],
             "supports_reasoning": "false",
         },
         fallback_provider,
     )
     assert normalized_provider["icon"] == "codex-white.svg"
     assert normalized_provider["binary_names"] == ["codex"]
+    assert "ask" not in {entry["value"] for entry in normalized_provider["permission_options"]}
     assert normalized_provider["supports_reasoning"] is False
 
     gemini_fallback = copy.deepcopy(app_settings.DEFAULT_APP_SETTINGS["providers"]["gemini"])
@@ -138,6 +143,7 @@ def test_normalize_provider_and_settings_icon_and_provider_selection() -> None:
     )
     assert normalized_gemini_provider["icon"] == "gemini-color.svg"
     assert normalized_gemini_provider["binary_names"] == ["gemini"]
+    assert "ask" not in {entry["value"] for entry in normalized_gemini_provider["permission_options"]}
     assert normalized_gemini_provider["supports_reasoning"] is False
 
     claude_fallback = copy.deepcopy(app_settings.DEFAULT_APP_SETTINGS["providers"]["claude"])

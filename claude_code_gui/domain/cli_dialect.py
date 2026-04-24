@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 _SAFE_CLI_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:/+\-@]{1,160}$")
 _SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,160}$")
-_SAFE_REASONING_LEVELS = {"low", "medium", "high", "xhigh", "minimal"}
+_SAFE_REASONING_LEVELS = {"low", "medium", "high", "xhigh", "max", "minimal"}
 _MAX_PENDING_TOOL_ITEMS = 100
 
 

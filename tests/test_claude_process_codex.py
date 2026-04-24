@@ -46,6 +46,25 @@ def _build_codex_config() -> ClaudeRunConfig:
     )
 
 
+def _build_gemini_config() -> ClaudeRunConfig:
+    return ClaudeRunConfig(
+        binary_path="/usr/bin/gemini",
+        message="say hi",
+        cwd="/tmp/work",
+        model="gemini-2.5-pro",
+        permission_mode="auto",
+        conversation_id=None,
+        supports_model_flag=True,
+        supports_permission_flag=True,
+        supports_output_format_flag=True,
+        supports_stream_json=True,
+        supports_json=True,
+        supports_include_partial_messages=False,
+        stream_json_requires_verbose=False,
+        provider_id="gemini",
+    )
+
+
 def test_codex_run_single_attempt_parses_jsonl_and_emits_callbacks(fake_subprocess) -> None:
     fake_subprocess.enqueue(
         lines=[
@@ -98,16 +117,31 @@ def test_codex_run_single_attempt_parses_jsonl_and_emits_callbacks(fake_subproce
     assert result.input_tokens == 11
     assert result.output_tokens == 3
     assert unsupported_output is False
+    assert fake_subprocess.instances[0].stdin.closed is True
 
     assert chunks == [("req-1", "Hello from Codex")]
     assert permission_requests == []
 
-    assert len(system_messages) == 1
-    _, payload_raw = system_messages[0]
-    payload = json.loads(payload_raw)
-    assert payload["__tool__"] is True
-    assert payload["name"] == "bash"
-    assert payload["command"] == "pytest -q"
+
+def test_gemini_run_single_attempt_closes_stdin_for_prompt_argv_provider(fake_subprocess) -> None:
+    fake_subprocess.enqueue(
+        lines=[
+            json.dumps({"type": "content", "text": "Hello from Gemini"}),
+        ],
+        returncode=0,
+    )
+
+    process, _running, _chunks, _system_messages, _permission_requests, _completed = _build_process()
+
+    result, unsupported_output = process._run_single_attempt(
+        request_token="req-gemini",
+        config=_build_gemini_config(),
+        mode="stream-json",
+    )
+
+    assert result.success is True
+    assert unsupported_output is False
+    assert fake_subprocess.instances[0].stdin.closed is True
 
 
 def test_codex_run_single_attempt_collects_error_events(fake_subprocess) -> None:

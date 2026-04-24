@@ -423,10 +423,9 @@ class ClaudeProcess:
                 env=process_env,
                 start_new_session=True,
             )
-            if provider_id == "codex":
-                # Codex consumes stdin when present and waits for EOF.
-                # It receives the prompt as an argument, so closing stdin
-                # keeps non-interactive runs from hanging.
+            if provider_id in {"codex", "gemini"}:
+                # Prompt-argv providers may consume stdin when present and wait
+                # for EOF, so close the pipe for non-interactive GUI runs.
                 try:
                     if process.stdin is not None and hasattr(process.stdin, "close"):
                         process.stdin.close()

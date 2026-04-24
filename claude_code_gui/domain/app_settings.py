@@ -202,7 +202,6 @@ _BUILTIN_DEFAULT_APP_SETTINGS: dict[str, Any] = {
             ],
             "permission_options": [
                 {"label": "Auto", "value": "auto", "is_advanced": False},
-                {"label": "Ask", "value": "ask", "is_advanced": False},
                 {"label": "Plan mode", "value": "plan", "is_advanced": False},
                 {"label": "Bypass permissions (Advanced)", "value": "bypassPermissions", "is_advanced": True},
             ],
@@ -264,7 +263,6 @@ _BUILTIN_DEFAULT_APP_SETTINGS: dict[str, Any] = {
             ],
             "permission_options": [
                 {"label": "Auto edit", "value": "auto", "is_advanced": False},
-                {"label": "Default (Ask)", "value": "ask", "is_advanced": False},
                 {"label": "Plan mode", "value": "plan", "is_advanced": False},
                 {"label": "YOLO (Advanced)", "value": "bypassPermissions", "is_advanced": True},
             ],
@@ -697,12 +695,25 @@ def _normalize_provider(payload: Any, fallback: dict[str, Any]) -> dict[str, Any
 
     if provider_id_lower == "gemini":
         normalized["supports_reasoning"] = False
+        permission_options = [
+            option
+            for option in normalized["permission_options"]
+            if str(option.get("value") or "").strip().lower() != "ask"
+        ]
+        normalized["permission_options"] = permission_options or copy.deepcopy(fallback_perm)
     elif provider_id_lower == "claude":
         normalized["model_options"] = _append_missing_model_options(
             normalized["model_options"],
             fallback_model,
             required_values={"claude-opus-4-7"},
         )
+    elif provider_id_lower == "codex":
+        permission_options = [
+            option
+            for option in normalized["permission_options"]
+            if str(option.get("value") or "").strip().lower() != "ask"
+        ]
+        normalized["permission_options"] = permission_options or copy.deepcopy(fallback_perm)
 
     return normalized
 

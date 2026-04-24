@@ -65,11 +65,14 @@ sudo dnf install python3-gobject gtk4 webkitgtk6.0
 ```bash
 git clone https://github.com/babafish12/claude-code-gui.git
 cd claude-code-gui
-python -m venv .venv
+python -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install -e .
 python -m claude_code_gui
 ```
+
+On Debian/Ubuntu, `--system-site-packages` lets the venv see the distro-provided
+`python3-gi` bindings. Without it, startup can fail before GTK/WebKit loads.
 
 ## Usage
 

@@ -10,12 +10,24 @@ import sys
 def main(argv: list[str] | None = None) -> None:
     from claude_code_gui.core.paths import resolve_icon_path
 
-    gi_runtime = importlib.import_module("claude_code_gui.gi_runtime")
+    try:
+        gi_runtime = importlib.import_module("claude_code_gui.gi_runtime")
+    except ModuleNotFoundError as error:
+        if error.name == "gi":
+            print(
+                "Could not import PyGObject (`gi`). Install python3-gi and run from "
+                "system Python or create the venv with --system-site-packages.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        raise
     window_module = importlib.import_module("claude_code_gui.ui.window")
     tray_module = importlib.import_module("claude_code_gui.ui.tray")
+    settings_module = importlib.import_module("claude_code_gui.domain.app_settings")
 
     ClaudeCodeWindow = window_module.ClaudeCodeWindow
     TrayIcon = tray_module.TrayIcon
+    load_settings = settings_module.load_settings
 
     Gtk = gi_runtime.Gtk
     Adw = gi_runtime.Adw
@@ -46,13 +58,15 @@ def main(argv: list[str] | None = None) -> None:
                     return
             win = ClaudeCodeWindow(application=app)
             win.present()
-            app._tray = TrayIcon(
-                app,
-                on_show=win.present,
-                on_new_pane=lambda: win._split_active_pane(Gtk.Orientation.HORIZONTAL),
-                on_quit=getattr(app, "quit", None),
-                icon_name=str(tray_icon_path) if tray_icon_path is not None else "",
-            )
+            settings_payload = load_settings()
+            if bool(settings_payload.get("system_tray_enabled", True)):
+                app._tray = TrayIcon(
+                    app,
+                    on_show=win.present,
+                    on_new_pane=lambda: win._split_active_pane(Gtk.Orientation.HORIZONTAL),
+                    on_quit=getattr(app, "quit", None),
+                    icon_name=str(tray_icon_path) if tray_icon_path is not None else "",
+                )
 
         app.add_main_option(
             "toggle-launcher",

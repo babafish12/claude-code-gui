@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from claude_code_gui.domain.app_settings import load_settings
+from claude_code_gui.domain.app_settings import get_default_settings, load_settings
 from claude_code_gui.domain.provider import (
     PROVIDERS,
     ProviderConfig,
@@ -53,13 +53,27 @@ def test_providers_registry_contains_expected_entries() -> None:
     assert claude.supports_reasoning is True
     assert codex.supports_reasoning is True
     assert gemini.supports_reasoning is False
-
     for config in (claude, codex, gemini):
         assert config.model_options
         assert config.permission_options
         assert "accent" in config.colors
         assert len(config.accent_rgb) == 3
         assert len(config.accent_soft_rgb) == 3
+
+
+def test_default_permission_options_keep_codex_non_interactive() -> None:
+    original_payload = load_settings()
+    try:
+        defaults = refresh_provider_registry(get_default_settings())
+        claude = defaults["claude"]
+        codex = defaults["codex"]
+        gemini = defaults["gemini"]
+
+        assert "ask" in {value for _label, value, _advanced in claude.permission_options}
+        assert "ask" not in {value for _label, value, _advanced in codex.permission_options}
+        assert "ask" not in {value for _label, value, _advanced in gemini.permission_options}
+    finally:
+        refresh_provider_registry(original_payload)
 
 
 def test_refresh_provider_registry_swaps_snapshot_and_updates_alias() -> None:

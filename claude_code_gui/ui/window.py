@@ -58,7 +58,7 @@ from claude_code_gui.core.model_permissions import (
     normalize_model_value,
     normalize_permission_value,
 )
-from claude_code_gui.core.paths import format_path, normalize_folder, shorten_path
+from claude_code_gui.core.paths import format_path, normalize_folder, resolve_icons_dir, shorten_path
 from claude_code_gui.core.time_utils import current_timestamp, parse_timestamp
 from claude_code_gui.domain.claude_types import ClaudeRunResult
 from claude_code_gui.domain.provider import (
@@ -160,24 +160,7 @@ _MAX_JS_PERMISSION_PAYLOAD_CHARS = 64_000
 _MAX_JS_SEND_PAYLOAD_CHARS = int((MAX_ATTACHMENT_TOTAL_BYTES * 4) / 3) + (MAX_ATTACHMENTS_PER_MESSAGE * 2048) + 256_000
 _MAX_JS_TRANSCRIBE_PAYLOAD_CHARS = int((ATTACHMENT_MAX_BYTES * 4) / 3) + 131_072
 
-_ICONS_DIR = Path(__file__).resolve().parents[2] / "icons"
-
-
-def _resolve_icons_dir() -> Path:
-    """Resolve the icons directory from likely source layouts."""
-    for candidate in (
-        Path(__file__).resolve().parent.parent.parent / "icons",
-        Path(__file__).resolve().parent.parent / "icons",
-        Path(__file__).resolve().parent / "icons",
-        _ICONS_DIR,
-        Path.cwd() / "icons",
-    ):
-        if candidate.is_dir():
-            return candidate
-    return _ICONS_DIR
-
-
-_ICONS_DIR = _resolve_icons_dir()
+_ICONS_DIR = resolve_icons_dir() or (Path(__file__).resolve().parents[2] / "icons")
 
 
 def _resolve_app_icon_path() -> Path | None:
@@ -3817,9 +3800,9 @@ class ClaudeCodeWindow(Gtk.Window):
         default_height = max(min_height, min(desired_height, max_height))
         return default_width, default_height, min_width, min_height, max_width, max_height
 
-    def _save_sessions_safe(self, context: str) -> bool:
+    def _save_sessions_safe(self, context: str, *, preserve_disk_only: bool = True) -> bool:
         try:
-            save_sessions(self._sessions)
+            save_sessions(self._sessions, preserve_disk_only=preserve_disk_only)
             return True
         except (OSError, ValueError, TypeError) as error:
             self._set_status_message(f"{context}: {error}", STATUS_WARNING)
@@ -4131,7 +4114,7 @@ class ClaudeCodeWindow(Gtk.Window):
         replacement = self._promote_replacement_session() if active_deleted else None
 
         self._refresh_session_list()
-        self._save_sessions_safe("Could not save sessions")
+        self._save_sessions_safe("Could not save sessions", preserve_disk_only=False)
 
         if active_deleted and replacement is not None:
             self._reset_conversation_state("Active session deleted")
@@ -4803,7 +4786,7 @@ class ClaudeCodeWindow(Gtk.Window):
         replacement = self._promote_replacement_session() if was_active else None
 
         self._refresh_session_list()
-        self._save_sessions_safe("Could not save sessions")
+        self._save_sessions_safe("Could not save sessions", preserve_disk_only=(action != "delete"))
 
         if was_active and replacement is not None:
             self._reset_conversation_state(active_reason)

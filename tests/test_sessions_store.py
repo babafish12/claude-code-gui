@@ -99,7 +99,7 @@ def test_save_sessions_persists_provider_field(sessions_path) -> None:
     assert raw[0]["permission_mode"] == "plan"
 
 
-def test_save_sessions_merges_with_newer_on_disk_payload(sessions_path) -> None:
+def test_save_sessions_preserves_disk_only_payloads_by_default(sessions_path) -> None:
     sessions_path.write_text(
         json.dumps(
             [
@@ -163,3 +163,45 @@ def test_save_sessions_merges_with_newer_on_disk_payload(sessions_path) -> None:
     assert raw[0]["title"] == "Disk"
     assert raw[1]["title"] == "Memory only"
     assert raw[2]["title"] == "Disk only"
+
+
+def test_save_sessions_can_replace_disk_only_payloads_for_explicit_delete(sessions_path) -> None:
+    sessions_path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "disk-only",
+                    "title": "Disk only",
+                    "project_path": "/tmp",
+                    "model": "sonnet",
+                    "permission_mode": "auto",
+                    "status": "ended",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "last_used_at": "2026-01-01T01:00:00+00:00",
+                    "provider": "claude",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    sessions_store.save_sessions(
+        [
+            SessionRecord(
+                id="memory-only",
+                title="Memory only",
+                project_path="/tmp",
+                model="gpt-5",
+                permission_mode="plan",
+                status="active",
+                created_at="2026-01-01T00:00:00+00:00",
+                last_used_at="2026-01-01T13:00:00+00:00",
+                provider="codex",
+            ),
+        ],
+        preserve_disk_only=False,
+    )
+
+    raw = json.loads(sessions_path.read_text(encoding="utf-8"))
+
+    assert [item["id"] for item in raw] == ["memory-only"]

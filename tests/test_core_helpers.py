@@ -92,6 +92,19 @@ def test_paths_helpers(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert short.endswith(long_path[-10:])
     assert paths.shorten_path("/tmp/x", 50) == "/tmp/x"
 
+    installed_icons = tmp_path / "prefix" / "share" / "claude-code-gui" / "icons"
+    installed_icons.mkdir(parents=True)
+    icon = installed_icons / "claude.svg"
+    icon.write_text("<svg></svg>", encoding="utf-8")
+    missing_root = tmp_path / "missing-root"
+    missing_root.mkdir()
+    monkeypatch.setattr(paths, "project_root", lambda: missing_root)
+    monkeypatch.setattr(paths.sys, "prefix", str(tmp_path / "prefix"))
+    monkeypatch.setattr(paths.sys, "base_prefix", str(tmp_path / "other-prefix"))
+    monkeypatch.chdir(missing_root)
+    assert paths.resolve_icons_dir() == installed_icons
+    assert paths.resolve_icon_path("claude.svg") == icon
+
 
 def test_time_utils_helpers() -> None:
     timestamp = time_utils.current_timestamp()
@@ -115,6 +128,9 @@ def _run_main_with_stubs(monkeypatch: pytest.MonkeyPatch, *, gtk4: bool) -> list
         def show_all(self) -> None:
             calls.append("show_all")
 
+        def _split_active_pane(self, *_args) -> None:
+            calls.append("split_pane")
+
     class DummyApp:
         def __init__(self, **kwargs) -> None:
             calls.append("app_init")
@@ -136,6 +152,13 @@ def _run_main_with_stubs(monkeypatch: pytest.MonkeyPatch, *, gtk4: bool) -> list
         def get_windows(self) -> list:
             return []
 
+        def quit(self) -> None:
+            calls.append("quit")
+
+    class DummyTrayIcon:
+        def __init__(self, *_args, **_kwargs) -> None:
+            calls.append("tray_init")
+
     fake_runtime = types.ModuleType("claude_code_gui.gi_runtime")
     fake_runtime.GTK4 = gtk4  # type: ignore[attr-defined]
     fake_runtime.Gtk = types.SimpleNamespace(main=lambda: calls.append("gtk_main"))  # type: ignore[attr-defined]
@@ -148,9 +171,15 @@ def _run_main_with_stubs(monkeypatch: pytest.MonkeyPatch, *, gtk4: bool) -> list
 
     fake_window_module = types.ModuleType("claude_code_gui.ui.window")
     fake_window_module.ClaudeCodeWindow = DummyWindow  # type: ignore[attr-defined]
+    fake_tray_module = types.ModuleType("claude_code_gui.ui.tray")
+    fake_tray_module.TrayIcon = DummyTrayIcon  # type: ignore[attr-defined]
+    fake_settings_module = types.ModuleType("claude_code_gui.domain.app_settings")
+    fake_settings_module.load_settings = lambda: {"system_tray_enabled": True}  # type: ignore[attr-defined]
 
     monkeypatch.setitem(sys.modules, "claude_code_gui.gi_runtime", fake_runtime)
     monkeypatch.setitem(sys.modules, "claude_code_gui.ui.window", fake_window_module)
+    monkeypatch.setitem(sys.modules, "claude_code_gui.ui.tray", fake_tray_module)
+    monkeypatch.setitem(sys.modules, "claude_code_gui.domain.app_settings", fake_settings_module)
 
     # Reload the module to use the mocked gi_runtime
     if "claude_code_gui.__main__" in sys.modules:
@@ -166,6 +195,7 @@ def test_main_uses_present_for_gtk4(monkeypatch: pytest.MonkeyPatch) -> None:
         "app_run",
         "window_init",
         "present",
+        "tray_init",
     ]
 
 

@@ -214,6 +214,22 @@ def test_codex_build_argv_adds_reasoning_effort_config_when_enabled() -> None:
     assert "model_reasoning_effort=high" in argv
 
 
+def test_codex_build_argv_preserves_max_reasoning_effort() -> None:
+    dialect = CodexDialect()
+    config = CliRunConfig(
+        binary_path="/usr/bin/codex",
+        cwd="/tmp/work",
+        model="gpt-5",
+        permission_mode="auto",
+        reasoning_level="max",
+        supports_reasoning_flag=True,
+    )
+
+    argv = dialect.build_argv("run", config)
+
+    assert "model_reasoning_effort=max" in argv
+
+
 def test_codex_build_argv_with_ask_permission_mode() -> None:
     dialect = CodexDialect()
     config = CliRunConfig(

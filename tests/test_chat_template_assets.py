@@ -93,6 +93,14 @@ def test_popup_option_no_backdrop_filter() -> None:
     assert any("background: transparent" in rule for rule in rules)
 
 
+def test_composer_focus_and_permission_accessibility_hooks_exist() -> None:
+    css = _extract_css(CHAT_WEBVIEW_HTML)
+    focus_visible_rules = _extract_rules(css, ".composer-input:focus-visible")
+    assert focus_visible_rules
+    assert any("outline:" in rule and "var(--accent)" in rule for rule in focus_visible_rules)
+    assert CHAT_WEBVIEW_HTML.count('aria-label="Permissions"') == 2
+
+
 def test_reduced_motion_media_query_exists() -> None:
     assert "@media (prefers-reduced-motion: reduce)" in CHAT_WEBVIEW_HTML
     assert "body.reduced-motion" in CHAT_WEBVIEW_HTML

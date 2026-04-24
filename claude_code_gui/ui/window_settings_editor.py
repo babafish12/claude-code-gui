@@ -142,14 +142,6 @@ def open_settings_editor(window: "ClaudeCodeWindow") -> None:
         if selected_mode not in startup_provider_values:
             selected_mode = DEFAULT_STARTUP_PROVIDER_MODE
         working_payload["startup_provider_mode"] = selected_mode
-        try:
-            persisted_payload = load_settings()
-            persisted_payload["startup_provider_mode"] = selected_mode
-            save_settings(persisted_payload)
-        except (OSError, TypeError, ValueError) as error:
-            logger.exception("Could not persist startup CLI preference")
-            validation_label.set_text(f"Could not save startup CLI preference: {error}")
-            validation_label.set_visible(True)
 
     startup_provider_combo.connect("changed", _on_startup_provider_mode_changed)
     startup_row.pack_start(startup_provider_combo, False, False, 0)
